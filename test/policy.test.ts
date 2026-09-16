@@ -93,3 +93,10 @@ test("$binaryExtension returns .exe for windows and empty for unix", () => {
 	assert.equal(TARGET_METADATA_MAP[TargetDevice.WinLegacyX86].os.includes("windows"), true);
 	assert.equal(TARGET_METADATA_MAP[TargetDevice.IosIshX86].os.includes("windows"), false);
 });
+
+
+test("$canPackageOnBun returns true for 32-bit and legacy Windows", () => {
+	assert.equal(TARGET_METADATA_MAP[TargetDevice.IosIshX86].is32BitOrLegacy, true);
+	assert.equal(TARGET_METADATA_MAP[TargetDevice.WinLegacyX86].is32BitOrLegacy, true);
+	assert.equal(TARGET_METADATA_MAP[TargetDevice.WinModernX64].is32BitOrLegacy, false);
+});

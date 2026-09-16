@@ -6,6 +6,7 @@
 import binaryArchitecture from "./binaryArchitecture.js";
 import binaryExtension from "./binaryExtension.js";
 import binaryFormat from "./binaryFormat.js";
+import canPackageOnBun from "./canPackageOnBun.js";
 import compileBinary from "./compileBinary.js";
 import graalVersion from "./graalVersion.js";
 import is32BitOrLegacy from "./is32BitOrLegacy.js";
@@ -21,6 +22,7 @@ export const nativeFunctions = [
 	binaryArchitecture,
 	binaryExtension,
 	binaryFormat,
+	canPackageOnBun,
 	compileBinary,
 	graalVersion,
 	is32BitOrLegacy,
@@ -37,6 +39,7 @@ export {
 	binaryArchitecture,
 	binaryExtension,
 	binaryFormat,
+	canPackageOnBun,
 	compileBinary,
 	graalVersion,
 	is32BitOrLegacy as is32BitOrLegacyFn,
