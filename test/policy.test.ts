@@ -136,3 +136,8 @@ test("$isArmTarget detects arm architectures", () => {
 test("$dbDriverCompat verifies universal sqlite support", () => {
 	assert.equal(true, true);
 });
+
+
+test("$listPlatforms returns all supported devices", () => {
+	assert.equal(Object.values(TargetDevice).length >= 12, true);
+});

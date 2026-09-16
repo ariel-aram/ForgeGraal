@@ -17,6 +17,7 @@ import isArmTarget from "./isArmTarget.js";
 import isIsh from "./isIsh.js";
 import isLegacyWindows from "./isLegacyWindows.js";
 import isTargetSupported from "./isTargetSupported.js";
+import listPlatforms from "./listPlatforms.js";
 import packageManager from "./packageManager.js";
 import packagerType from "./packagerType.js";
 import supportedTargets from "./supportedTargets.js";
@@ -39,6 +40,7 @@ export const nativeFunctions = [
 	isIsh,
 	isLegacyWindows,
 	isTargetSupported,
+	listPlatforms,
 	packageManager,
 	packagerType,
 	supportedTargets,
@@ -62,6 +64,7 @@ export {
 	isIsh,
 	isLegacyWindows,
 	isTargetSupported,
+	listPlatforms,
 	packageManager,
 	packagerType,
 	supportedTargets,
