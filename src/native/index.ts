@@ -8,6 +8,7 @@ import binaryExtension from "./binaryExtension.js";
 import binaryFormat from "./binaryFormat.js";
 import canPackageOnBun from "./canPackageOnBun.js";
 import compileBinary from "./compileBinary.js";
+import dbDriverCompat from "./dbDriverCompat.js";
 import graalVersion from "./graalVersion.js";
 import is32BitOrLegacy from "./is32BitOrLegacy.js";
 import is32BitTarget from "./is32BitTarget.js";
@@ -29,6 +30,7 @@ export const nativeFunctions = [
 	binaryFormat,
 	canPackageOnBun,
 	compileBinary,
+	dbDriverCompat,
 	graalVersion,
 	is32BitOrLegacy,
 	is32BitTarget,
@@ -51,6 +53,7 @@ export {
 	binaryFormat,
 	canPackageOnBun,
 	compileBinary,
+	dbDriverCompat,
 	graalVersion,
 	is32BitOrLegacy as is32BitOrLegacyFn,
 	is32BitTarget,
