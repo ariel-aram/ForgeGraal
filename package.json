@@ -1,25 +1,39 @@
 {
   "name": "forgegraal",
   "version": "1.0.0",
-  "description": "ForgeScript extension to turn bots into standalone binaries for 32-bit iSH, legacy Windows, and modern devices",
+  "description": "ForgeScript extension and CLI that turns ForgeScript bots into standalone executables, including 32-bit (iSH, x86, ARMv7) and legacy Windows (7 / Vista) targets",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "bin": {
+    "forgegraal": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "metadata",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc",
-    "check": "biome check src",
-    "format": "biome format --write src",
-    "test": "bun test"
+    "typecheck": "tsc --noEmit",
+    "check": "biome check src test",
+    "format": "biome format --write src test",
+    "docgen": "tsc && node dist/docgen.js",
+    "test": "tsc && node --test \"test/**/*.test.ts\""
   },
   "keywords": [
     "forgescript",
     "graal",
     "binary",
+    "sea",
     "ish",
     "windows7",
     "32bit"
   ],
   "author": "Ariel Aram",
   "license": "ISC",
+  "engines": {
+    "node": ">=20.12.0"
+  },
   "devEngines": {
     "packageManager": {
       "name": "pnpm",
@@ -28,16 +42,21 @@
     }
   },
   "packageManager": "pnpm@12.4.2",
-  "type": "module",
   "dependencies": {
-    "@biomejs/biome": "^2.5.13",
+    "postject": "1.0.0-alpha.6"
+  },
+  "peerDependencies": {
     "@tryforge/forgescript": "^2.7.1"
   },
+  "peerDependenciesMeta": {
+    "@tryforge/forgescript": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@biomejs/biome": "^2.5.13",
+    "@tryforge/forgescript": "^2.7.1",
     "@types/node": "^22.13.9",
     "typescript": "^5.8.2"
-  },
-  "bin": {
-    "forgegraal": "dist/cli.js"
   }
 }

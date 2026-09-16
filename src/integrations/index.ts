@@ -1,1 +1,1 @@
-export * from "./ForgeDBIntegration.js";
+export * from "./ForgeDBIntegration";

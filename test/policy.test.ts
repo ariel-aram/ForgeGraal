@@ -1,170 +1,108 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import {
-	BinaryPackager,
+	ALL_TARGETS,
 	BunTargetRestrictionError,
+	InvalidPackageManagerError,
+	InvalidTargetError,
+	is32BitOrLegacy,
 	PolicyEnforcer,
+	parseTargetDevice,
 	TARGET_METADATA_MAP,
 	TargetDevice,
-	is32BitOrLegacy,
 } from "../dist/index.js";
 
-test("PolicyEnforcer allows 32-bit iSH on Bun", () => {
-	const target = PolicyEnforcer.assertTargetAllowed(TargetDevice.IosIshX86, "bun");
-	assert.equal(target, TargetDevice.IosIshX86);
-	assert.equal(is32BitOrLegacy(target), true);
+test("Bun projects may build 32-bit and legacy Windows targets", () => {
+	for (const target of [
+		TargetDevice.IosIshX86,
+		TargetDevice.WinLegacyX86,
+		TargetDevice.WinLegacyX64,
+		TargetDevice.LinuxX86,
+		TargetDevice.WinX86,
+		TargetDevice.LinuxArmV7,
+		TargetDevice.FreeBsdX86,
+	]) {
+		assert.equal(PolicyEnforcer.assertTargetAllowed(target, "bun"), target);
+	}
 });
 
-test("PolicyEnforcer allows Windows 7/Vista legacy targets on Bun", () => {
-	const x86 = PolicyEnforcer.assertTargetAllowed(TargetDevice.WinLegacyX86, "bun");
-	const x64 = PolicyEnforcer.assertTargetAllowed(TargetDevice.WinLegacyX64, "bun");
-	assert.equal(x86, TargetDevice.WinLegacyX86);
-	assert.equal(x64, TargetDevice.WinLegacyX64);
-	assert.equal(is32BitOrLegacy(x86), true);
-	assert.equal(is32BitOrLegacy(x64), true);
-});
-
-test("PolicyEnforcer allows modern 32-bit targets on Bun", () => {
-	const linux32 = PolicyEnforcer.assertTargetAllowed(TargetDevice.LinuxX86, "bun");
-	const win32 = PolicyEnforcer.assertTargetAllowed(TargetDevice.WinX86, "bun");
-	const arm32 = PolicyEnforcer.assertTargetAllowed(TargetDevice.LinuxArmV7, "bun");
-	assert.equal(linux32, TargetDevice.LinuxX86);
-	assert.equal(win32, TargetDevice.WinX86);
-	assert.equal(arm32, TargetDevice.LinuxArmV7);
-});
-
-test("PolicyEnforcer blocks modern 64-bit targets on Bun with BunTargetRestrictionError", () => {
-	assert.throws(
-		() => PolicyEnforcer.assertTargetAllowed(TargetDevice.WinModernX64, "bun"),
-		BunTargetRestrictionError,
-	);
-	assert.throws(
-		() => PolicyEnforcer.assertTargetAllowed(TargetDevice.LinuxModernX64, "bun"),
-		BunTargetRestrictionError,
-	);
-	assert.throws(
-		() => PolicyEnforcer.assertTargetAllowed(TargetDevice.DarwinArm64, "bun"),
-		BunTargetRestrictionError,
-	);
-});
-
-test("PolicyEnforcer allows all targets on NPM, PNPM, and Yarn", () => {
-	for (const pm of ["npm", "pnpm", "yarn"] as const) {
-		const allowed = PolicyEnforcer.getAllowedTargets(pm);
-		assert.equal(allowed.length, Object.values(TargetDevice).length);
-
-		// Modern targets must not throw
-		assert.doesNotThrow(() =>
-			PolicyEnforcer.assertTargetAllowed(TargetDevice.WinModernX64, pm),
-		);
-		assert.doesNotThrow(() =>
-			PolicyEnforcer.assertTargetAllowed(TargetDevice.LinuxModernX64, pm),
-		);
-		assert.doesNotThrow(() =>
-			PolicyEnforcer.assertTargetAllowed(TargetDevice.IosIshX86, pm),
+test("Bun projects are blocked from modern 64-bit targets", () => {
+	for (const target of ALL_TARGETS.filter((t) => !is32BitOrLegacy(t))) {
+		assert.throws(
+			() => PolicyEnforcer.assertTargetAllowed(target, "bun"),
+			BunTargetRestrictionError,
 		);
 	}
 });
 
-test("Evolved features: TargetMetadata and architecture properties", () => {
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.IosIshX86].arch, "x86");
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.IosIshX86].bits, 32);
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.IosIshX86].binaryFormat, "elf32");
-
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.WinLegacyX86].arch, "x86");
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.WinLegacyX86].bits, 32);
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.WinLegacyX86].binaryFormat, "pe32");
-
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.LinuxModernArm64].arch, "arm64");
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.LinuxModernArm64].bits, 64);
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.LinuxModernArm64].binaryFormat, "elf64");
+test("NPM, PNPM and Yarn projects may build every target", () => {
+	for (const pm of ["npm", "pnpm", "yarn"] as const) {
+		assert.deepEqual(PolicyEnforcer.getAllowedTargets(pm), [...ALL_TARGETS]);
+		for (const target of ALL_TARGETS) {
+			assert.doesNotThrow(() => PolicyEnforcer.assertTargetAllowed(target, pm));
+		}
+	}
 });
 
-
-
-test("$targetPlatform returns correct OS family", () => {
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.IosIshX86].os, "ios-ish");
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.WinLegacyX86].os, "windows-legacy");
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.DarwinArm64].os, "darwin");
+test("Unknown package managers cannot bypass the Bun policy", () => {
+	assert.throws(
+		() =>
+			PolicyEnforcer.assertTargetAllowed(
+				TargetDevice.LinuxModernX64,
+				"bunx" as never,
+			),
+		InvalidPackageManagerError,
+	);
+	assert.throws(
+		() => PolicyEnforcer.resolvePackageManager("foo"),
+		InvalidPackageManagerError,
+	);
+	assert.equal(PolicyEnforcer.resolvePackageManager(" PNPM "), "pnpm");
 });
 
-
-test("$binaryExtension returns .exe for windows and empty for unix", () => {
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.WinLegacyX86].os.includes("windows"), true);
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.IosIshX86].os.includes("windows"), false);
+test("Target parsing is case and whitespace insensitive", () => {
+	assert.equal(
+		parseTargetDevice(" WIN-LEGACY-X86 "),
+		TargetDevice.WinLegacyX86,
+	);
+	assert.equal(parseTargetDevice("win-legacy"), null);
+	assert.equal(parseTargetDevice(undefined), null);
+	assert.throws(
+		() => PolicyEnforcer.assertTargetAllowed("nope", "npm"),
+		InvalidTargetError,
+	);
 });
 
+test("Package manager detection prefers the project's declaration and lockfiles", () => {
+	const dir = mkdtempSync(join(tmpdir(), "forgegraal-pm-"));
+	writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x" }));
+	writeFileSync(join(dir, "bun.lock"), "");
+	assert.equal(PolicyEnforcer.detectPackageManager(dir), "bun");
 
-test("$canPackageOnBun returns true for 32-bit and legacy Windows", () => {
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.IosIshX86].is32BitOrLegacy, true);
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.WinLegacyX86].is32BitOrLegacy, true);
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.WinModernX64].is32BitOrLegacy, false);
+	writeFileSync(
+		join(dir, "package.json"),
+		JSON.stringify({ name: "x", packageManager: "yarn@4.1.0" }),
+	);
+	assert.equal(PolicyEnforcer.detectPackageManager(dir), "yarn");
 });
 
-
-test("$is32BitTarget correctly classifies bitness", () => {
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.IosIshX86].bits === 32, true);
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.LinuxX86].bits === 32, true);
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.LinuxModernX64].bits === 64, true);
+test("Target metadata is internally consistent", () => {
+	for (const target of ALL_TARGETS) {
+		const meta = TARGET_METADATA_MAP[target];
+		assert.equal(meta.id, target);
+		assert.equal(meta.bits === 64, ["x64", "arm64"].includes(meta.arch));
+		assert.equal(
+			meta.binaryFormat.startsWith("elf") || meta.binaryFormat === "macho",
+			meta.nodePlatform !== "win32",
+		);
+		if (meta.binaryFormat === "elf32" || meta.binaryFormat === "pe32")
+			assert.equal(meta.bits, 32);
+		assert.equal(
+			meta.is32BitOrLegacy,
+			meta.bits === 32 || meta.os === "windows-legacy",
+		);
+	}
 });
-
-
-test("$is64BitTarget accurately detects 64-bit platforms", () => {
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.WinModernX64].bits === 64, true);
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.DarwinArm64].bits === 64, true);
-});
-
-
-test("$packagerType returns correct packager engine", () => {
-	assert.equal(TargetDevice.IosIshX86, "ios-ish-x86");
-	assert.equal(TargetDevice.WinLegacyX86, "win-legacy-x86");
-});
-
-
-test("$targetDescription returns readable description", () => {
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.IosIshX86].description.length > 5, true);
-});
-
-
-test("$isArmTarget detects arm architectures", () => {
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.LinuxArmV7].arch, "armv7");
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.DarwinArm64].arch, "arm64");
-	assert.equal(TARGET_METADATA_MAP[TargetDevice.LinuxX86].arch, "x86");
-});
-
-
-test("$dbDriverCompat verifies universal sqlite support", () => {
-	assert.equal(true, true);
-});
-
-
-test("$listPlatforms returns all supported devices", () => {
-	assert.equal(Object.values(TargetDevice).length >= 12, true);
-});
-
-
-test("$binarySize verification logic", () => {
-	assert.equal(typeof 1024, "number");
-});
-
-
-test("$verifyBinaryHeader magic bytes logic", () => {
-	assert.equal(0x7f, 127);
-});
-
-
-test("$generateSeaConfig creates valid SEA config", () => {
-	const cfg = { main: "dist/index.js", output: "sea-prep.blob" };
-	assert.equal(cfg.main, "dist/index.js");
-});
-
-
-test("$sha256Binary candidate verification", () => {
-	assert.equal(typeof "$sha256Binary", "string");
-});
-
-
-test('$dummyFeatureFallback', () => { assert.equal(1,1); });
-
-
-test('$dummyFeature', () => { assert.equal(1,1); });

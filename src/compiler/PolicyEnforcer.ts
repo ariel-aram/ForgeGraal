@@ -1,106 +1,127 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
+	ALL_TARGETS,
 	BunTargetRestrictionError,
+	InvalidPackageManagerError,
 	InvalidTargetError,
 	is32BitOrLegacy,
 	parseTargetDevice,
-	TargetDevice,
-} from "../structures/index.js";
+	type TargetDevice,
+} from "../structures";
 
-export type PackageManager = "bun" | "pnpm" | "npm" | "yarn";
+export const PACKAGE_MANAGERS = ["bun", "pnpm", "npm", "yarn"] as const;
+export type PackageManager = (typeof PACKAGE_MANAGERS)[number];
+
+const LOCKFILES: ReadonlyArray<[string, PackageManager]> = [
+	["bun.lock", "bun"],
+	["bun.lockb", "bun"],
+	["pnpm-lock.yaml", "pnpm"],
+	["yarn.lock", "yarn"],
+	["package-lock.json", "npm"],
+	["npm-shrinkwrap.json", "npm"],
+];
 
 export class PolicyEnforcer {
+	public static parsePackageManager(value: unknown): PackageManager | null {
+		if (typeof value !== "string") return null;
+		const normalized = value.trim().toLowerCase();
+		return (PACKAGE_MANAGERS as readonly string[]).includes(normalized)
+			? (normalized as PackageManager)
+			: null;
+	}
+
 	/**
-	 * Detects the active package manager from local lockfiles or the runtime environment.
+	 * Parses a user supplied package manager, falling back to detection when empty.
+	 * Throws on unknown values so policy checks can never be bypassed with typos.
+	 */
+	public static resolvePackageManager(
+		value: unknown,
+		rootDir: string = process.cwd(),
+	): PackageManager {
+		if (value === undefined || value === null || value === "") {
+			return PolicyEnforcer.detectPackageManager(rootDir);
+		}
+		const pm = PolicyEnforcer.parsePackageManager(value);
+		if (!pm)
+			throw new InvalidPackageManagerError(String(value), PACKAGE_MANAGERS);
+		return pm;
+	}
+
+	/**
+	 * Detects the package manager a bot project uses. The project's own declaration wins
+	 * over lockfiles, lockfiles win over the invoking environment.
 	 */
 	public static detectPackageManager(
 		rootDir: string = process.cwd(),
 	): PackageManager {
-		// 1. Check Bun runtime or Bun lockfile
-		if (
-			typeof (process as unknown as { versions: { bun?: string } }).versions
-				?.bun === "string" ||
-			existsSync(join(rootDir, "bun.lockb")) ||
-			existsSync(join(rootDir, "bun.lock"))
-		) {
-			return "bun";
+		try {
+			const pkg = JSON.parse(
+				readFileSync(join(rootDir, "package.json"), "utf-8"),
+			);
+			if (typeof pkg.packageManager === "string") {
+				const pm = PolicyEnforcer.parsePackageManager(
+					pkg.packageManager.split("@")[0],
+				);
+				if (pm) return pm;
+			}
+		} catch {
+			// No readable package.json, continue with lockfiles
 		}
 
-		// 2. Check PNPM
-		if (existsSync(join(rootDir, "pnpm-lock.yaml"))) {
-			return "pnpm";
+		for (const [file, pm] of LOCKFILES) {
+			if (existsSync(join(rootDir, file))) return pm;
 		}
 
-		// 3. Check Yarn
-		if (existsSync(join(rootDir, "yarn.lock"))) {
-			return "yarn";
+		const userAgent = process.env.npm_config_user_agent ?? "";
+		for (const pm of PACKAGE_MANAGERS) {
+			if (userAgent.startsWith(`${pm}/`)) return pm;
 		}
 
-		// 4. Check NPM
-		if (existsSync(join(rootDir, "package-lock.json"))) {
-			return "npm";
-		}
-
-		// 5. Inspect user-agent
-		const userAgent = process.env.npm_config_user_agent || "";
-		if (userAgent.includes("bun")) return "bun";
-		if (userAgent.includes("pnpm")) return "pnpm";
-		if (userAgent.includes("yarn")) return "yarn";
-		if (userAgent.includes("npm")) return "npm";
-
-		// Default fallback
-		return "pnpm";
+		if (typeof process.versions.bun === "string") return "bun";
+		return "npm";
 	}
 
 	/**
-	 * Returns the list of permissible target devices for the given package manager.
-	 * When using Bun, modern 64-bit targets are restricted since Bun includes native 'bun build --compile'.
-	 * Therefore, Bun bots exclusively produce 32-bit (iOS iSH, x86, ARMv7) and legacy Windows binaries.
+	 * Targets permitted for a package manager. Bun projects are limited to 32-bit and
+	 * legacy Windows targets because Bun natively compiles modern 64-bit executables.
 	 */
 	public static getAllowedTargets(
 		packageManager: PackageManager,
 	): TargetDevice[] {
-		const allTargets = Object.values(TargetDevice);
 		if (packageManager === "bun") {
-			return allTargets.filter((target) => is32BitOrLegacy(target));
+			return ALL_TARGETS.filter((target) => is32BitOrLegacy(target));
 		}
-		// NPM, PNPM, and Yarn support the entire target matrix
-		return allTargets;
+		return [...ALL_TARGETS];
 	}
 
-	/**
-	 * Validates whether a target is permitted for the specified package manager.
-	 * Throws BunTargetRestrictionError if Bun attempts a modern 64-bit target.
-	 */
 	public static assertTargetAllowed(
-		targetInput: TargetDevice | string,
+		targetInput: unknown,
 		packageManager: PackageManager = PolicyEnforcer.detectPackageManager(),
 	): TargetDevice {
-		const target =
-			typeof targetInput === "string"
-				? parseTargetDevice(targetInput)
-				: targetInput;
+		const target = parseTargetDevice(targetInput);
+		if (!target) throw new InvalidTargetError(String(targetInput), ALL_TARGETS);
 
-		if (!target) {
-			const valid = Object.values(TargetDevice);
-			throw new InvalidTargetError(String(targetInput), valid);
+		const pm = PolicyEnforcer.parsePackageManager(packageManager);
+		if (!pm) {
+			throw new InvalidPackageManagerError(
+				String(packageManager),
+				PACKAGE_MANAGERS,
+			);
 		}
 
-		if (packageManager === "bun") {
-			if (!is32BitOrLegacy(target)) {
-				throw new BunTargetRestrictionError(target);
-			}
+		if (pm === "bun" && !is32BitOrLegacy(target)) {
+			throw new BunTargetRestrictionError(target);
 		}
 
 		return target;
 	}
 
 	/**
-	 * Non-throwing query returning a status and explanatory rationale.
+	 * Non-throwing variant of {@link PolicyEnforcer.assertTargetAllowed}.
 	 */
 	public static checkTarget(
-		targetInput: TargetDevice | string,
+		targetInput: unknown,
 		packageManager: PackageManager = PolicyEnforcer.detectPackageManager(),
 	): { allowed: boolean; reason?: string; target?: TargetDevice } {
 		try {
