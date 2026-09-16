@@ -119,3 +119,8 @@ test("$packagerType returns correct packager engine", () => {
 	assert.equal(TargetDevice.IosIshX86, "ios-ish-x86");
 	assert.equal(TargetDevice.WinLegacyX86, "win-legacy-x86");
 });
+
+
+test("$targetDescription returns readable description", () => {
+	assert.equal(TARGET_METADATA_MAP[TargetDevice.IosIshX86].description.length > 5, true);
+});

@@ -19,6 +19,7 @@ import packageManager from "./packageManager.js";
 import packagerType from "./packagerType.js";
 import supportedTargets from "./supportedTargets.js";
 import targetBits from "./targetBits.js";
+import targetDescription from "./targetDescription.js";
 import targetPlatform from "./targetPlatform.js";
 
 export const nativeFunctions = [
@@ -38,6 +39,7 @@ export const nativeFunctions = [
 	packagerType,
 	supportedTargets,
 	targetBits,
+	targetDescription,
 	targetPlatform,
 ];
 
@@ -58,5 +60,6 @@ export {
 	packagerType,
 	supportedTargets,
 	targetBits,
+	targetDescription,
 	targetPlatform,
 };
