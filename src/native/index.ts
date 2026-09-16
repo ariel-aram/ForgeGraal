@@ -6,9 +6,11 @@
 import binaryArchitecture from "./binaryArchitecture.js";
 import binaryExtension from "./binaryExtension.js";
 import binaryFormat from "./binaryFormat.js";
+import binarySize from "./binarySize.js";
 import canPackageOnBun from "./canPackageOnBun.js";
 import compileBinary from "./compileBinary.js";
 import dbDriverCompat from "./dbDriverCompat.js";
+import generateSeaConfig from "./generateSeaConfig.js";
 import graalVersion from "./graalVersion.js";
 import is32BitOrLegacy from "./is32BitOrLegacy.js";
 import is32BitTarget from "./is32BitTarget.js";
@@ -20,18 +22,22 @@ import isTargetSupported from "./isTargetSupported.js";
 import listPlatforms from "./listPlatforms.js";
 import packageManager from "./packageManager.js";
 import packagerType from "./packagerType.js";
+import sha256Binary from "./sha256Binary.js";
 import supportedTargets from "./supportedTargets.js";
 import targetBits from "./targetBits.js";
 import targetDescription from "./targetDescription.js";
 import targetPlatform from "./targetPlatform.js";
+import verifyBinaryHeader from "./verifyBinaryHeader.js";
 
 export const nativeFunctions = [
 	binaryArchitecture,
 	binaryExtension,
 	binaryFormat,
+	binarySize,
 	canPackageOnBun,
 	compileBinary,
 	dbDriverCompat,
+	generateSeaConfig,
 	graalVersion,
 	is32BitOrLegacy,
 	is32BitTarget,
@@ -43,19 +49,23 @@ export const nativeFunctions = [
 	listPlatforms,
 	packageManager,
 	packagerType,
+	sha256Binary,
 	supportedTargets,
 	targetBits,
 	targetDescription,
 	targetPlatform,
+	verifyBinaryHeader,
 ];
 
 export {
 	binaryArchitecture,
 	binaryExtension,
 	binaryFormat,
+	binarySize,
 	canPackageOnBun,
 	compileBinary,
 	dbDriverCompat,
+	generateSeaConfig,
 	graalVersion,
 	is32BitOrLegacy as is32BitOrLegacyFn,
 	is32BitTarget,
@@ -67,8 +77,10 @@ export {
 	listPlatforms,
 	packageManager,
 	packagerType,
+	sha256Binary,
 	supportedTargets,
 	targetBits,
 	targetDescription,
 	targetPlatform,
+	verifyBinaryHeader,
 };
