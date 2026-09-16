@@ -29,3 +29,7 @@ Thumbs.db
 
 # Coverage reports
 coverage
+
+# Binary outputs in samples
+samples/**/bin/
+bin/
