@@ -4,7 +4,7 @@
  */
 
 import { ArgType, NativeFunction } from "@tryforge/forgescript";
-import { TARGET_METADATA_MAP, TargetDevice } from "../structures/index.js";
+import { TargetDevice } from "../structures/index.js";
 
 export default new NativeFunction({
 	name: "$listPlatforms",

@@ -29,7 +29,7 @@ export default new NativeFunction({
 			required: false,
 		},
 	],
-	execute(_ctx, [target, driver]) {
+	execute(_ctx, [_target, driver]) {
 		const drv = (driver || "sqlite").toLowerCase();
 		// Universal SQLite shim supports all targets
 		return this.success(drv.includes("sqlite") || drv.includes("forgedb"));
