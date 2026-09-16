@@ -33,3 +33,8 @@ coverage
 # Binary outputs in samples
 samples/**/bin/
 bin/
+
+# ForgeGraal build output and runtime data
+forgegraal-out/
+*.forgegraal/
+.forgegraal-cache/

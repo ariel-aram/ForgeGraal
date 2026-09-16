@@ -1,165 +1,204 @@
 #!/usr/bin/env node
-/*
- * SPDX-License-Identifier: LGPL-3.0-or-later
- * ForgeGraal Command-Line Interface
- */
-
-import { BinaryPackager } from "./compiler/BinaryPackager.js";
+import { parseArgs } from "node:util";
+import { BinaryInspector } from "./compiler/BinaryInspector";
+import { BinaryPackager, type BuildStrategy } from "./compiler/BinaryPackager";
+import { PolicyEnforcer } from "./compiler/PolicyEnforcer";
 import {
-	type PackageManager,
-	PolicyEnforcer,
-} from "./compiler/PolicyEnforcer.js";
+	FORGEDB_DRIVERS,
+	type ForgeDBDriver,
+	ForgeDBIntegration,
+} from "./integrations/ForgeDBIntegration";
 import {
+	ALL_TARGETS,
+	getTargetMetadata,
 	TARGET_METADATA_MAP,
-	type TargetDevice,
-} from "./structures/TargetDevice.js";
+} from "./structures/TargetDevice";
 
-const ARGS = process.argv.slice(2);
+const VERSION: string = require("../package.json").version;
 
-function printHelp(): void {
-	console.log(`
-ForgeGraal CLI - Standalone Binary Compiler for ForgeScript Bots
+const HELP = `ForgeGraal ${VERSION} - standalone executables for ForgeScript bots
 
 Usage:
-  forgegraal compile <entrypoint> --target <target> [options]
-  forgegraal targets [--pm <pm>]
-  forgegraal info <target>
+  forgegraal compile <entrypoint.js> --target <target> [options]
+  forgegraal targets [--pm <package manager>]
+  forgegraal info <target> [--db <driver>]
+  forgegraal inspect <file>
   forgegraal version
 
-Commands:
-  compile <file>    Compile a bot into a standalone binary
-  targets           List supported target devices
-  info <target>     Display architecture details for a target
-  version           Print ForgeGraal version
+Compile options:
+  -t, --target <name>        Target device (see 'forgegraal targets')
+  -o, --output <path>        Output file (sea) or directory (portable)
+  -s, --strategy <name>      auto (default), sea or portable
+      --pm <name>            Package manager override (bun, pnpm, npm, yarn)
+      --node-binary <path>   Node.js runtime for the target (required for iSH, x86, FreeBSD, Windows 7/Vista SEA builds)
+      --node-version <ver>   Official Node.js version to download (e.g. 22 or 22.11.0)
+      --offline              Never download runtimes
+      --include-dev          Bundle devDependencies too
+      --include-env          Bundle .env files (they usually contain your bot token)
+      --allow-native-mismatch  Bundle native addons built for another platform
+  -h, --help                 Show this help
+`;
 
-Options:
-  --target <name>   Target architecture (e.g. ios-ish-x86, win-legacy-x86, win-modern-x64)
-  --output <path>   Destination binary output path
-  --pm <name>       Package manager override (bun, pnpm, npm, yarn)
-  --help            Show this help dialog
-`);
-}
-
-async function main(): Promise<void> {
-	if (ARGS.length === 0 || ARGS.includes("--help") || ARGS.includes("-h")) {
-		printHelp();
-		return;
-	}
-
-	const command = ARGS[0];
-
-	if (command === "version") {
-		console.log("ForgeGraal v1.0.0");
-		return;
-	}
-
-	if (command === "targets") {
-		let pm = PolicyEnforcer.detectPackageManager();
-		const pmIdx = ARGS.indexOf("--pm");
-		if (pmIdx !== -1 && ARGS[pmIdx + 1]) {
-			pm = ARGS[pmIdx + 1].toLowerCase() as PackageManager;
-		}
-
-		console.log(`Supported Compilation Targets for [${pm.toUpperCase()}]:`);
-		const allowed = PolicyEnforcer.getAllowedTargets(pm);
-		for (const t of allowed) {
-			const m = TARGET_METADATA_MAP[t];
-			const tag = m.is32BitOrLegacy ? "[32-Bit/Legacy]" : "[Modern 64-Bit]";
-			console.log(`  - ${t.padEnd(20)} ${tag.padEnd(16)} ${m.name}`);
-		}
-		if (pm === "bun") {
-			console.log(
-				"\nNotice: Bun bots are restricted to 32-bit iSH and legacy Windows targets.\n" +
-					"To build modern 64-bit targets, use NPM, PNPM, or Yarn.",
-			);
-		}
-		return;
-	}
-
-	if (command === "info") {
-		const targetName = ARGS[1];
-		if (!targetName) {
-			console.error(
-				"Error: Please provide a target name (e.g. forgegraal info ios-ish-x86)",
-			);
-			process.exit(1);
-		}
-		const meta = TARGET_METADATA_MAP[targetName as TargetDevice];
-		if (!meta) {
-			console.error(`Error: Unknown target '${targetName}'`);
-			process.exit(1);
-		}
-		console.log(`Target Information: ${meta.name}`);
-		console.log(`  ID            : ${meta.id}`);
-		console.log(`  Architecture  : ${meta.arch}`);
-		console.log(`  Bitness       : ${meta.bits}-bit`);
-		console.log(`  OS Subsystem  : ${meta.os}`);
-		console.log(`  Binary Format : ${meta.binaryFormat.toUpperCase()}`);
-		console.log(`  32-Bit/Legacy : ${meta.is32BitOrLegacy ? "YES" : "NO"}`);
-		console.log(`  Description   : ${meta.description}`);
-		return;
-	}
-
-	if (command === "compile" || command === "build") {
-		const entrypoint = ARGS[1];
-		if (!entrypoint || entrypoint.startsWith("--")) {
-			console.error("Error: Please provide the bot entrypoint file path.");
-			process.exit(1);
-		}
-
-		const targetIdx = ARGS.indexOf("--target");
-		if (targetIdx === -1 || !ARGS[targetIdx + 1]) {
-			console.error("Error: Please specify target device with --target <name>");
-			process.exit(1);
-		}
-		const target = ARGS[targetIdx + 1];
-
-		let output: string | undefined;
-		const outIdx = ARGS.indexOf("--output");
-		if (outIdx !== -1 && ARGS[outIdx + 1]) {
-			output = ARGS[outIdx + 1];
-		}
-
-		let pm: PackageManager | undefined;
-		const pmIdx = ARGS.indexOf("--pm");
-		if (pmIdx !== -1 && ARGS[pmIdx + 1]) {
-			pm = ARGS[pmIdx + 1].toLowerCase() as PackageManager;
-		}
-
-		try {
-			console.log(
-				`[ForgeGraal] Compiling '${entrypoint}' for target [${target}]...`,
-			);
-			const res = await BinaryPackager.compile({
-				entrypoint,
-				target,
-				output,
-				packageManager: pm,
-			});
-			console.log(
-				`[ForgeGraal] Build completed successfully in ${res.durationMs}ms:`,
-			);
-			console.log(`  Binary Output : ${res.outputPath}`);
-			console.log(`  Subsystem     : ${res.subsystemUsed}`);
-			console.log(`  Binary Size   : ${(res.sizeBytes / 1024).toFixed(2)} KB`);
-			console.log(
-				`  Target Arch   : ${res.metadata.bits}-bit ${res.metadata.arch}`,
-			);
-		} catch (err: unknown) {
-			const msg = err instanceof Error ? err.message : String(err);
-			console.error(`\n[ForgeGraal Build Error]:\n${msg}\n`);
-			process.exit(1);
-		}
-		return;
-	}
-
-	console.error(
-		`Unknown command '${command}'. Run 'forgegraal --help' for usage.`,
-	);
+function fail(message: string): never {
+	console.error(`Error: ${message}`);
 	process.exit(1);
 }
 
-main().catch((err) => {
-	console.error(err);
+async function main(): Promise<void> {
+	let parsed: ReturnType<typeof parse>;
+	try {
+		parsed = parse();
+	} catch (err) {
+		fail(err instanceof Error ? err.message : String(err));
+	}
+	const { values, positionals } = parsed;
+	const [command, arg] = positionals;
+
+	if (values.help || !command || command === "help") {
+		console.log(HELP);
+		return;
+	}
+
+	switch (command) {
+		case "version":
+			console.log(`forgegraal ${VERSION}`);
+			return;
+
+		case "targets": {
+			const pm = PolicyEnforcer.resolvePackageManager(values.pm);
+			console.log(`Targets available for ${pm}:`);
+			for (const target of PolicyEnforcer.getAllowedTargets(pm)) {
+				const meta = TARGET_METADATA_MAP[target];
+				const tag = meta.is32BitOrLegacy
+					? "[32-bit/legacy]"
+					: "[modern 64-bit]";
+				const runtime = meta.officialNodeFile
+					? "sea"
+					: "portable / --node-binary";
+				console.log(
+					`  ${target.padEnd(20)} ${tag.padEnd(16)} ${meta.name.padEnd(32)} ${runtime}`,
+				);
+			}
+			if (pm === "bun") {
+				console.log(
+					"\nBun projects: modern 64-bit targets are built with 'bun build --compile'; ForgeGraal covers 32-bit and legacy Windows.",
+				);
+			}
+			return;
+		}
+
+		case "info": {
+			const meta = getTargetMetadata(arg);
+			if (!meta)
+				fail(
+					`Unknown target '${arg ?? ""}'. Supported: ${ALL_TARGETS.join(", ")}`,
+				);
+			console.log(`${meta.name}`);
+			console.log(`  ID             : ${meta.id}`);
+			console.log(`  Architecture   : ${meta.arch} (${meta.bits}-bit)`);
+			console.log(`  OS             : ${meta.os}`);
+			console.log(`  Binary format  : ${meta.binaryFormat}`);
+			console.log(`  32-bit/legacy  : ${meta.is32BitOrLegacy ? "yes" : "no"}`);
+			console.log(`  Official Node  : ${meta.officialNodeFile ?? "none"}`);
+			console.log(`  Runtime        : ${meta.runtimeHint}`);
+			console.log(`  Description    : ${meta.description}`);
+			if (values.db) {
+				const driver = ForgeDBIntegration.parseDriver(values.db);
+				if (!driver)
+					fail(
+						`Unknown ForgeDB driver '${values.db}'. Supported: ${Object.keys(FORGEDB_DRIVERS).join(", ")}`,
+					);
+				const res = ForgeDBIntegration.checkDriver(
+					driver as ForgeDBDriver,
+					meta.id,
+				);
+				console.log(
+					`  ForgeDB ${driver.padEnd(7)}: ${res.compatible ? "compatible" : "incompatible"} (${res.reason})`,
+				);
+			}
+			return;
+		}
+
+		case "inspect": {
+			if (!arg) fail("Please provide a file to inspect");
+			const info = BinaryInspector.inspect(arg);
+			if (!info) fail(`'${arg}' is not an ELF, PE or Mach-O binary`);
+			console.log(JSON.stringify(info, null, 2));
+			const fits = ALL_TARGETS.filter((t) =>
+				BinaryInspector.matchesTarget(info, t),
+			);
+			console.log(
+				`Runs on: ${fits.length ? fits.join(", ") : "no known target"}`,
+			);
+			return;
+		}
+
+		case "compile":
+		case "build": {
+			if (!arg) fail("Please provide the bot entrypoint (built .js file)");
+			if (!values.target)
+				fail("Please specify the target with --target <name>");
+
+			const result = await BinaryPackager.compile({
+				entrypoint: arg,
+				target: values.target,
+				output: values.output,
+				strategy: values.strategy as BuildStrategy | undefined,
+				packageManager: values.pm,
+				nodeBinary: values["node-binary"],
+				nodeVersion: values["node-version"],
+				offline: values.offline,
+				includeDev: values["include-dev"],
+				includeEnv: values["include-env"],
+				allowNativeMismatch: values["allow-native-mismatch"],
+				onLog: (msg) => console.log(`[ForgeGraal] ${msg}`),
+			});
+
+			for (const warning of result.warnings)
+				console.warn(`[ForgeGraal] warning: ${warning}`);
+			console.log(
+				`[ForgeGraal] Built ${result.metadata.name} in ${result.durationMs}ms`,
+			);
+			console.log(`  Strategy : ${result.strategy}`);
+			console.log(`  Output   : ${result.outputPath}`);
+			console.log(`  Run      : ${result.launcherPath}`);
+			console.log(
+				`  Runtime  : ${result.runtimeVersion ? `Node.js ${result.runtimeVersion}` : "system Node.js"}`,
+			);
+			console.log(
+				`  Size     : ${(result.sizeBytes / 1048576).toFixed(2)} MiB`,
+			);
+			return;
+		}
+
+		default:
+			fail(`Unknown command '${command}'. Run 'forgegraal --help' for usage.`);
+	}
+}
+
+function parse() {
+	return parseArgs({
+		allowPositionals: true,
+		options: {
+			target: { type: "string", short: "t" },
+			output: { type: "string", short: "o" },
+			strategy: { type: "string", short: "s" },
+			pm: { type: "string" },
+			db: { type: "string" },
+			"node-binary": { type: "string" },
+			"node-version": { type: "string" },
+			offline: { type: "boolean" },
+			"include-dev": { type: "boolean" },
+			"include-env": { type: "boolean" },
+			"allow-native-mismatch": { type: "boolean" },
+			help: { type: "boolean", short: "h" },
+		},
+	});
+}
+
+main().catch((err: unknown) => {
+	console.error(
+		`\n[ForgeGraal] ${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`,
+	);
 	process.exit(1);
 });
