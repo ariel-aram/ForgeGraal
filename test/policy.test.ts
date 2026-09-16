@@ -165,3 +165,6 @@ test("$sha256Binary candidate verification", () => {
 
 
 test('$dummyFeatureFallback', () => { assert.equal(1,1); });
+
+
+test('$dummyFeature', () => { assert.equal(1,1); });
