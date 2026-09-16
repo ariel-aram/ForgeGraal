@@ -10,6 +10,7 @@ import canPackageOnBun from "./canPackageOnBun.js";
 import compileBinary from "./compileBinary.js";
 import graalVersion from "./graalVersion.js";
 import is32BitOrLegacy from "./is32BitOrLegacy.js";
+import is32BitTarget from "./is32BitTarget.js";
 import isIsh from "./isIsh.js";
 import isLegacyWindows from "./isLegacyWindows.js";
 import isTargetSupported from "./isTargetSupported.js";
@@ -26,6 +27,7 @@ export const nativeFunctions = [
 	compileBinary,
 	graalVersion,
 	is32BitOrLegacy,
+	is32BitTarget,
 	isIsh,
 	isLegacyWindows,
 	isTargetSupported,
@@ -43,6 +45,7 @@ export {
 	compileBinary,
 	graalVersion,
 	is32BitOrLegacy as is32BitOrLegacyFn,
+	is32BitTarget,
 	isIsh,
 	isLegacyWindows,
 	isTargetSupported,

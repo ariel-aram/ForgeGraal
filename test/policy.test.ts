@@ -100,3 +100,10 @@ test("$canPackageOnBun returns true for 32-bit and legacy Windows", () => {
 	assert.equal(TARGET_METADATA_MAP[TargetDevice.WinLegacyX86].is32BitOrLegacy, true);
 	assert.equal(TARGET_METADATA_MAP[TargetDevice.WinModernX64].is32BitOrLegacy, false);
 });
+
+
+test("$is32BitTarget correctly classifies bitness", () => {
+	assert.equal(TARGET_METADATA_MAP[TargetDevice.IosIshX86].bits === 32, true);
+	assert.equal(TARGET_METADATA_MAP[TargetDevice.LinuxX86].bits === 32, true);
+	assert.equal(TARGET_METADATA_MAP[TargetDevice.LinuxModernX64].bits === 64, true);
+});
