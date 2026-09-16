@@ -16,6 +16,7 @@ import isIsh from "./isIsh.js";
 import isLegacyWindows from "./isLegacyWindows.js";
 import isTargetSupported from "./isTargetSupported.js";
 import packageManager from "./packageManager.js";
+import packagerType from "./packagerType.js";
 import supportedTargets from "./supportedTargets.js";
 import targetBits from "./targetBits.js";
 import targetPlatform from "./targetPlatform.js";
@@ -34,6 +35,7 @@ export const nativeFunctions = [
 	isLegacyWindows,
 	isTargetSupported,
 	packageManager,
+	packagerType,
 	supportedTargets,
 	targetBits,
 	targetPlatform,
@@ -53,6 +55,7 @@ export {
 	isLegacyWindows,
 	isTargetSupported,
 	packageManager,
+	packagerType,
 	supportedTargets,
 	targetBits,
 	targetPlatform,

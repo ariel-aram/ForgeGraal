@@ -113,3 +113,9 @@ test("$is64BitTarget accurately detects 64-bit platforms", () => {
 	assert.equal(TARGET_METADATA_MAP[TargetDevice.WinModernX64].bits === 64, true);
 	assert.equal(TARGET_METADATA_MAP[TargetDevice.DarwinArm64].bits === 64, true);
 });
+
+
+test("$packagerType returns correct packager engine", () => {
+	assert.equal(TargetDevice.IosIshX86, "ios-ish-x86");
+	assert.equal(TargetDevice.WinLegacyX86, "win-legacy-x86");
+});
