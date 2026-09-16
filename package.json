@@ -1,0 +1,40 @@
+{
+  "name": "forgegraal",
+  "version": "1.0.0",
+  "description": "ForgeScript extension to turn bots into standalone binaries for 32-bit iSH, legacy Windows, and modern devices",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "check": "biome check src",
+    "format": "biome format --write src",
+    "test": "bun test"
+  },
+  "keywords": [
+    "forgescript",
+    "graal",
+    "binary",
+    "ish",
+    "windows7",
+    "32bit"
+  ],
+  "author": "Ariel Aram",
+  "license": "ISC",
+  "devEngines": {
+    "packageManager": {
+      "name": "pnpm",
+      "version": "12.4.2",
+      "onFail": "download"
+    }
+  },
+  "packageManager": "pnpm@12.4.2",
+  "type": "module",
+  "dependencies": {
+    "@biomejs/biome": "^2.5.13",
+    "@tryforge/forgescript": "^2.7.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.9",
+    "typescript": "^5.8.2"
+  }
+}
