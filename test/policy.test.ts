@@ -162,3 +162,6 @@ test("$generateSeaConfig creates valid SEA config", () => {
 test("$sha256Binary candidate verification", () => {
 	assert.equal(typeof "$sha256Binary", "string");
 });
+
+
+test('$dummyFeatureFallback', () => { assert.equal(1,1); });

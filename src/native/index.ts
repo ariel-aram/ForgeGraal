@@ -10,6 +10,7 @@ import binarySize from "./binarySize.js";
 import canPackageOnBun from "./canPackageOnBun.js";
 import compileBinary from "./compileBinary.js";
 import dbDriverCompat from "./dbDriverCompat.js";
+import dummyFeatureFallback from "./dummyFeatureFallback.js";
 import generateSeaConfig from "./generateSeaConfig.js";
 import graalVersion from "./graalVersion.js";
 import is32BitOrLegacy from "./is32BitOrLegacy.js";
@@ -37,6 +38,7 @@ export const nativeFunctions = [
 	canPackageOnBun,
 	compileBinary,
 	dbDriverCompat,
+	dummyFeatureFallback,
 	generateSeaConfig,
 	graalVersion,
 	is32BitOrLegacy,
@@ -65,6 +67,7 @@ export {
 	canPackageOnBun,
 	compileBinary,
 	dbDriverCompat,
+	dummyFeatureFallback,
 	generateSeaConfig,
 	graalVersion,
 	is32BitOrLegacy as is32BitOrLegacyFn,
