@@ -124,3 +124,10 @@ test("$packagerType returns correct packager engine", () => {
 test("$targetDescription returns readable description", () => {
 	assert.equal(TARGET_METADATA_MAP[TargetDevice.IosIshX86].description.length > 5, true);
 });
+
+
+test("$isArmTarget detects arm architectures", () => {
+	assert.equal(TARGET_METADATA_MAP[TargetDevice.LinuxArmV7].arch, "armv7");
+	assert.equal(TARGET_METADATA_MAP[TargetDevice.DarwinArm64].arch, "arm64");
+	assert.equal(TARGET_METADATA_MAP[TargetDevice.LinuxX86].arch, "x86");
+});
