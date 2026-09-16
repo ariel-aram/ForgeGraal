@@ -4,6 +4,7 @@
  */
 
 import binaryArchitecture from "./binaryArchitecture.js";
+import binaryExtension from "./binaryExtension.js";
 import binaryFormat from "./binaryFormat.js";
 import compileBinary from "./compileBinary.js";
 import graalVersion from "./graalVersion.js";
@@ -14,9 +15,11 @@ import isTargetSupported from "./isTargetSupported.js";
 import packageManager from "./packageManager.js";
 import supportedTargets from "./supportedTargets.js";
 import targetBits from "./targetBits.js";
+import targetPlatform from "./targetPlatform.js";
 
 export const nativeFunctions = [
 	binaryArchitecture,
+	binaryExtension,
 	binaryFormat,
 	compileBinary,
 	graalVersion,
@@ -27,10 +30,12 @@ export const nativeFunctions = [
 	packageManager,
 	supportedTargets,
 	targetBits,
+	targetPlatform,
 ];
 
 export {
 	binaryArchitecture,
+	binaryExtension,
 	binaryFormat,
 	compileBinary,
 	graalVersion,
@@ -41,4 +46,5 @@ export {
 	packageManager,
 	supportedTargets,
 	targetBits,
+	targetPlatform,
 };

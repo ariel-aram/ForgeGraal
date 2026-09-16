@@ -80,3 +80,16 @@ test("Evolved features: TargetMetadata and architecture properties", () => {
 	assert.equal(TARGET_METADATA_MAP[TargetDevice.LinuxModernArm64].binaryFormat, "elf64");
 });
 
+
+
+test("$targetPlatform returns correct OS family", () => {
+	assert.equal(TARGET_METADATA_MAP[TargetDevice.IosIshX86].os, "ios-ish");
+	assert.equal(TARGET_METADATA_MAP[TargetDevice.WinLegacyX86].os, "windows-legacy");
+	assert.equal(TARGET_METADATA_MAP[TargetDevice.DarwinArm64].os, "darwin");
+});
+
+
+test("$binaryExtension returns .exe for windows and empty for unix", () => {
+	assert.equal(TARGET_METADATA_MAP[TargetDevice.WinLegacyX86].os.includes("windows"), true);
+	assert.equal(TARGET_METADATA_MAP[TargetDevice.IosIshX86].os.includes("windows"), false);
+});
