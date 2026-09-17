@@ -4,6 +4,7 @@ import { BinaryInspector } from "./compiler/BinaryInspector";
 import { BinaryPackager, type BuildStrategy } from "./compiler/BinaryPackager";
 import { PolicyEnforcer } from "./compiler/PolicyEnforcer";
 import { RuntimeRegistry } from "./compiler/RuntimeRegistry";
+import { ExtensionRegistry } from "./integrations/ExtensionRegistry";
 import {
 	FORGEDB_DRIVERS,
 	type ForgeDBDriver,
@@ -24,6 +25,7 @@ Usage:
   forgegraal compile <entrypoint.js> --target <target> [options]
   forgegraal targets [--pm <package manager>]
   forgegraal info <target> [--db <driver>]
+  forgegraal extensions
   forgegraal inspect <file>
   forgegraal runtimes list [--target <target>]
   forgegraal runtimes add <target> <version> <url> --sha256 <hex> [--notes <text>] [--global]
@@ -94,6 +96,19 @@ async function main(): Promise<void> {
 				console.log(
 					"\nBun projects: modern 64-bit targets are built with 'bun build --compile'; ForgeGraal covers 32-bit and legacy Windows.",
 				);
+			}
+			return;
+		}
+
+		case "extensions": {
+			console.log("ForgeScript Extensions & Compatibility Matrix:");
+			for (const ext of ExtensionRegistry.listExtensions()) {
+				console.log(`\n  ${ext.name.padEnd(16)} [${ext.package}]`);
+				console.log(`    Description: ${ext.description}`);
+				console.log(
+					`    Legacy safe: ${ext.legacySafe ? "yes (polyfilled/pure-js)" : "no"}`,
+				);
+				console.log(`    Notes      : ${ext.notes}`);
 			}
 			return;
 		}
