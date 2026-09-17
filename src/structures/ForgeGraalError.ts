@@ -70,12 +70,13 @@ export class NativeAddonMismatchError extends ForgeGraalError {
 	public override readonly name: string = "NativeAddonMismatchError";
 	public readonly addons: readonly string[];
 
-	constructor(target: string, addons: readonly string[]) {
+	constructor(target: string, addons: readonly string[], hint?: string) {
 		super(
 			`The project contains native addons that cannot run on '${target}':\n` +
 				addons.map((x) => `  - ${x}`).join("\n") +
 				"\nReinstall them for the target platform (e.g. rebuild on the target device), " +
-				"switch to a pure JavaScript driver, or pass --allow-native-mismatch to bundle anyway.",
+				"switch to a pure JavaScript driver, or pass --allow-native-mismatch to bundle anyway." +
+				(hint ? `\n${hint}` : ""),
 		);
 		this.addons = addons;
 	}

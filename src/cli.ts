@@ -3,6 +3,7 @@ import { parseArgs } from "node:util";
 import { BinaryInspector } from "./compiler/BinaryInspector";
 import { BinaryPackager, type BuildStrategy } from "./compiler/BinaryPackager";
 import { PolicyEnforcer } from "./compiler/PolicyEnforcer";
+import { RuntimeRegistry } from "./compiler/RuntimeRegistry";
 import {
 	FORGEDB_DRIVERS,
 	type ForgeDBDriver,
@@ -11,6 +12,7 @@ import {
 import {
 	ALL_TARGETS,
 	getTargetMetadata,
+	parseTargetDevice,
 	TARGET_METADATA_MAP,
 } from "./structures/TargetDevice";
 
@@ -23,6 +25,9 @@ Usage:
   forgegraal targets [--pm <package manager>]
   forgegraal info <target> [--db <driver>]
   forgegraal inspect <file>
+  forgegraal runtimes list [--target <target>]
+  forgegraal runtimes add <target> <version> <url> --sha256 <hex> [--notes <text>] [--global]
+  forgegraal runtimes remove <target> <version> [--global]
   forgegraal version
 
 Compile options:
@@ -37,6 +42,12 @@ Compile options:
       --include-env          Bundle .env files (they usually contain your bot token)
       --allow-native-mismatch  Bundle native addons built for another platform
   -h, --help                 Show this help
+
+Targets with no official Node.js build (Windows 7/Vista, 32-bit Linux, FreeBSD, iSH) need a
+runtime supplied once, either with --node-binary each build or registered with
+'forgegraal runtimes add' (checksum-pinned, tried automatically after that). ForgeGraal ships
+no entries of its own — it has no way to vouch for a third-party binary's authenticity, so
+you register the URL and its exact SHA-256 yourself.
 `;
 
 function fail(message: string): never {
@@ -115,6 +126,12 @@ async function main(): Promise<void> {
 				console.log(
 					`  ForgeDB ${driver.padEnd(7)}: ${res.compatible ? "compatible" : "incompatible"} (${res.reason})`,
 				);
+				if (!res.compatible) {
+					const alt = ForgeDBIntegration.suggestAlternative(
+						driver as ForgeDBDriver,
+					);
+					if (alt) console.log(`  Suggested driver: ${alt}`);
+				}
 			}
 			return;
 		}
@@ -130,6 +147,84 @@ async function main(): Promise<void> {
 			console.log(
 				`Runs on: ${fits.length ? fits.join(", ") : "no known target"}`,
 			);
+			return;
+		}
+
+		case "runtimes": {
+			const sub = positionals[1];
+			const rest = positionals.slice(2);
+
+			if (!sub || sub === "list") {
+				const target = rest[0] ? parseTargetDevice(rest[0]) : null;
+				if (rest[0] && !target) fail(`Unknown target '${rest[0]}'`);
+				const entries = target
+					? RuntimeRegistry.find(target)
+					: RuntimeRegistry.list();
+				if (!entries.length) {
+					console.log(
+						"No community runtimes registered. Add one with 'forgegraal runtimes add'.",
+					);
+					return;
+				}
+				for (const e of entries) {
+					console.log(
+						`${e.target.padEnd(20)} ${e.version.padEnd(12)} ${e.url}`,
+					);
+					console.log(
+						`  sha256: ${e.sha256}${e.notes ? `\n  notes : ${e.notes}` : ""}`,
+					);
+				}
+				return;
+			}
+
+			if (sub === "add") {
+				const [targetInput, version, url] = rest;
+				if (!targetInput || !version || !url) {
+					fail(
+						"Usage: forgegraal runtimes add <target> <version> <url> --sha256 <hex> [--notes <text>] [--global]",
+					);
+				}
+				const target = parseTargetDevice(targetInput);
+				if (!target) fail(`Unknown target '${targetInput}'`);
+				if (!values.sha256) {
+					fail(
+						"--sha256 <hex> is required: ForgeGraal never downloads a community runtime without a pinned checksum",
+					);
+				}
+				try {
+					RuntimeRegistry.add(
+						{
+							target,
+							version,
+							url,
+							sha256: values.sha256,
+							notes: values.notes,
+						},
+						{ global: values.global },
+					);
+				} catch (err) {
+					fail(err instanceof Error ? err.message : String(err));
+				}
+				console.log(
+					`Registered Node.js ${version} for ${target}${values.global ? " (global)" : " (project: .forgegraal/runtimes.json)"}.`,
+				);
+				return;
+			}
+
+			if (sub === "remove") {
+				const [target, version] = rest;
+				if (!target || !version)
+					fail(
+						"Usage: forgegraal runtimes remove <target> <version> [--global]",
+					);
+				const removed = RuntimeRegistry.remove(target, version, {
+					global: values.global,
+				});
+				console.log(removed ? "Removed." : "No matching entry found.");
+				return;
+			}
+
+			fail(`Unknown 'runtimes' subcommand '${sub}'. Use list, add or remove.`);
 			return;
 		}
 
@@ -191,6 +286,9 @@ function parse() {
 			"include-dev": { type: "boolean" },
 			"include-env": { type: "boolean" },
 			"allow-native-mismatch": { type: "boolean" },
+			sha256: { type: "string" },
+			notes: { type: "string" },
+			global: { type: "boolean" },
 			help: { type: "boolean", short: "h" },
 		},
 	});

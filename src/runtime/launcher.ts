@@ -121,6 +121,21 @@ function main() {
 		fail("This bot requires Node.js >= " + CONFIG.minNode + " but the runtime is " + process.version + ".");
 	}
 
+	// Node.js verifies TLS against its own bundled Mozilla CA snapshot by default, not the
+	// OS certificate store, so an outdated store (e.g. Windows 7 / Vista) normally isn't a
+	// problem. --use-system-ca / --use-openssl-ca opt back into the OS store; warn instead of
+	// failing outright, since the OS store may still be fine.
+	if (CONFIG.target.indexOf("legacy") !== -1) {
+		var nodeOptions = process.env.NODE_OPTIONS || "";
+		if (nodeOptions.indexOf("--use-system-ca") !== -1 || nodeOptions.indexOf("--use-openssl-ca") !== -1) {
+			process.stderr.write(
+				"[ForgeGraal] Warning: NODE_OPTIONS forces the OS certificate store, which is likely outdated on " +
+					"this platform and can fail TLS handshakes (e.g. to Discord). Unset --use-system-ca / " +
+					"--use-openssl-ca to use Node's bundled CA store instead.\\n",
+			);
+		}
+	}
+
 	var sea = getSea();
 	var baseDir = process.env.FORGEGRAAL_HOME
 		? path.resolve(process.env.FORGEGRAAL_HOME)
