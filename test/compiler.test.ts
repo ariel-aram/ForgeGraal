@@ -242,7 +242,7 @@ test("ProjectCollector bundles production dependencies with correct nesting", ()
 	);
 });
 
-test("ProjectCollector follows pnpm-style symlinked node_modules", () => {
+test("ProjectCollector follows pnpm-style symlinked node_modules", (t) => {
 	const root = mkdtempSync(join(tmpdir(), "forgegraal-pnpm-"));
 	write(
 		join(root, "package.json"),
@@ -254,16 +254,24 @@ test("ProjectCollector follows pnpm-style symlinked node_modules", () => {
 		dependencies: { c: "1" },
 	});
 	pkg(join(store, "c@1.0.0/node_modules/c"), "c", "1.0.0");
-	symlinkSync(
-		join(store, "c@1.0.0/node_modules/c"),
-		join(store, "a@1.0.0/node_modules/c"),
-		"dir",
-	);
-	symlinkSync(
-		join(store, "a@1.0.0/node_modules/a"),
-		join(root, "node_modules/a"),
-		"dir",
-	);
+	try {
+		symlinkSync(
+			join(store, "c@1.0.0/node_modules/c"),
+			join(store, "a@1.0.0/node_modules/c"),
+			"dir",
+		);
+		symlinkSync(
+			join(store, "a@1.0.0/node_modules/a"),
+			join(root, "node_modules/a"),
+			"dir",
+		);
+	} catch (e) {
+		if ((e as { code?: string })?.code === "EPERM") {
+			t.skip("Symlink creation requires elevated privileges on Windows");
+			return;
+		}
+		throw e;
+	}
 
 	const paths = ProjectCollector.collect({
 		entrypoint: join(root, "index.js"),
@@ -296,13 +304,21 @@ test("ProjectCollector rejects TypeScript entrypoints and missing dependencies",
 	);
 });
 
-test("resolveInside confines paths to the root", () => {
+test("resolveInside confines paths to the root", (t) => {
 	const root = createProject();
 	assert.equal(resolveInside(root, "src/index.js"), join(root, "src/index.js"));
 	assert.throws(() => resolveInside(root, "../outside"), PathOutsideRootError);
 	assert.throws(() => resolveInside(root, "/etc/passwd"), PathOutsideRootError);
-	symlinkSync(tmpdir(), join(root, "escape"), "dir");
-	assert.throws(() => resolveInside(root, "escape"), PathOutsideRootError);
+	try {
+		symlinkSync(tmpdir(), join(root, "escape"), "dir");
+		assert.throws(() => resolveInside(root, "escape"), PathOutsideRootError);
+	} catch (e) {
+		if ((e as { code?: string })?.code === "EPERM") {
+			t.skip("Symlink creation requires elevated privileges on Windows");
+			return;
+		}
+		throw e;
+	}
 });
 
 test("Portable bundles run with the host Node.js and keep the project layout", async () => {

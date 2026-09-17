@@ -2,10 +2,8 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
 	ALL_TARGETS,
-	BunTargetRestrictionError,
 	InvalidPackageManagerError,
 	InvalidTargetError,
-	is32BitOrLegacy,
 	parseTargetDevice,
 	type TargetDevice,
 } from "../structures";
@@ -83,15 +81,12 @@ export class PolicyEnforcer {
 	}
 
 	/**
-	 * Targets permitted for a package manager. Bun projects are limited to 32-bit and
-	 * legacy Windows targets because Bun natively compiles modern 64-bit executables.
+	 * Targets permitted for a package manager. All package managers now have full access
+	 * to legacy targets (XP, Vista, 7, iSH) and modern platforms.
 	 */
 	public static getAllowedTargets(
-		packageManager: PackageManager,
+		_packageManager: PackageManager,
 	): TargetDevice[] {
-		if (packageManager === "bun") {
-			return ALL_TARGETS.filter((target) => is32BitOrLegacy(target));
-		}
 		return [...ALL_TARGETS];
 	}
 
@@ -108,10 +103,6 @@ export class PolicyEnforcer {
 				String(packageManager),
 				PACKAGE_MANAGERS,
 			);
-		}
-
-		if (pm === "bun" && !is32BitOrLegacy(target)) {
-			throw new BunTargetRestrictionError(target);
 		}
 
 		return target;

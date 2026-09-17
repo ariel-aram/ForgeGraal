@@ -303,6 +303,27 @@ export class ProjectCollector {
 			const candidate = join(dir, "node_modules", name);
 			if (existsSync(join(candidate, "package.json")))
 				return realpathSync(candidate);
+			// Also check pnpm / yarn virtual store resolution
+			const pnpmCandidate = join(dir, "node_modules", ".pnpm");
+			if (existsSync(pnpmCandidate)) {
+				// Search inside virtual store
+				try {
+					const entries = readdirSync(pnpmCandidate);
+					for (const entry of entries) {
+						if (entry.startsWith(name.replace("/", "+"))) {
+							const targetPkg = join(
+								pnpmCandidate,
+								entry,
+								"node_modules",
+								name,
+							);
+							if (existsSync(join(targetPkg, "package.json"))) {
+								return realpathSync(targetPkg);
+							}
+						}
+					}
+				} catch {}
+			}
 			const parent = dirname(dir);
 			if (parent === dir) return null;
 			dir = parent;

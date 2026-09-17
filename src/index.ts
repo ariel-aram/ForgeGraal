@@ -3,6 +3,7 @@ import { type ForgeClient, ForgeExtension } from "@tryforge/forgescript";
 export * from "./compiler";
 export * from "./integrations";
 export * from "./runtime/launcher";
+export * from "./runtime/wasmPolyfills";
 export * from "./structures";
 
 export interface IForgeGraalOptions {

@@ -4,6 +4,7 @@
 
 export enum TargetDevice {
 	// 32-bit & legacy platforms (allowed for every package manager, including Bun)
+	WinXpX86 = "win-xp-x86",
 	IosIshX86 = "ios-ish-x86",
 	WinLegacyX86 = "win-legacy-x86",
 	WinLegacyX64 = "win-legacy-x64",
@@ -54,10 +55,27 @@ export interface TargetMetadata {
 
 const UNOFFICIAL_WIN_HINT =
 	"Official Node.js builds no longer run on Windows 7 / Vista. Supply a compatible runtime with --node-binary (for example a community Windows 7 build of Node.js >= 20.12).";
+const XP_WIN_HINT =
+	"Windows XP (NT 5.1/5.2) requires a backported runtime (e.g. One-Core-API patched Node or community XP builds). Supply with --node-binary.";
 
 export const TARGET_METADATA_MAP: Readonly<
 	Record<TargetDevice, Readonly<TargetMetadata>>
 > = {
+	[TargetDevice.WinXpX86]: {
+		id: TargetDevice.WinXpX86,
+		name: "Windows XP / Server 2003 (32-bit x86)",
+		description:
+			"Win32 console executable for NT 5.1 / 5.2 compatible with Windows XP",
+		arch: "x86",
+		bits: 32,
+		os: "windows-legacy",
+		is32BitOrLegacy: true,
+		binaryFormat: "pe32",
+		nodePlatform: "win32",
+		nodeArch: "ia32",
+		officialNodeFile: null,
+		runtimeHint: XP_WIN_HINT,
+	},
 	[TargetDevice.IosIshX86]: {
 		id: TargetDevice.IosIshX86,
 		name: "iOS iSH (32-bit x86)",

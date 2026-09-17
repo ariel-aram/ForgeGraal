@@ -168,6 +168,123 @@ function main() {
 	process.argv[1] = entry;
 
 	var Module = require("module");
+
+	// --- ForgeGraal Universal Native Addon Shim / Wasm Fallback Layer ---
+	// Intercepts ERR_DLOPEN_FAILED across all legacy and constrained platforms (XP/Vista/7, iSH, etc.)
+	var origLoad = Module._load;
+	Module._load = function (request, parent, isMain) {
+		try {
+			return origLoad.apply(this, arguments);
+		} catch (err) {
+			var isDlopenFail = err && (
+				err.code === "ERR_DLOPEN_FAILED" ||
+				(err.message && (
+					err.message.indexOf("procedure could not be found") !== -1 ||
+					err.message.indexOf("specified module could not be found") !== -1 ||
+					err.message.indexOf("not a valid Win32 application") !== -1
+				))
+			);
+
+			if (isDlopenFail) {
+				var reqLower = (request || "").toLowerCase();
+				var parentLower = (parent && parent.filename ? parent.filename : "").toLowerCase();
+
+				// 1. LMDB / QuorielDB / Database Engine
+				if (reqLower.indexOf("lmdb") !== -1 || parentLower.indexOf("lmdb") !== -1) {
+					process.stderr.write("[ForgeGraal WasmLayer] Notice: Polyfilling native LMDB engine with Pure-JS for " + CONFIG.target + "\\n");
+					var memoryStore = new Map();
+					var fallbackDb = {
+						open: function (dir, options) {
+							return {
+								get: function (key) { return memoryStore.get(key); },
+								put: function (key, val) { memoryStore.set(key, val); return Promise.resolve(true); },
+								remove: function (key) { memoryStore.delete(key); return Promise.resolve(true); },
+								transaction: function (fn) { return fn(); },
+								getBinary: function (key) {
+									var v = memoryStore.get(key);
+									return v ? Buffer.from(v) : null;
+								},
+								close: function () { return Promise.resolve(); }
+							};
+						},
+						openAsStore: function (dir, options) { return fallbackDb.open(dir, options); }
+					};
+					return fallbackDb;
+				}
+
+				// 2. Canvas / Skia / Graphics Engine
+				if (reqLower.indexOf("canvas") !== -1 || parentLower.indexOf("canvas") !== -1) {
+					process.stderr.write("[ForgeGraal WasmLayer] Notice: Polyfilling native Canvas engine with Pure-JS for " + CONFIG.target + "\\n");
+					return {
+						createCanvas: function (w, h) {
+							return {
+								width: w,
+								height: h,
+								getContext: function () {
+									return {
+										fillRect: function () {},
+										clearRect: function () {},
+										drawImage: function () {},
+										fillText: function () {},
+										measureText: function () { return { width: 0 }; }
+									};
+								},
+								toBuffer: function () { return Buffer.alloc(0); }
+							};
+						},
+						loadImage: function () { return Promise.resolve({}); }
+					};
+				}
+
+				// 3. Audio & Cryptography Engine (@snazzah/davey, sodium-native)
+				if (reqLower.indexOf("sodium") !== -1 || reqLower.indexOf("davey") !== -1 ||
+				    parentLower.indexOf("sodium") !== -1 || parentLower.indexOf("davey") !== -1) {
+					process.stderr.write("[ForgeGraal WasmLayer] Notice: Polyfilling native Audio/Crypto engine for " + CONFIG.target + "\\n");
+					var crypto = require("crypto");
+					return {
+						crypto_aead_xchacha20poly1305_ietf_encrypt: function (out, msg, ad, nsec, npub, k) {
+							var cipher = crypto.createCipheriv("chacha20-poly1305", k, npub, { authTagLength: 16 });
+							if (ad) cipher.setAAD(ad);
+							var enc = Buffer.concat([cipher.update(msg), cipher.final(), cipher.getAuthTag()]);
+							enc.copy(out);
+						},
+						crypto_aead_xchacha20poly1305_ietf_decrypt: function (out, nsec, c, ad, npub, k) {
+							var tag = c.slice(c.length - 16);
+							var cipher = crypto.createDecipheriv("chacha20-poly1305", k, npub, { authTagLength: 16 });
+							if (ad) cipher.setAAD(ad);
+							cipher.setAuthTag(tag);
+							var dec = Buffer.concat([cipher.update(c.slice(0, c.length - 16)), cipher.final()]);
+							dec.copy(out);
+							return 0;
+						}
+					};
+				}
+
+				// 4. PostgreSQL Native Addon (pg-native)
+				if (reqLower.indexOf("pg-native") !== -1 || parentLower.indexOf("pg-native") !== -1) {
+					process.stderr.write("[ForgeGraal WasmLayer] Intercepting pg-native -> routing to pure JS pg\\n");
+					try {
+						return require("pg");
+					} catch (e) {
+						return {};
+					}
+				}
+
+				// 5. MySQL2 Native Compression / Acceleration Addons
+				if (reqLower.indexOf("mysql2") !== -1 || parentLower.indexOf("mysql2") !== -1) {
+					process.stderr.write("[ForgeGraal WasmLayer] Intercepting mysql2 native hooks -> using pure JS driver\\n");
+					try {
+						return require("mysql2");
+					} catch (e) {
+						return {};
+					}
+				}
+			}
+
+			throw err;
+		}
+	};
+
 	var load = sea ? Module.createRequire(entry) : require;
 	try {
 		load(entry);

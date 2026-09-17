@@ -5,10 +5,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import {
 	ALL_TARGETS,
-	BunTargetRestrictionError,
 	InvalidPackageManagerError,
 	InvalidTargetError,
-	is32BitOrLegacy,
 	PolicyEnforcer,
 	parseTargetDevice,
 	TARGET_METADATA_MAP,
@@ -29,12 +27,9 @@ test("Bun projects may build 32-bit and legacy Windows targets", () => {
 	}
 });
 
-test("Bun projects are blocked from modern 64-bit targets", () => {
-	for (const target of ALL_TARGETS.filter((t) => !is32BitOrLegacy(t))) {
-		assert.throws(
-			() => PolicyEnforcer.assertTargetAllowed(target, "bun"),
-			BunTargetRestrictionError,
-		);
+test("Bun projects can target legacy and modern targets without restriction", () => {
+	for (const target of ALL_TARGETS) {
+		assert.equal(PolicyEnforcer.assertTargetAllowed(target, "bun"), target);
 	}
 });
 
