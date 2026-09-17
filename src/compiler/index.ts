@@ -5,4 +5,5 @@ export * from "./NodeRuntime";
 export * from "./PolicyEnforcer";
 export * from "./PortablePackager";
 export * from "./ProjectCollector";
+export * from "./RuntimeRegistry";
 export * from "./SeaPackager";

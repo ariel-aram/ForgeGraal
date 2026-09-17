@@ -42,8 +42,36 @@ Yarn Plug'n'Play is not supported; use `nodeLinker: node-modules`.
 | modern 64-bit        | yes              | macOS executables must be signed (`codesign --sign -`) on a Mac        |
 
 Native addons (e.g. `sqlite3` used by ForgeDB's sqlite driver) are checked against the target and the
-build fails if none fits; install them for the target platform or use a pure JavaScript ForgeDB driver
-(mongodb, mysql, postgres).
+build fails if none fits; install them for the target platform, or switch to a pure JavaScript ForgeDB
+driver (`mongodb`, `mysql`, `postgres`) — `forgegraal info <target> --db <driver>` and the error message
+both suggest one.
+
+### TLS on legacy Windows
+
+Node.js validates TLS against its own bundled Mozilla CA snapshot by default — not the OS certificate
+store — so an outdated store on Windows 7 / Vista is normally *not* the reason a bot can't reach Discord.
+That only changes if `NODE_OPTIONS` forces `--use-system-ca` / `--use-openssl-ca`; ForgeGraal's launcher
+warns if it detects that on a legacy Windows target. If TLS still fails there, look at the runtime's own
+OpenSSL build and the OS's outbound TLS 1.2/1.3 support, not the certificate store.
+
+### Community runtimes (`forgegraal runtimes`)
+
+Targets with no official Node.js build (Windows 7 / Vista, `linux-x86`, `freebsd-x86`, iSH) need a runtime
+supplied by you. ForgeGraal ships **no** entries of its own — it has no way to vouch for a third-party
+binary's authenticity ahead of time — so you register the URL once, pinned to its exact SHA-256, and
+ForgeGraal re-verifies the checksum on every download after that:
+
+```sh
+forgegraal runtimes add win-legacy-x86 20.18.1 https://example.com/node-v20.18.1-win7-x86.zip \
+  --sha256 <64-hex-digest> --notes "community Win7 build" [--global]
+forgegraal runtimes list
+forgegraal runtimes remove win-legacy-x86 20.18.1
+```
+
+Entries are stored in `.forgegraal/runtimes.json` (project-local — commit it so your team shares the same
+pinned runtime) or, with `--global`, in the cache directory. Once registered, `compile` picks a matching
+entry automatically when `--node-binary` isn't given. Accepts a raw executable, `.tar.gz`/`.tgz`, or `.zip`
+URL.
 
 ## CLI
 
@@ -55,6 +83,7 @@ forgegraal compile dist/index.js --target win-legacy-x86 --node-binary ./node-wi
 forgegraal targets --pm bun
 forgegraal info linux-armv7 --db sqlite
 forgegraal inspect ./forgegraal-out/bot-linux-modern-x64
+forgegraal runtimes list
 ```
 
 Options: `--output`, `--strategy auto|sea|portable`, `--pm`, `--node-binary`, `--node-version`, `--offline`,

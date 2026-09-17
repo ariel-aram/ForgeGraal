@@ -1,6 +1,10 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import {
+	FORGEDB_DRIVERS,
+	PURE_JS_FORGEDB_DRIVERS,
+} from "../integrations/ForgeDBIntegration";
+import {
 	createLauncherSource,
 	IMPORT_HELPER_PATH,
 	IMPORT_HELPER_SOURCE,
@@ -20,6 +24,7 @@ import { MIN_SEA_NODE_VERSION, NodeRuntime } from "./NodeRuntime";
 import { type PackageManager, PolicyEnforcer } from "./PolicyEnforcer";
 import { PortablePackager } from "./PortablePackager";
 import { compareVersions, ProjectCollector } from "./ProjectCollector";
+import { RuntimeRegistry } from "./RuntimeRegistry";
 import { SeaPackager } from "./SeaPackager";
 
 export type BuildStrategy = "auto" | "sea" | "portable";
@@ -129,6 +134,7 @@ export class BinaryPackager {
 			meta,
 			project.minNode,
 			options,
+			root,
 			log,
 		);
 		if (
@@ -300,13 +306,31 @@ export class BinaryPackager {
 			.filter((p) => !p.usable)
 			.flatMap((p) => p.mismatched);
 		if (!mismatched.length) return;
+
+		const mismatchedPackageNames = new Set(
+			[...byPackage.entries()]
+				.filter(([, p]) => !p.usable)
+				.map(([key]) => key.split("/").pop() ?? key),
+		);
+		const nativeForgeDbPackages = Object.values(FORGEDB_DRIVERS)
+			.filter((d) => d.native)
+			.map((d) => d.package);
+		const hint = nativeForgeDbPackages.some((p) =>
+			mismatchedPackageNames.has(p),
+		)
+			? `ForgeDB: this native database driver has no matching build for ${target}. ` +
+				`Switch to a pure JavaScript driver (${PURE_JS_FORGEDB_DRIVERS.join(", ")}) instead of reinstalling ` +
+				"a native one for the target."
+			: undefined;
+
 		if (options.allowNativeMismatch) {
 			warnings.push(
-				`Native addons that cannot run on ${target} were bundled: ${mismatched.join(", ")}`,
+				`Native addons that cannot run on ${target} were bundled: ${mismatched.join(", ")}` +
+					(hint ? ` ${hint}` : ""),
 			);
 			return;
 		}
-		throw new NativeAddonMismatchError(target, mismatched);
+		throw new NativeAddonMismatchError(target, mismatched, hint);
 	}
 
 	private static async selectRuntime(
@@ -314,6 +338,7 @@ export class BinaryPackager {
 		meta: TargetMetadata,
 		minNode: string | null,
 		options: BuildOptions,
+		root: string,
 		log: (message: string) => void,
 	): Promise<RuntimeSelection> {
 		let binary: string | null = null;
@@ -342,6 +367,22 @@ export class BinaryPackager {
 			);
 			log(`Downloading official Node.js ${version} (${meta.officialNodeFile})`);
 			binary = await NodeRuntime.ensureOfficial(version, meta.officialNodeFile);
+		} else if (!options.offline) {
+			const [entry] = RuntimeRegistry.find(target, root);
+			if (entry) {
+				log(
+					`Using registered community runtime for ${target}: Node.js ${entry.version} (${entry.url})`,
+				);
+				binary = await RuntimeRegistry.ensure(entry);
+				const info = BinaryInspector.inspect(binary);
+				if (!info || !BinaryInspector.matchesTarget(info, target)) {
+					throw new RuntimeError(
+						`Registered runtime for '${target}' (${entry.url}) does not match the target after download ` +
+							`(${info ? `${info.format} ${info.arch}` : "unrecognized format"}). ` +
+							"Remove it with 'forgegraal runtimes remove' and register a correct one.",
+					);
+				}
+			}
 		}
 
 		if (!binary) {
@@ -351,7 +392,8 @@ export class BinaryPackager {
 				seaReady: false,
 				reason: meta.officialNodeFile
 					? "runtime downloads are disabled (offline) and no --node-binary was given."
-					: `no Node.js runtime was given. ${meta.runtimeHint}`,
+					: `no Node.js runtime was given and none is registered for this target. ${meta.runtimeHint} ` +
+						`Or register one once with 'forgegraal runtimes add ${target} <version> <url> --sha256 <hex>'.`,
 			};
 		}
 
