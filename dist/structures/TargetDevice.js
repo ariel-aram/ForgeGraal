@@ -14,6 +14,8 @@ var TargetDevice;
     // 32-bit & legacy platforms (allowed for every package manager, including Bun)
     TargetDevice["WinXpX86"] = "win-xp-x86";
     TargetDevice["IosIshX86"] = "ios-ish-x86";
+    TargetDevice["WinVistaX86"] = "win-vista-x86";
+    TargetDevice["WinVistaX64"] = "win-vista-x64";
     TargetDevice["WinLegacyX86"] = "win-legacy-x86";
     TargetDevice["WinLegacyX64"] = "win-legacy-x64";
     TargetDevice["LinuxX86"] = "linux-x86";
@@ -42,12 +44,14 @@ const XP_WIN_HINT = "Windows XP (NT 5.1/5.2) requires a backported runtime (e.g.
  * Streams), independent of syntax. This is a ceiling in discord.js's own dependency chain,
  * not something a Node.js binary — official, unofficial, or hand-built — can be picked
  * around: no Node.js old enough to run on Windows 7 is new enough to parse it.
+ *
+ * v13.14.0 does NOT run on Vista at all — Node dropped Vista in v6.0.0, so this pin is
+ * Windows 7-only. Vista gets its own, older pin below.
  */
 const WIN7_PINNED_WARNING = "Using Node.js 13.14.0, the last official release Node.js itself lists as supporting this platform " +
     "(Node 14+ requires Windows 8.1+). This predates syntax current discord.js's own dependencies use " +
     "(@discordjs/util needs '??=', ES2021, which this runtime cannot parse under any flag) and undici's " +
-    "runtime requirements (Node >= 18). A bot built on current discord.js will not start here. Vista " +
-    "compatibility of 13.14.0 is unconfirmed — Node's own documented floor for it is Windows 7 specifically.";
+    "runtime requirements (Node >= 18). A bot built on current discord.js will not start here.";
 const WIN7_PINNED_NODE_X86 = {
     version: "13.14.0",
     fileKey: "win-x86-exe",
@@ -57,6 +61,32 @@ const WIN7_PINNED_NODE_X64 = {
     version: "13.14.0",
     fileKey: "win-x64-exe",
     warning: WIN7_PINNED_WARNING,
+};
+/**
+ * Node.js dropped Windows Vista support in v6.0.0 (confirmed against the v6.0.0 release
+ * notes); the last release still supporting Vista/XP-era Windows is v5.12.0, still hosted
+ * with a valid SHASUMS256.txt. This is older than WIN7_PINNED_NODE above (13.14.0 won't even
+ * launch on Vista, missing Windows APIs Node >= 6 requires), and far short of ES6: no
+ * classes, no arrow functions under strict parsing in all cases, no destructuring in some
+ * forms. A ForgeScript bot needs a build targeting this runtime specifically, not just a
+ * modern one run through Babel, since installed dependencies (discord.js and its own deps)
+ * are themselves far newer than this can parse.
+ */
+const VISTA_PINNED_WARNING = "Using Node.js 5.12.0, the last official release that still runs on Windows Vista (Node 6.0.0 dropped " +
+    "Vista support entirely — versions between predate the Win32 APIs it requires and will not launch here " +
+    "at all). This is pre-ES6: no classes, no let/const in some engines' strict paths, no async/await, no " +
+    "template literals depended on by nearly every current npm package including discord.js and ForgeScript " +
+    "itself. Only bots written specifically for this runtime, with no modern dependency in their chain, can " +
+    "run here — a build against current discord.js will not start.";
+const VISTA_PINNED_NODE_X86 = {
+    version: "5.12.0",
+    fileKey: "win-x86-exe",
+    warning: VISTA_PINNED_WARNING,
+};
+const VISTA_PINNED_NODE_X64 = {
+    version: "5.12.0",
+    fileKey: "win-x64-exe",
+    warning: VISTA_PINNED_WARNING,
 };
 const ISH_BOOTSTRAP = {
     command: ["apk", "add", "--no-cache", "nodejs"],
@@ -100,10 +130,46 @@ exports.TARGET_METADATA_MAP = {
         runtimeHint: "The executable installs Node.js on-device automatically on first run (`apk add --no-cache nodejs`) " +
             "if it is missing. Pass --node-binary to use a different build instead.",
     },
+    [TargetDevice.WinVistaX86]: {
+        id: TargetDevice.WinVistaX86,
+        name: "Windows Vista (32-bit x86)",
+        description: "Win32 console executable for NT 6.0 only — Node.js 6.0.0 dropped Vista, so this is a separate, older pin from Windows 7",
+        arch: "x86",
+        bits: 32,
+        os: "windows-legacy",
+        is32BitOrLegacy: true,
+        binaryFormat: "pe32",
+        nodePlatform: "win32",
+        nodeArch: "ia32",
+        officialNodeFile: null,
+        pinnedLegacyNode: VISTA_PINNED_NODE_X86,
+        bootstrapInstall: null,
+        runtimeHint: "Node.js 5.12.0 (the last official release that runs on Vista at all) is downloaded and verified " +
+            "automatically; see the build warning this produces — it is pre-ES6 and cannot run a bot built " +
+            "against current discord.js or ForgeScript. Pass --node-binary for a different runtime instead.",
+    },
+    [TargetDevice.WinVistaX64]: {
+        id: TargetDevice.WinVistaX64,
+        name: "Windows Vista (64-bit x64)",
+        description: "Win64 console executable for NT 6.0 only — Node.js 6.0.0 dropped Vista, so this is a separate, older pin from Windows 7",
+        arch: "x64",
+        bits: 64,
+        os: "windows-legacy",
+        is32BitOrLegacy: true,
+        binaryFormat: "pe32plus",
+        nodePlatform: "win32",
+        nodeArch: "x64",
+        officialNodeFile: null,
+        pinnedLegacyNode: VISTA_PINNED_NODE_X64,
+        bootstrapInstall: null,
+        runtimeHint: "Node.js 5.12.0 (the last official release that runs on Vista at all) is downloaded and verified " +
+            "automatically; see the build warning this produces — it is pre-ES6 and cannot run a bot built " +
+            "against current discord.js or ForgeScript. Pass --node-binary for a different runtime instead.",
+    },
     [TargetDevice.WinLegacyX86]: {
         id: TargetDevice.WinLegacyX86,
-        name: "Windows 7 / Vista (32-bit x86)",
-        description: "Win32 console executable for NT 6.0 / 6.1 without Windows 8+ API requirements",
+        name: "Windows 7 (32-bit x86)",
+        description: "Win32 console executable for NT 6.1 without Windows 8+ API requirements",
         arch: "x86",
         bits: 32,
         os: "windows-legacy",
@@ -116,12 +182,13 @@ exports.TARGET_METADATA_MAP = {
         bootstrapInstall: null,
         runtimeHint: "Node.js 13.14.0 (the last official Windows 7 release) is downloaded and verified automatically; " +
             "see the build warning this produces for why current discord.js-based bots still won't run on it. " +
-            "Pass --node-binary for a newer or Vista-verified runtime instead.",
+            "Pass --node-binary for a newer runtime instead. For Windows Vista use win-vista-x86 instead — " +
+            "this build's 13.14.0 pin does not launch on Vista at all.",
     },
     [TargetDevice.WinLegacyX64]: {
         id: TargetDevice.WinLegacyX64,
-        name: "Windows 7 / Vista (64-bit x64)",
-        description: "Win64 console executable for NT 6.0 / 6.1 without Windows 8+ API requirements",
+        name: "Windows 7 (64-bit x64)",
+        description: "Win64 console executable for NT 6.1 without Windows 8+ API requirements",
         arch: "x64",
         bits: 64,
         os: "windows-legacy",
@@ -134,7 +201,8 @@ exports.TARGET_METADATA_MAP = {
         bootstrapInstall: null,
         runtimeHint: "Node.js 13.14.0 (the last official Windows 7 release) is downloaded and verified automatically; " +
             "see the build warning this produces for why current discord.js-based bots still won't run on it. " +
-            "Pass --node-binary for a newer or Vista-verified runtime instead.",
+            "Pass --node-binary for a newer runtime instead. For Windows Vista use win-vista-x64 instead — " +
+            "this build's 13.14.0 pin does not launch on Vista at all.",
     },
     [TargetDevice.LinuxX86]: {
         id: TargetDevice.LinuxX86,

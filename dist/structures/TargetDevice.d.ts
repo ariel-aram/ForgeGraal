@@ -4,6 +4,8 @@
 export declare enum TargetDevice {
     WinXpX86 = "win-xp-x86",
     IosIshX86 = "ios-ish-x86",
+    WinVistaX86 = "win-vista-x86",
+    WinVistaX64 = "win-vista-x64",
     WinLegacyX86 = "win-legacy-x86",
     WinLegacyX64 = "win-legacy-x64",
     LinuxX86 = "linux-x86",

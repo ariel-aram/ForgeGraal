@@ -14,17 +14,37 @@ import {
 	TargetDevice,
 } from "../dist/index.js";
 
-const TARGETS_WITH_PINNED_LEGACY_NODE = [TargetDevice.WinLegacyX86, TargetDevice.WinLegacyX64];
+const TARGETS_WITH_WIN7_PIN = [TargetDevice.WinLegacyX86, TargetDevice.WinLegacyX64];
+const TARGETS_WITH_VISTA_PIN = [TargetDevice.WinVistaX86, TargetDevice.WinVistaX64];
+const TARGETS_WITH_PINNED_LEGACY_NODE = [...TARGETS_WITH_WIN7_PIN, ...TARGETS_WITH_VISTA_PIN];
 const TARGETS_WITH_BOOTSTRAP = [TargetDevice.IosIshX86, TargetDevice.FreeBsdX86];
 
-test("only Windows 7/Vista targets carry a pinned legacy Node.js release", () => {
+test("only Windows 7 targets pin Node.js 13.14.0", () => {
 	for (const target of ALL_TARGETS) {
 		const meta = TARGET_METADATA_MAP[target];
-		if (TARGETS_WITH_PINNED_LEGACY_NODE.includes(target)) {
+		if (TARGETS_WITH_WIN7_PIN.includes(target)) {
 			assert.equal(meta.pinnedLegacyNode?.version, "13.14.0", target);
 			assert.match(meta.pinnedLegacyNode!.fileKey, /^win-x(86|64)-exe$/, target);
 			assert.match(meta.pinnedLegacyNode!.warning, /discord\.js/i, target);
-		} else {
+		}
+	}
+});
+
+test("only Windows Vista targets pin Node.js 5.12.0, older than the Windows 7 pin", () => {
+	for (const target of ALL_TARGETS) {
+		const meta = TARGET_METADATA_MAP[target];
+		if (TARGETS_WITH_VISTA_PIN.includes(target)) {
+			assert.equal(meta.pinnedLegacyNode?.version, "5.12.0", target);
+			assert.match(meta.pinnedLegacyNode!.fileKey, /^win-x(86|64)-exe$/, target);
+			assert.match(meta.pinnedLegacyNode!.warning, /Vista/i, target);
+		}
+	}
+});
+
+test("no other target carries a pinned legacy Node.js release", () => {
+	for (const target of ALL_TARGETS) {
+		const meta = TARGET_METADATA_MAP[target];
+		if (!TARGETS_WITH_PINNED_LEGACY_NODE.includes(target)) {
 			assert.equal(meta.pinnedLegacyNode, null, target);
 		}
 	}
@@ -196,6 +216,30 @@ test("a project whose dependencies declare a higher engines.node floor refuses t
 					offline: false,
 				}),
 				/require Node\.js >= 20\.0\.0, but the target runtime is 13\.14\.0/
+			);
+		})
+	);
+});
+
+test("BinaryPackager auto-provisions the older pinned Node.js for Windows Vista, distinct from the Windows 7 pin", async () => {
+	const root = mkdtempSync(join(tmpdir(), "forgegraal-vista-"));
+	writeFileSync(join(root, "package.json"), JSON.stringify({ name: "vista-bot" }));
+	writeFileSync(join(root, "index.js"), "console.log('hi');");
+
+	const content = fakeOfficialNodeExe(0x014c, "5.12.0"); // I386
+	await withIsolatedCache(() =>
+		withFetch(serveFakeDist("win-x86-exe", content), async () => {
+			const result = await BinaryPackager.compile({
+				entrypoint: join(root, "index.js"),
+				target: TargetDevice.WinVistaX86,
+				packageManager: "npm",
+				offline: false,
+			});
+			assert.equal(result.strategy, "portable");
+			assert.equal(result.runtimeVersion, "5.12.0", "Vista must not get the 13.14.0 Windows 7 pin");
+			assert.ok(
+				result.warnings.some((w: string) => w.includes("5.12.0") && w.includes("Vista")),
+				"the Vista-specific warning must be in the build output"
 			);
 		})
 	);
