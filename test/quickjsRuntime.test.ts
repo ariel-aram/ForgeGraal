@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -163,4 +164,52 @@ test("the Vista-only import list is the exact set an XP build has to remove", ()
 		"SleepConditionVariableCS",
 		"WakeConditionVariable",
 	]);
+});
+
+/**
+ * Behavioural checks for the Node compatibility layer, run against a real quickjs-ng engine.
+ *
+ * Skipped when no engine is on PATH (set FORGEGRAAL_QJS to point at one, or `qjs`), because the
+ * binary is not a build dependency. The same selftest is also run against Node below, which is
+ * what makes a pass meaningful: the file is not tailored to either runtime.
+ */
+function findEngine(): string | null {
+	const explicit = process.env.FORGEGRAAL_QJS;
+	if (explicit && existsSync(explicit)) return explicit;
+	const result = spawnSync("sh", ["-c", "command -v qjs"], { encoding: "utf-8" });
+	const found = result.stdout.trim();
+	return found ? found : null;
+}
+
+const engine = findEngine();
+
+test("the Node compatibility layer behaves the same on quickjs-ng as on Node", {
+	skip: engine ? false : "no qjs engine found",
+}, () => {
+	const selftest = join(process.cwd(), "quickjs/runtime/selftest.js");
+	const compat = join(process.cwd(), "quickjs/runtime/node-compat.js");
+
+	const onQuickjs = spawnSync(engine as string, ["-m", compat, selftest], { encoding: "utf-8" });
+	const onNode = spawnSync(process.execPath, [selftest], { encoding: "utf-8" });
+
+	const summary = (out: string) => out.trim().split("\n").pop() ?? "";
+	assert.match(summary(onNode.stdout), /selftest: (\d+)\/\1 passed/, `Node baseline failed:\n${onNode.stdout}`);
+	assert.equal(
+		summary(onQuickjs.stdout),
+		summary(onNode.stdout),
+		`quickjs-ng must match Node exactly:\n${onQuickjs.stdout}${onQuickjs.stderr}`
+	);
+});
+
+test("the compatibility layer refuses to fake the modules it has not implemented", () => {
+	const source = readFileSync(join(process.cwd(), "quickjs/runtime/node-compat.js"), "utf-8");
+	// net/tls/http/crypto need native work the engine cannot do yet. Stubbing them would produce
+	// a bot that looks like it started and then fails somewhere unrelated.
+	for (const name of ["net", "tls", "http", "crypto", "zlib"]) {
+		assert.match(source, new RegExp(`\\b${name}: notImplemented\\(`), `${name} must not be quietly stubbed`);
+	}
+	assert.ok(
+		source.includes("__forgegraalUnavailable"),
+		"unavailable modules must be detectable by the conformance tool"
+	);
 });

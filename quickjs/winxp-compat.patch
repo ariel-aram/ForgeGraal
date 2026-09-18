@@ -1,0 +1,189 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 69c39ce..e4a7ae0 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -284,7 +284,12 @@ endif()
+ list(APPEND qjs_defines _GNU_SOURCE)
+ if(WIN32)
+     # NB: Windows 7 is EOL and we are only supporting in so far as it doesn't interfere with progress.
+-    list(APPEND qjs_defines WIN32_LEAN_AND_MEAN _WIN32_WINNT=0x0601)
++    # QJS_WIN32_WINNT lets a build target an older Windows than the default; combined with
++    # QJS_WINXP_COMPAT in cutils.h this is what an XP-capable build needs (0x0501).
++    if(NOT DEFINED QJS_WIN32_WINNT)
++        set(QJS_WIN32_WINNT 0x0601)
++    endif()
++    list(APPEND qjs_defines WIN32_LEAN_AND_MEAN _WIN32_WINNT=${QJS_WIN32_WINNT})
+ endif()
+ if(TVOS)
+     list(APPEND qjs_defines _TVOS)
+diff --git a/cutils.h b/cutils.h
+index 8b8842d..8012976 100644
+--- a/cutils.h
++++ b/cutils.h
+@@ -624,10 +624,25 @@ static inline int js_exepath(char* buffer, size_t* size);
+ #define JS_HAVE_THREADS 1
+ 
+ #if defined(_WIN32)
++#if defined(QJS_WINXP_COMPAT)
++/* Windows XP has neither INIT_ONCE (Vista) nor CONDITION_VARIABLE (Vista). Both are
++   replaced below with equivalents built from primitives XP does have. */
++#define JS_ONCE_INIT 0
++typedef LONG js_once_t;
++typedef CRITICAL_SECTION js_mutex_t;
++typedef struct {
++    CRITICAL_SECTION lock;   /* guards waiters_count and was_broadcast */
++    LONG waiters_count;
++    int was_broadcast;
++    HANDLE sema;             /* releases waiters */
++    HANDLE waiters_done;     /* auto-reset: last waiter of a broadcast signals it */
++} js_cond_t;
++#else
+ #define JS_ONCE_INIT INIT_ONCE_STATIC_INIT
+ typedef INIT_ONCE js_once_t;
+ typedef CRITICAL_SECTION js_mutex_t;
+ typedef CONDITION_VARIABLE js_cond_t;
++#endif
+ typedef HANDLE js_thread_t;
+ #else
+ #define JS_ONCE_INIT PTHREAD_ONCE_INIT
+@@ -1719,6 +1734,19 @@ static inline int js_exepath(char* buffer, size_t* size_ptr) {
+ #if defined(_WIN32)
+ typedef void (*js__once_cb)(void);
+ 
++#if defined(QJS_WINXP_COMPAT)
++/* 0 = not started, 1 = in progress, 2 = finished. Losers spin-yield until the winner
++   publishes 2, which gives the same happens-before guarantee InitOnceExecuteOnce does. */
++static inline void js_once(js_once_t *guard, js__once_cb callback) {
++    if (InterlockedCompareExchange(guard, 1, 0) == 0) {
++        callback();
++        InterlockedExchange(guard, 2);
++    } else {
++        while (InterlockedCompareExchange(guard, 2, 2) != 2)
++            Sleep(0);
++    }
++}
++#else
+ typedef struct {
+     js__once_cb callback;
+ } js__once_data_t;
+@@ -1735,6 +1763,7 @@ static inline void js_once(js_once_t *guard, js__once_cb callback) {
+     js__once_data_t data = { .callback = callback };
+     InitOnceExecuteOnce(guard, js__once_inner, (void*) &data, NULL);
+ }
++#endif
+ 
+ static inline void js_mutex_init(js_mutex_t *mutex) {
+     InitializeCriticalSection(mutex);
+@@ -1752,6 +1781,93 @@ static inline void js_mutex_unlock(js_mutex_t *mutex) {
+     LeaveCriticalSection(mutex);
+ }
+ 
++#if defined(QJS_WINXP_COMPAT)
++/* Condition variables for Windows XP, which has none.
++
++   This is the semaphore + waiters-count construction (Schmidt/pthreads-win32): waiters
++   register, block on a counting semaphore, and a broadcast releases exactly the number
++   registered. The last waiter of a broadcast sets waiters_done so the broadcaster knows every
++   waiter has left, which is what stops a later wait from consuming a stale semaphore token.
++   Only CreateSemaphore, CreateEvent and CRITICAL_SECTION are used, all NT 3.1/4 era. */
++
++static inline void js_cond_init(js_cond_t *cond) {
++    cond->waiters_count = 0;
++    cond->was_broadcast = 0;
++    cond->sema = CreateSemaphore(NULL, 0, 0x7fffffff, NULL);
++    cond->waiters_done = CreateEvent(NULL, FALSE, FALSE, NULL);
++    InitializeCriticalSection(&cond->lock);
++    if (!cond->sema || !cond->waiters_done)
++        abort();
++}
++
++static inline void js_cond_destroy(js_cond_t *cond) {
++    CloseHandle(cond->sema);
++    CloseHandle(cond->waiters_done);
++    DeleteCriticalSection(&cond->lock);
++}
++
++static inline void js_cond_signal(js_cond_t *cond) {
++    int have_waiters;
++    EnterCriticalSection(&cond->lock);
++    have_waiters = cond->waiters_count > 0;
++    LeaveCriticalSection(&cond->lock);
++    if (have_waiters)
++        ReleaseSemaphore(cond->sema, 1, NULL);
++}
++
++static inline void js_cond_broadcast(js_cond_t *cond) {
++    int have_waiters;
++    EnterCriticalSection(&cond->lock);
++    have_waiters = cond->waiters_count > 0;
++    if (have_waiters) {
++        cond->was_broadcast = 1;
++        ReleaseSemaphore(cond->sema, cond->waiters_count, NULL);
++        LeaveCriticalSection(&cond->lock);
++        /* Wait until every released waiter has actually woken, otherwise a token could
++           survive the broadcast and let a future wait return without being signalled. */
++        WaitForSingleObject(cond->waiters_done, INFINITE);
++        cond->was_broadcast = 0;
++    } else {
++        LeaveCriticalSection(&cond->lock);
++    }
++}
++
++static inline int js__cond_wait_for(js_cond_t *cond, js_mutex_t *mutex, DWORD ms) {
++    DWORD rc;
++    int last_waiter;
++
++    EnterCriticalSection(&cond->lock);
++    cond->waiters_count++;
++    LeaveCriticalSection(&cond->lock);
++
++    /* Releasing the caller's mutex and blocking is not atomic here, but a signal that
++       arrives in the gap is still counted: this waiter is already registered, so the
++       semaphore token it releases is waiting when WaitForSingleObject runs. */
++    LeaveCriticalSection(mutex);
++    rc = WaitForSingleObject(cond->sema, ms);
++
++    EnterCriticalSection(&cond->lock);
++    cond->waiters_count--;
++    last_waiter = cond->was_broadcast && cond->waiters_count == 0;
++    LeaveCriticalSection(&cond->lock);
++
++    if (last_waiter)
++        SetEvent(cond->waiters_done);
++
++    EnterCriticalSection(mutex);
++
++    if (rc == WAIT_OBJECT_0)
++        return 0;
++    if (rc == WAIT_TIMEOUT)
++        return -1;
++    abort();
++}
++
++static inline void js_cond_wait(js_cond_t *cond, js_mutex_t *mutex) {
++    if (js__cond_wait_for(cond, mutex, INFINITE) != 0)
++        abort();
++}
++#else
+ static inline void js_cond_init(js_cond_t *cond) {
+     InitializeConditionVariable(cond);
+ }
+@@ -1773,13 +1889,18 @@ static inline void js_cond_wait(js_cond_t *cond, js_mutex_t *mutex) {
+     if (!SleepConditionVariableCS(cond, mutex, INFINITE))
+         abort();
+ }
++#endif
+ 
+ static inline int js_cond_timedwait(js_cond_t *cond, js_mutex_t *mutex, uint64_t timeout) {
++#if defined(QJS_WINXP_COMPAT)
++    return js__cond_wait_for(cond, mutex, (DWORD)(timeout / 1e6));
++#else
+     if (SleepConditionVariableCS(cond, mutex, (DWORD)(timeout / 1e6)))
+         return 0;
+     if (GetLastError() != ERROR_TIMEOUT)
+         abort();
+     return -1;
++#endif
+ }
+ 
+ static inline int js_thread_create(js_thread_t *thrd, void (*start)(void *), void *arg,
