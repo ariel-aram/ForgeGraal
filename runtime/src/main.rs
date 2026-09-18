@@ -217,7 +217,15 @@ async fn main() {
     // Without a resolver and loader the engine cannot follow an `import` to a file at all.
     // Resolution is rooted at the entry's own directory so a script's relative imports work the
     // way they would under node.
+    // Resolution is rooted at the entry's own directory, and the process moves there, so a
+    // script's relative imports mean what they do in Node: relative to the file, not to wherever
+    // the runtime happened to be launched from.
+    let entry = entry.canonicalize().unwrap_or(entry);
     let entry_dir = entry.parent().map(Path::to_path_buf).unwrap_or_else(|| PathBuf::from("."));
+    if std::env::set_current_dir(&entry_dir).is_err() {
+        eprintln!("forgegraal-runtime: could not enter '{}'", entry_dir.display());
+        std::process::exit(1);
+    }
     runtime
         .set_loader(
             rquickjs::loader::FileResolver::default()
@@ -254,7 +262,14 @@ async fn main() {
         };
 
         // Evaluated as a module so that top-level await works, which the socket API needs.
-        let name = entry.to_string_lossy().to_string();
+        //
+        // The module is named by its file name, not its full path: the resolver already has the
+        // entry's directory registered, and naming it absolutely makes a relative import like
+        // "./x.js" resolve against the wrong base and fail.
+        let name = entry
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| entry.to_string_lossy().to_string());
         match Module::evaluate(ctx.clone(), name, source).catch(&ctx) {
             Ok(promise) => {
                 if let Err(err) = promise.into_future::<()>().await.catch(&ctx) {

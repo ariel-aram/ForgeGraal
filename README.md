@@ -214,12 +214,50 @@ cargo build --release --target i686-pc-windows-gnu         # 32-bit Windows
 Cross-compiling needs mingw-w64; the repo's `runtime/.cargo/config.toml` carries the linker and
 bindgen settings so it works without per-machine setup.
 
-**The platform cost, stated plainly.** Rust's standard library for 32-bit Windows imports
-`ProcessPrng` (Windows 10), `WaitOnAddress` and `GetSystemTimePreciseAsFileTime` (Windows 8), and
-the `api-ms-win-core-synch` API set (Windows 7). So **this host cannot serve Windows XP or Vista**,
-and the 32-bit Windows build it produces requires Windows 10. That is a real regression against the
-patched C engine below, which reaches XP. Rust buys memory safety on the code that parses bytes off
-a network, and costs the oldest targets; both halves of that trade are in the repo.
+**The platform cost.** Rust's standard library for 32-bit Windows imports `ProcessPrng`
+(Windows 10), `WaitOnAddress` and `GetSystemTimePreciseAsFileTime` (Windows 8), and the
+`api-ms-win-core-synch` API set (Windows 7). So this host cannot serve Windows XP or Vista, and its
+32-bit Windows build requires Windows 10. Rust buys memory safety on the code that parses bytes off
+a network and costs the oldest targets — which is why there is a second backend.
+
+### The C native host (`quickjs/native/`), for the oldest machines
+
+Same surface, different floor. It installs the identical `__forgegraal_native` object, so
+`native-modules.js` runs unchanged on either backend, and uses only Winsock 2 and CryptoAPI — both
+present since the 1990s. TLS is mbedTLS; compression is miniz; certificates verify against a bundle
+compiled into the binary by `gen-ca-bundle.sh`, since the certificate store on a machine this old
+would reject Discord outright.
+
+```sh
+quickjs/native/build.sh native        # host platform
+quickjs/native/build.sh win-x86       # 32-bit Windows, Vista and later
+quickjs/native/build.sh win-xp-x86    # 32-bit Windows, XP-compatible
+```
+
+The XP build applies two patches: `winxp-compat.patch` for the engine's four Vista-era threading
+calls, and `patch-mbedtls-xp.py`, which swaps mbedTLS's `BCryptGenRandom` (Vista, `bcrypt.dll`) for
+`CryptGenRandom` (Windows 95 OSR2, `advapi32`). Both draw from the OS CSPRNG; only the API vintage
+differs. The build then **verifies the result imports nothing newer than XP and fails if it does**.
+
+Result: a self-contained **2.7 MB** executable — JavaScript engine, TLS stack, compression and CA
+bundle included — importing only `KERNEL32`, `msvcrt`, `ADVAPI32` and `WS2_32`.
+
+Both backends run the same `quickjs/runtime/native-selftest.js` and produce the same output,
+against live Discord:
+
+```
+crypto.createHash sha256: ba7816bf…f20015ad   (matches the known vector)
+createHmac sha256       : f7bc83f4…2d1a3cd8   (matches the RFC vector)
+zlib deflate/inflate    : true (330 -> 38)
+tls.connect status      : HTTP/1.1 200 OK
+tls.connect body        : {"url":"wss://gateway.discord.gg"}
+```
+
+`pnpm test` runs that comparison across whichever backends are built (`FORGEGRAAL_RUNTIME`,
+`FORGEGRAAL_C`) and skips it otherwise.
+
+**Still unverified:** neither Windows build has been run on real hardware. Linking clean and
+importing nothing too new is necessary, not sufficient.
 
 ### Windows XP
 

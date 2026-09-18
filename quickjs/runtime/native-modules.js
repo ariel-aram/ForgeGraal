@@ -12,6 +12,13 @@
  */
 
 const native = globalThis.__forgegraal_native;
+
+/*
+ * The two backends differ in one way that reaches this file: the Rust host's socket calls are
+ * async and return promises, while the C host's are synchronous and return their value directly.
+ * Wrapping every call means the code below is written once against promises and works on both.
+ */
+const settled = (value) => (value && typeof value.then === "function" ? value : Promise.resolve(value));
 if (!native) {
 	throw new Error(
 		"native-modules.js requires the ForgeGraal native host. Run it under `forgegraal-runtime`, " +
@@ -232,14 +239,14 @@ function createSocketClass(EventEmitter) {
 			const { host = "localhost", port, tls = false } = options;
 			if (listener) this.once("connect", listener);
 			try {
-				this.id = await native.connect(host, port, tls);
+				this.id = await settled(native.connect(host, port, tls));
 				this.readable = true;
 				this.writable = true;
 				this.emit("connect");
 				if (tls) this.emit("secureConnect");
 				this._pump();
 				// Anything written before the connection completed is flushed in order.
-				for (const chunk of this._pending.splice(0)) await native.write(this.id, chunk);
+				for (const chunk of this._pending.splice(0)) await settled(native.write(this.id, chunk));
 			} catch (err) {
 				this.emit("error", err instanceof Error ? err : new Error(String(err)));
 				this.destroy();
@@ -251,7 +258,7 @@ function createSocketClass(EventEmitter) {
 			while (!this.destroyed && this.id !== null) {
 				let chunk;
 				try {
-					chunk = await native.read(this.id);
+					chunk = await settled(native.read(this.id));
 				} catch (err) {
 					if (!this.destroyed) this.emit("error", err instanceof Error ? err : new Error(String(err)));
 					break;
@@ -277,7 +284,7 @@ function createSocketClass(EventEmitter) {
 				callback?.();
 				return true;
 			}
-			native.write(this.id, bytes).then(
+			settled(native.write(this.id, bytes)).then(
 				() => callback?.(),
 				(err) => {
 					const error = err instanceof Error ? err : new Error(String(err));
@@ -301,7 +308,7 @@ function createSocketClass(EventEmitter) {
 			this.writable = false;
 			const id = this.id;
 			this.id = null;
-			if (id !== null) native.close(id).catch(() => {});
+			if (id !== null) settled(native.close(id)).catch(() => {});
 			this.emit("close");
 			return this;
 		}

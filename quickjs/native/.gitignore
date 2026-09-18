@@ -1,0 +1,3 @@
+# Generated from the host's CA store by gen-ca-bundle.sh; build.sh regenerates it on demand,
+# and committing a snapshot of one machine's trust store would go stale silently.
+ca_bundle.c
