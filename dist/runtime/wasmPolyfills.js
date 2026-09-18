@@ -155,6 +155,71 @@ exports.WASM_FALLBACKS_SOURCE = `"use strict";
 						}
 					};
 				}
+
+				// 8. bufferutil WebSocket acceleration fallback
+				if (reqLower.indexOf("bufferutil") !== -1 || parentLower.indexOf("bufferutil") !== -1) {
+					process.stderr.write("[ForgeGraal WasmLayer] Bypassing native bufferutil -> using pure JS mask\\n");
+					return {
+						mask: function (source, mask, output, offset, length) {
+							for (var i = 0; i < length; i++) {
+								output[offset + i] = source[i] ^ mask[i % 4];
+							}
+						},
+						unmask: function (buffer, mask) {
+							for (var i = 0; i < buffer.length; i++) {
+								buffer[i] ^= mask[i % 4];
+							}
+						}
+					};
+				}
+
+				// 9. utf-8-validate acceleration fallback
+				if (reqLower.indexOf("utf-8-validate") !== -1 || parentLower.indexOf("utf-8-validate") !== -1) {
+					process.stderr.write("[ForgeGraal WasmLayer] Bypassing native utf-8-validate -> using JS fallback\\n");
+					return function isValidUTF8(buffer) {
+						try {
+							new TextDecoder("utf-8", { fatal: true }).decode(buffer);
+							return true;
+						} catch (e) {
+							return false;
+						}
+					};
+				}
+
+				// 10. zlib-sync WebSocket inflation fallback
+				if (reqLower.indexOf("zlib-sync") !== -1 || parentLower.indexOf("zlib-sync") !== -1) {
+					process.stderr.write("[ForgeGraal WasmLayer] Polyfilling zlib-sync with built-in zlib\\n");
+					var zlib = require("zlib");
+					return {
+						Inflate: function () {
+							var chunks = [];
+							return {
+								push: function (chunk, flag) {
+									chunks.push(chunk);
+								},
+								result: function () {
+									var full = Buffer.concat(chunks);
+									chunks = [];
+									return zlib.inflateSync(full);
+								}
+							};
+						}
+					};
+				}
+
+				// 11. bcrypt / argon2 authentication native fallback
+				if (reqLower.indexOf("bcrypt") !== -1 || parentLower.indexOf("bcrypt") !== -1) {
+					process.stderr.write("[ForgeGraal WasmLayer] Polyfilling bcrypt native addon with crypto\\n");
+					var crypto = require("crypto");
+					return {
+						hashSync: function (data) {
+							return crypto.createHash("sha256").update(data).digest("hex");
+						},
+						compareSync: function (data, hash) {
+							return crypto.createHash("sha256").update(data).digest("hex") === hash;
+						}
+					};
+				}
 			}
 
 			throw err;
