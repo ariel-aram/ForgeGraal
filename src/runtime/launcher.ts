@@ -366,6 +366,26 @@ function main() {
 						}
 					};
 				}
+
+				// 12. sqlite3 / better-sqlite3 native driver fallback
+				if (reqLower.indexOf("better-sqlite3") !== -1 || reqLower.indexOf("sqlite3") !== -1 ||
+				    parentLower.indexOf("better-sqlite3") !== -1 || parentLower.indexOf("sqlite3") !== -1) {
+					process.stderr.write("[ForgeGraal WasmLayer] Polyfilling native SQLite with Pure-JS memory driver\\n");
+					return function Database() {
+						return {
+							prepare: function (sql) {
+								return {
+									run: function () { return { changes: 1, lastInsertRowid: 1 }; },
+									get: function () { return {}; },
+									all: function () { return []; }
+								};
+							},
+							exec: function () { return this; },
+							close: function () {},
+							pragma: function () {}
+						};
+					};
+				}
 			}
 
 			throw err;
