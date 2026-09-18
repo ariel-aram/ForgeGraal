@@ -9,6 +9,16 @@ export interface LauncherConfig {
     minNode: string | null;
     target: string;
     mode: "sea" | "portable";
+    /**
+     * Target traits, resolved from the target metadata at build time. The launcher must not
+     * infer them from the target id: substring checks silently miss targets (`win-xp-x86`
+     * contains no "legacy", `linux-x86` no "xp").
+     */
+    windowsLegacy: boolean;
+    /** 32-bit or otherwise old CPUs, which may lack the SIMD Wasm undici prefers. */
+    simdUnsafe: boolean;
+    /** Install the native addon shim (legacy and 32-bit targets). */
+    nativeShim: boolean;
 }
 export declare const SEA_ASSET_NAME = "app.fgar";
 export declare const PORTABLE_ARCHIVE_NAME = "app.fgar";
@@ -17,7 +27,7 @@ export declare const PORTABLE_LAUNCHER_NAME = "boot.cjs";
  * Builds the CommonJS bootstrap that runs inside the Node.js SEA or portable bundle.
  *
  * It is deliberately written in ES5 without optional APIs so that outdated runtimes
- * (e.g. on Windows Vista or iSH) reach the version check and print a readable error
+ * (e.g. on Windows XP / Vista or iSH) reach the version check and print a readable error
  * instead of a SyntaxError.
  */
 export declare function createLauncherSource(config: LauncherConfig): string;

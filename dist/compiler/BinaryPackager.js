@@ -84,6 +84,11 @@ class BinaryPackager {
             minNode: project.minNode,
             target,
             mode: chosen,
+            // Resolved here rather than in the launcher: matching substrings of the target id
+            // misses targets (`win-xp-x86` contains no "legacy", `linux-x86` no "xp").
+            windowsLegacy: meta.os === "windows-legacy",
+            simdUnsafe: meta.is32BitOrLegacy,
+            nativeShim: meta.is32BitOrLegacy,
         });
         log(`Packed ${archive.files} files from ${project.packages} packages (${(archive.buffer.length / 1048576).toFixed(1)} MiB compressed)`);
         let outputPath;

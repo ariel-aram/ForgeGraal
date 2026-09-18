@@ -1,77 +1,105 @@
 # ForgeGraal
 
 ForgeScript extension and CLI that turns [ForgeScript](https://github.com/tryforge/ForgeScript) bots into
-standalone executables and portable bundles — including 32-bit devices (iSH on iOS, x86, ARMv7, FreeBSD) and legacy Windows (Windows XP, Windows Vista, Windows 7).
-
-## Documentation
-
-Full documentation and guides are available under the [`docs/`](docs/) directory:
-- [Architecture & Target Matrix](docs/README.md)
-- [Universal WebAssembly Layer](docs/README.md#universal-webassembly--pure-js-virtual-layer)
-- [CLI Reference](docs/README.md#cli-commands)
+standalone executables and portable bundles — including 32-bit devices (iSH on iOS, x86, ARMv7, FreeBSD) and
+legacy Windows (XP, Vista, 7).
 
 ---
 
-## Universal WebAssembly & Pure-JS Virtual Layer
+## How a build works
 
-ForgeGraal features a universal native addon virtual layer that prevents `ERR_DLOPEN_FAILED` crashes on legacy operating systems (Windows XP / Vista / 7, iSH):
-- **Databases**: `@quoriel/db`, `lmdb`, and native sqlite fall back to Pure-JS storage engines.
-- **Canvas / Graphics**: `@napi-rs/canvas` and `canvas` fall back to Pure-JS canvas stubs.
-- **Audio & Crypto**: `@snazzah/davey` and `sodium-native` voice encryption fall back to standard Node Crypto.
-- **Relational Databases**: `pg-native` and `mysql2` native hooks automatically route to pure JavaScript implementations.
-
----
-
-## Package Manager Policy
-
-ForgeGraal supports **NPM**, **PNPM**, **Yarn**, and **Bun** across all targets:
-- Projects using PNPM have their `.pnpm` virtual stores hoisted into a portable tree.
-- Yarn Plug'n'Play projects should set `nodeLinker: node-modules` in `.yarnrc.yml`.
-
----
-
-## Supported Targets
-
-| Target               | Platform Description                                | Runtime Mode |
-| -------------------- | --------------------------------------------------- | ------------ |
-| `win-xp-x86`         | Windows XP / Server 2003 (NT 5.1/5.2)               | portable     |
-| `win-legacy-x86`     | Windows Vista / 7 (32-bit x86)                      | portable     |
-| `win-legacy-x64`     | Windows Vista / 7 (64-bit x64)                      | portable     |
-| `ios-ish-x86`        | Alpine Linux (musl i686) under iOS iSH              | portable     |
-| `linux-x86`          | Linux 32-bit (i686)                                 | portable     |
-| `freebsd-x86`        | FreeBSD 32-bit (x86)                                | portable     |
-| `win-x86`            | Windows 10 / 11 (32-bit x86)                        | SEA / auto   |
-| `linux-armv7`        | Linux ARMv7 (32-bit)                                | SEA / auto   |
-| `win-modern-x64`     | Windows 10 / 11 (64-bit x64)                        | SEA / auto   |
-| `linux-modern-x64`   | Linux 64-bit (x86_64)                               | SEA / auto   |
-| `linux-modern-arm64` | Linux ARM64 (AArch64)                               | SEA / auto   |
-| `darwin-x64`         | macOS Intel (64-bit)                                | SEA / auto   |
-| `darwin-arm64`       | macOS Apple Silicon (ARM64)                         | SEA / auto   |
+1. The project (the directory of the closest `package.json`) and its production `node_modules` are collected.
+   pnpm/Bun symlink layouts are flattened into a plain, Node-resolvable tree. `.env`, `.npmrc`, `.git` and
+   devDependencies stay out unless you ask for them.
+2. Everything is packed into a compressed archive next to a small launcher. On first start the archive is
+   extracted beside the executable (`<name>.forgegraal/app`, or `app/` in a portable bundle) and the bot runs
+   from there, so ForgeScript's directory scanning (`client.commands.load("./commands")`, extensions, ForgeDB)
+   keeps working. Files the bot writes there — SQLite databases included — survive rebuilds.
+3. Output is one of two strategies:
+   - **sea** — a [Node.js Single Executable Application](https://nodejs.org/api/single-executable-applications.html)
+     injected into a target Node.js runtime (>= 20.12). Official runtimes are downloaded and SHA-256 verified.
+   - **portable** — a folder with the archive, `boot.cjs`, a launcher (`<name>.cmd` / `<name>` shell script)
+     and the runtime if one is available. Chosen automatically when no SEA-capable runtime exists.
 
 ---
 
-## CLI Usage
+## Supported targets
+
+| Target               | Platform                                | Runtime                                          |
+| -------------------- | --------------------------------------- | ------------------------------------------------ |
+| `win-xp-x86`         | Windows XP / Server 2003 (NT 5.1/5.2)   | portable, `--node-binary` (backported build)     |
+| `win-legacy-x86`     | Windows Vista / 7 (32-bit)              | portable, `--node-binary` (community build)      |
+| `win-legacy-x64`     | Windows Vista / 7 (64-bit)              | portable, `--node-binary` (community build)      |
+| `ios-ish-x86`        | Alpine (musl i686) under iOS iSH        | portable, `apk add nodejs` or `--node-binary`    |
+| `linux-x86`          | Linux 32-bit (i686)                     | portable, distro Node.js or `--node-binary`      |
+| `freebsd-x86`        | FreeBSD 32-bit                          | portable, `pkg install node` or `--node-binary`  |
+| `win-x86`            | Windows 10 / 11 (32-bit)                | sea, official (up to Node 22)                    |
+| `linux-armv7`        | Linux ARMv7 (32-bit)                    | sea, official                                    |
+| `win-modern-x64`     | Windows 10 / 11 (64-bit)                | sea, official                                    |
+| `linux-modern-x64`   | Linux 64-bit (x86_64)                   | sea, official                                    |
+| `linux-modern-arm64` | Linux ARM64 (AArch64)                   | sea, official                                    |
+| `darwin-x64`         | macOS Intel                             | sea, official (sign with `codesign --sign -`)    |
+| `darwin-arm64`       | macOS Apple Silicon                     | sea, official (sign with `codesign --sign -`)    |
+
+Every package manager (NPM, PNPM, Yarn, Bun) may build every target. Yarn Plug'n'Play is not supported;
+set `nodeLinker: node-modules` in `.yarnrc.yml` and reinstall.
+
+Targets without an official Node.js build need a runtime once — either `--node-binary` per build, or
+registered (checksum-pinned) with `forgegraal runtimes add`, after which builds pick it up automatically.
+
+---
+
+## Legacy behaviour
+
+Old and 32-bit targets get two adjustments, both derived from the target metadata rather than guessed
+from the target name:
+
+- **undici's SIMD parser is disabled** (`UNDICI_NO_WASM_SIMD=1`) on 32-bit and legacy targets, whose CPUs may
+  not implement the instructions it uses. Set the variable yourself to override.
+- **A native addon shim is installed.** Prebuilt `.node` addons usually cannot load on these platforms
+  (`ERR_DLOPEN_FAILED`). The shim answers that failure *only where a correct replacement exists*:
+
+| Package                      | On a legacy target                                                              |
+| ---------------------------- | -------------------------------------------------------------------------------- |
+| `bufferutil`, `utf-8-validate` | Replaced by pure JS with identical behaviour (what `ws` itself falls back to).   |
+| `sqlite3`, `better-sqlite3`  | Backed by built-in `node:sqlite` (Node >= 22.5). Rows go to the real database file. |
+| `zlib-sync`, `msgpackr-extract`, `pg-native`, `mediaplex`, opus | Error is passed through, so the library takes its own pure-JS path. |
+| `lmdb`, `canvas`, `@gifsx/gifsx`, `sodium-native`, `@snazzah/davey`, `bcrypt`, `argon2` | Load fails with an explanation. |
+
+That last row is deliberate. A stub that returns blank images, throws database writes away, hashes passwords
+with unsalted SHA-256, or encrypts with a different algorithm than the one asked for leaves a bot that looks
+healthy while losing data or its security guarantees — worse than stopping with a clear message. Use
+`forge.linked` (Lavalink) instead of `forge.music` on these targets, and a pure JavaScript ForgeDB driver
+(`mongodb`, `mysql`, `postgres`) where `node:sqlite` is unavailable.
+
+Windows note: Node validates TLS against its own bundled Mozilla CA list, not the OS certificate store, so
+XP/Vista/7's outdated store is normally not why a bot cannot reach Discord. Forcing `--use-system-ca` or
+`--use-openssl-ca` through `NODE_OPTIONS` opts back into the OS store; the launcher warns when it sees that.
+
+---
+
+## CLI
 
 ```sh
-# Compile bot for Windows 7 / Vista 64-bit
+# The entrypoint must be JavaScript: build TypeScript first.
+forgegraal compile dist/index.js --target linux-modern-x64
+forgegraal compile dist/index.js --target ios-ish-x86
+forgegraal compile dist/index.js --target win-xp-x86 --node-binary ./node-xp/node.exe
 forgegraal compile dist/index.js --target win-legacy-x64 --strategy portable
 
-# Compile bot for Windows XP 32-bit
-forgegraal compile dist/index.js --target win-xp-x86 --strategy portable --node-binary ./node-xp/node.exe
-
-# Compile bot for iOS iSH
-forgegraal compile dist/index.js --target ios-ish-x86
-
-# List available targets
 forgegraal targets
-
-# Register a community runtime for legacy Windows
-forgegraal runtimes add win-legacy-x64 20.18.1 https://example.com/node-v20.18.1-win7-x64.zip --sha256 <hash>
+forgegraal info linux-armv7 --db sqlite
+forgegraal inspect ./forgegraal-out/bot-linux-modern-x64
+forgegraal runtimes add win-legacy-x64 20.18.1 https://example.com/node-win7-x64.zip --sha256 <hex>
+forgegraal runtimes list
 ```
+
+Options: `--output`, `--strategy auto|sea|portable`, `--pm`, `--node-binary`, `--node-version`, `--offline`,
+`--include-dev`, `--include-env`, `--allow-native-mismatch`.
 
 ---
 
-## Extension Usage
+## Extension
 
 ```js
 const { ForgeClient } = require("@tryforge/forgescript");
@@ -80,12 +108,15 @@ const { ForgeGraal } = require("forgegraal");
 const client = new ForgeClient({
     extensions: [
         new ForgeGraal({
-            allowCompile: true, // enables $compileBinary
-            root: process.cwd()
-        })
-    ]
+            allowCompile: false, // set true to enable $compileBinary
+            root: process.cwd(), // file arguments are confined to this directory
+        }),
+    ],
 });
 ```
+
+`$compileBinary` stays disabled unless `allowCompile: true`. Function reference lives in
+`metadata/functions.json` (regenerate with `pnpm docgen`).
 
 ---
 
@@ -93,8 +124,7 @@ const client = new ForgeClient({
 
 ```sh
 pnpm install
-pnpm typecheck
-pnpm build
-pnpm test
-pnpm check
+pnpm typecheck && pnpm build && pnpm test && pnpm check
 ```
+
+Licensed under GPL-3.0-or-later (see `LICENSE`).
