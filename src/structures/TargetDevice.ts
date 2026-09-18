@@ -39,18 +39,88 @@ export interface TargetMetadata {
 	/** `process.arch` of a host that can execute this target natively. */
 	nodeArch: "ia32" | "x64" | "arm" | "arm64";
 	/**
-	 * Key used by https://nodejs.org/dist/index.json `files` for an official runtime,
-	 * or `null` when no official modern Node.js build exists (a runtime must be supplied).
+	 * Key used by https://nodejs.org/dist/index.json `files` for the *current* official
+	 * runtime, or `null` when no current official build targets this platform (a runtime
+	 * must be supplied, or see `pinnedLegacyNode`).
 	 */
 	officialNodeFile: string | null;
+	/**
+	 * A specific, old official Node.js release verified to still run on this target, used
+	 * when `officialNodeFile` is null. Distinct from `officialNodeFile` because it names one
+	 * exact version rather than "whatever the newest matching release is" — Node's own
+	 * platform floor moved on, so there is no "newest" to auto-select from any more.
+	 */
+	pinnedLegacyNode: PinnedLegacyNode | null;
+	/**
+	 * A package-manager command that installs Node.js on-device, run automatically by the
+	 * portable launcher when no runtime is bundled and none is found on PATH (e.g. iSH's own
+	 * `apk`, FreeBSD's own `pkg`). `null` when the target has no such on-device installer.
+	 */
+	bootstrapInstall: BootstrapInstall | null;
 	/** Hint shown when the user must supply a Node.js runtime themselves. */
 	runtimeHint: string;
 }
 
-const UNOFFICIAL_WIN_HINT =
-	"Official Node.js builds no longer run on Windows 7 / Vista. Supply a compatible runtime with --node-binary (for example a community Windows 7 build of Node.js >= 20.12).";
+export interface PinnedLegacyNode {
+	/** Exact version to fetch, not "newest available" — there is no newer compatible one. */
+	version: string;
+	/** nodejs.org/dist file key for this version, same convention as `officialNodeFile`. */
+	fileKey: string;
+	/** Printed as a build warning whenever this runtime is actually selected. */
+	warning: string;
+}
+
+export interface BootstrapInstall {
+	/** Command and args run on-device, e.g. `["apk", "add", "--no-cache", "nodejs"]`. */
+	command: readonly string[];
+	/** One-line description of what the command installs, shown before it runs. */
+	description: string;
+}
+
 const XP_WIN_HINT =
 	"Windows XP (NT 5.1/5.2) requires a backported runtime (e.g. One-Core-API patched Node or community XP builds). Supply with --node-binary.";
+
+/**
+ * Node.js's own platform floor moved from "Windows 7/2008 R2" (Node <= 13) to "Windows
+ * 8.1/2012 R2" (Node >= 14) — confirmed against BUILDING.md at both tags. v13.14.0 is the
+ * last v13.x patch and is still hosted with a valid SHASUMS256.txt on nodejs.org/dist, so it
+ * downloads and verifies exactly like a current official release.
+ *
+ * That does not make current ForgeScript bots runnable on it. Verified directly: loading
+ * @tryforge/forgescript on a real v13.14.0 raises `Unexpected token '.'` (optional chaining,
+ * ES2020); with --harmony that parses, but @discordjs/util's compiled output then fails on
+ * `??=` (nullish assignment, ES2021), which no V8 this old has under any flag. discord.js's
+ * gateway/REST layer also depends on undici, which needs Node >= 18 at runtime (fetch, Web
+ * Streams), independent of syntax. This is a ceiling in discord.js's own dependency chain,
+ * not something a Node.js binary — official, unofficial, or hand-built — can be picked
+ * around: no Node.js old enough to run on Windows 7 is new enough to parse it.
+ */
+const WIN7_PINNED_WARNING =
+	"Using Node.js 13.14.0, the last official release Node.js itself lists as supporting this platform " +
+	"(Node 14+ requires Windows 8.1+). This predates syntax current discord.js's own dependencies use " +
+	"(@discordjs/util needs '??=', ES2021, which this runtime cannot parse under any flag) and undici's " +
+	"runtime requirements (Node >= 18). A bot built on current discord.js will not start here. Vista " +
+	"compatibility of 13.14.0 is unconfirmed — Node's own documented floor for it is Windows 7 specifically.";
+
+const WIN7_PINNED_NODE_X86: PinnedLegacyNode = {
+	version: "13.14.0",
+	fileKey: "win-x86-exe",
+	warning: WIN7_PINNED_WARNING,
+};
+const WIN7_PINNED_NODE_X64: PinnedLegacyNode = {
+	version: "13.14.0",
+	fileKey: "win-x64-exe",
+	warning: WIN7_PINNED_WARNING,
+};
+
+const ISH_BOOTSTRAP: BootstrapInstall = {
+	command: ["apk", "add", "--no-cache", "nodejs"],
+	description: "Alpine's own Node.js package",
+};
+const FREEBSD_BOOTSTRAP: BootstrapInstall = {
+	command: ["pkg", "install", "-y", "node"],
+	description: "FreeBSD's own Node.js package",
+};
 
 export const TARGET_METADATA_MAP: Readonly<Record<TargetDevice, Readonly<TargetMetadata>>> = {
 	[TargetDevice.WinXpX86]: {
@@ -65,6 +135,8 @@ export const TARGET_METADATA_MAP: Readonly<Record<TargetDevice, Readonly<TargetM
 		nodePlatform: "win32",
 		nodeArch: "ia32",
 		officialNodeFile: null,
+		pinnedLegacyNode: null,
+		bootstrapInstall: null,
 		runtimeHint: XP_WIN_HINT,
 	},
 	[TargetDevice.IosIshX86]: {
@@ -79,7 +151,11 @@ export const TARGET_METADATA_MAP: Readonly<Record<TargetDevice, Readonly<TargetM
 		nodePlatform: "linux",
 		nodeArch: "ia32",
 		officialNodeFile: null,
-		runtimeHint: "Inside iSH run `apk add nodejs`, or pass the Alpine x86 node binary with --node-binary.",
+		pinnedLegacyNode: null,
+		bootstrapInstall: ISH_BOOTSTRAP,
+		runtimeHint:
+			"The executable installs Node.js on-device automatically on first run (`apk add --no-cache nodejs`) " +
+			"if it is missing. Pass --node-binary to use a different build instead.",
 	},
 	[TargetDevice.WinLegacyX86]: {
 		id: TargetDevice.WinLegacyX86,
@@ -93,7 +169,12 @@ export const TARGET_METADATA_MAP: Readonly<Record<TargetDevice, Readonly<TargetM
 		nodePlatform: "win32",
 		nodeArch: "ia32",
 		officialNodeFile: null,
-		runtimeHint: UNOFFICIAL_WIN_HINT,
+		pinnedLegacyNode: WIN7_PINNED_NODE_X86,
+		bootstrapInstall: null,
+		runtimeHint:
+			"Node.js 13.14.0 (the last official Windows 7 release) is downloaded and verified automatically; " +
+			"see the build warning this produces for why current discord.js-based bots still won't run on it. " +
+			"Pass --node-binary for a newer or Vista-verified runtime instead.",
 	},
 	[TargetDevice.WinLegacyX64]: {
 		id: TargetDevice.WinLegacyX64,
@@ -107,7 +188,12 @@ export const TARGET_METADATA_MAP: Readonly<Record<TargetDevice, Readonly<TargetM
 		nodePlatform: "win32",
 		nodeArch: "x64",
 		officialNodeFile: null,
-		runtimeHint: UNOFFICIAL_WIN_HINT,
+		pinnedLegacyNode: WIN7_PINNED_NODE_X64,
+		bootstrapInstall: null,
+		runtimeHint:
+			"Node.js 13.14.0 (the last official Windows 7 release) is downloaded and verified automatically; " +
+			"see the build warning this produces for why current discord.js-based bots still won't run on it. " +
+			"Pass --node-binary for a newer or Vista-verified runtime instead.",
 	},
 	[TargetDevice.LinuxX86]: {
 		id: TargetDevice.LinuxX86,
@@ -121,7 +207,17 @@ export const TARGET_METADATA_MAP: Readonly<Record<TargetDevice, Readonly<TargetM
 		nodePlatform: "linux",
 		nodeArch: "ia32",
 		officialNodeFile: null,
-		runtimeHint: "No official 32-bit Linux Node.js exists; install it from your distribution or pass --node-binary.",
+		pinnedLegacyNode: null,
+		bootstrapInstall: null,
+		// Checked directly: unofficial-builds.nodejs.org's linux-x86 builds stop at v12.16.3
+		// (~2020), already below ForgeScript's own floor (>=16.11.0) and further below
+		// discord.js's (>=18). No auto-provisionable source is both real 32-bit x86 and new
+		// enough to run the bot — this stays a manual target, not a UX gap to close.
+		runtimeHint:
+			"No Node.js runtime for 32-bit Linux is new enough to run current ForgeScript/discord.js bots " +
+			"(the last community build, from unofficial-builds.nodejs.org, tops out at Node 12.16.3, below " +
+			"ForgeScript's own >=16.11.0 floor). Install a distribution package if your distro ships one, or " +
+			"pass --node-binary.",
 	},
 	[TargetDevice.WinX86]: {
 		id: TargetDevice.WinX86,
@@ -135,6 +231,8 @@ export const TARGET_METADATA_MAP: Readonly<Record<TargetDevice, Readonly<TargetM
 		nodePlatform: "win32",
 		nodeArch: "ia32",
 		officialNodeFile: "win-x86-exe",
+		pinnedLegacyNode: null,
+		bootstrapInstall: null,
 		runtimeHint: "Official win-x86 builds exist up to Node.js 22.",
 	},
 	[TargetDevice.LinuxArmV7]: {
@@ -149,6 +247,8 @@ export const TARGET_METADATA_MAP: Readonly<Record<TargetDevice, Readonly<TargetM
 		nodePlatform: "linux",
 		nodeArch: "arm",
 		officialNodeFile: "linux-armv7l",
+		pinnedLegacyNode: null,
+		bootstrapInstall: null,
 		runtimeHint: "Official linux-armv7l builds are downloaded automatically.",
 	},
 	[TargetDevice.FreeBsdX86]: {
@@ -163,7 +263,11 @@ export const TARGET_METADATA_MAP: Readonly<Record<TargetDevice, Readonly<TargetM
 		nodePlatform: "freebsd",
 		nodeArch: "ia32",
 		officialNodeFile: null,
-		runtimeHint: "No official FreeBSD Node.js exists; install `pkg install node` or pass --node-binary.",
+		pinnedLegacyNode: null,
+		bootstrapInstall: FREEBSD_BOOTSTRAP,
+		runtimeHint:
+			"The executable installs Node.js on-device automatically on first run (`pkg install -y node`) " +
+			"if it is missing. Pass --node-binary to use a different build instead.",
 	},
 	[TargetDevice.WinModernX64]: {
 		id: TargetDevice.WinModernX64,
@@ -177,6 +281,8 @@ export const TARGET_METADATA_MAP: Readonly<Record<TargetDevice, Readonly<TargetM
 		nodePlatform: "win32",
 		nodeArch: "x64",
 		officialNodeFile: "win-x64-exe",
+		pinnedLegacyNode: null,
+		bootstrapInstall: null,
 		runtimeHint: "Official win-x64 builds are downloaded automatically.",
 	},
 	[TargetDevice.LinuxModernX64]: {
@@ -191,6 +297,8 @@ export const TARGET_METADATA_MAP: Readonly<Record<TargetDevice, Readonly<TargetM
 		nodePlatform: "linux",
 		nodeArch: "x64",
 		officialNodeFile: "linux-x64",
+		pinnedLegacyNode: null,
+		bootstrapInstall: null,
 		runtimeHint: "Official linux-x64 builds are downloaded automatically.",
 	},
 	[TargetDevice.LinuxModernArm64]: {
@@ -205,6 +313,8 @@ export const TARGET_METADATA_MAP: Readonly<Record<TargetDevice, Readonly<TargetM
 		nodePlatform: "linux",
 		nodeArch: "arm64",
 		officialNodeFile: "linux-arm64",
+		pinnedLegacyNode: null,
+		bootstrapInstall: null,
 		runtimeHint: "Official linux-arm64 builds are downloaded automatically.",
 	},
 	[TargetDevice.DarwinX64]: {
@@ -219,6 +329,8 @@ export const TARGET_METADATA_MAP: Readonly<Record<TargetDevice, Readonly<TargetM
 		nodePlatform: "darwin",
 		nodeArch: "x64",
 		officialNodeFile: "osx-x64-tar",
+		pinnedLegacyNode: null,
+		bootstrapInstall: null,
 		runtimeHint: "Official darwin-x64 builds are downloaded automatically.",
 	},
 	[TargetDevice.DarwinArm64]: {
@@ -233,6 +345,8 @@ export const TARGET_METADATA_MAP: Readonly<Record<TargetDevice, Readonly<TargetM
 		nodePlatform: "darwin",
 		nodeArch: "arm64",
 		officialNodeFile: "osx-arm64-tar",
+		pinnedLegacyNode: null,
+		bootstrapInstall: null,
 		runtimeHint: "Official darwin-arm64 builds are downloaded automatically.",
 	},
 };

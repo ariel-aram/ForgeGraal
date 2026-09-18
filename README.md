@@ -25,27 +25,47 @@ legacy Windows (XP, Vista, 7).
 
 ## Supported targets
 
-| Target               | Platform                                | Runtime                                          |
-| -------------------- | --------------------------------------- | ------------------------------------------------ |
-| `win-xp-x86`         | Windows XP / Server 2003 (NT 5.1/5.2)   | portable, `--node-binary` (backported build)     |
-| `win-legacy-x86`     | Windows Vista / 7 (32-bit)              | portable, `--node-binary` (community build)      |
-| `win-legacy-x64`     | Windows Vista / 7 (64-bit)              | portable, `--node-binary` (community build)      |
-| `ios-ish-x86`        | Alpine (musl i686) under iOS iSH        | portable, `apk add nodejs` or `--node-binary`    |
-| `linux-x86`          | Linux 32-bit (i686)                     | portable, distro Node.js or `--node-binary`      |
-| `freebsd-x86`        | FreeBSD 32-bit                          | portable, `pkg install node` or `--node-binary`  |
-| `win-x86`            | Windows 10 / 11 (32-bit)                | sea, official (up to Node 22)                    |
-| `linux-armv7`        | Linux ARMv7 (32-bit)                    | sea, official                                    |
-| `win-modern-x64`     | Windows 10 / 11 (64-bit)                | sea, official                                    |
-| `linux-modern-x64`   | Linux 64-bit (x86_64)                   | sea, official                                    |
-| `linux-modern-arm64` | Linux ARM64 (AArch64)                   | sea, official                                    |
-| `darwin-x64`         | macOS Intel                             | sea, official (sign with `codesign --sign -`)    |
-| `darwin-arm64`       | macOS Apple Silicon                     | sea, official (sign with `codesign --sign -`)    |
+| Target               | Platform                                | Runtime                                                      |
+| -------------------- | --------------------------------------- | -------------------------------------------------------------- |
+| `win-xp-x86`         | Windows XP / Server 2003 (NT 5.1/5.2)   | portable, `--node-binary` — no automatable source (see below) |
+| `win-legacy-x86`     | Windows Vista / 7 (32-bit)              | portable, **auto**: official Node.js 13.14.0                  |
+| `win-legacy-x64`     | Windows Vista / 7 (64-bit)              | portable, **auto**: official Node.js 13.14.0                  |
+| `ios-ish-x86`        | Alpine (musl i686) under iOS iSH        | portable, **auto**: installs itself on-device (`apk`)         |
+| `linux-x86`          | Linux 32-bit (i686)                     | portable, `--node-binary` — no automatable source (see below) |
+| `freebsd-x86`        | FreeBSD 32-bit                          | portable, **auto**: installs itself on-device (`pkg`)         |
+| `win-x86`            | Windows 10 / 11 (32-bit)                | sea, official (up to Node 22)                                  |
+| `linux-armv7`        | Linux ARMv7 (32-bit)                    | sea, official                                                  |
+| `win-modern-x64`     | Windows 10 / 11 (64-bit)                | sea, official                                                  |
+| `linux-modern-x64`   | Linux 64-bit (x86_64)                   | sea, official                                                  |
+| `linux-modern-arm64` | Linux ARM64 (AArch64)                   | sea, official                                                  |
+| `darwin-x64`         | macOS Intel                             | sea, official (sign with `codesign --sign -`)                 |
+| `darwin-arm64`       | macOS Apple Silicon                     | sea, official (sign with `codesign --sign -`)                 |
 
 Every package manager (NPM, PNPM, Yarn, Bun) may build every target. Yarn Plug'n'Play is not supported;
 set `nodeLinker: node-modules` in `.yarnrc.yml` and reinstall.
 
-Targets without an official Node.js build need a runtime once — either `--node-binary` per build, or
-registered (checksum-pinned) with `forgegraal runtimes add`, after which builds pick it up automatically.
+### Why some legacy targets still need `--node-binary`
+
+**Windows 7 / Vista** used to say "supply a community build yourself." That was wrong — Node.js itself
+still hosts and checksums the last release that officially supported Windows 7: **v13.14.0** (Node 14
+bumped the floor to Windows 8.1, confirmed against `BUILDING.md` at both tags). ForgeGraal now downloads
+and verifies it automatically, no `--node-binary` needed. It does **not** make current discord.js-based
+bots run there, though: tested directly, `@tryforge/forgescript` fails to parse on it (`Unexpected token
+'.'`, optional chaining, ES2020), and with `--harmony` it gets further before failing on `??=` (ES2021,
+used by `@discordjs/util`) — a syntax gap no runtime flag closes, on top of `undici` needing Node >= 18 at
+the API level regardless of syntax. The build still succeeds and prints this as a loud warning (see
+`forgegraal info win-legacy-x86`), for projects with a lighter dependency tree that doesn't reach that far.
+Vista's own Node.js support floor was not confirmed as part of this — 13.14.0 is verified for Windows 7
+specifically.
+
+**iSH and FreeBSD** were never actually missing a binary — `apk`/`pkg` already have a real, current Node.js
+build for their own platform. The executable now runs that install command itself on first launch instead
+of just telling you to.
+
+**Windows XP and 32-bit Linux** genuinely have no automatable path today. XP's last Node.js release predates
+ES6 and modern TLS by years; 32-bit Linux's last community build (`unofficial-builds.nodejs.org`, checked
+directly) is Node 12.16.3, already below ForgeScript's own `engines.node` floor. These stay `--node-binary`
+or `forgegraal runtimes add` (checksum-pinned, tried automatically after that).
 
 ---
 
@@ -110,14 +130,16 @@ XP/Vista/7's outdated store is normally not why a bot cannot reach Discord. Forc
 ```sh
 # The entrypoint must be JavaScript: build TypeScript first.
 forgegraal compile dist/index.js --target linux-modern-x64
-forgegraal compile dist/index.js --target ios-ish-x86
+forgegraal compile dist/index.js --target ios-ish-x86          # installs Node.js on-device itself
+forgegraal compile dist/index.js --target win-legacy-x64       # auto-fetches Node.js 13.14.0
 forgegraal compile dist/index.js --target win-xp-x86 --node-binary ./node-xp/node.exe
-forgegraal compile dist/index.js --target win-legacy-x64 --strategy portable
+forgegraal compile dist/index.js --target linux-x86 --node-binary ./node-linux-x86/node
 
 forgegraal targets
+forgegraal info win-legacy-x86                                 # shows the discord.js-compatibility warning
 forgegraal info linux-armv7 --db sqlite
 forgegraal inspect ./forgegraal-out/bot-linux-modern-x64
-forgegraal runtimes add win-legacy-x64 20.18.1 https://example.com/node-win7-x64.zip --sha256 <hex>
+forgegraal runtimes add linux-x86 12.16.3 https://example.com/node-linux-x86.tar.gz --sha256 <hex>
 forgegraal runtimes list
 ```
 

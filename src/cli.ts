@@ -28,7 +28,7 @@ Compile options:
   -o, --output <path>        Output file (sea) or directory (portable)
   -s, --strategy <name>      auto (default), sea or portable
       --pm <name>            Package manager override (bun, pnpm, npm, yarn)
-      --node-binary <path>   Node.js runtime for the target (required for iSH, x86, FreeBSD, Windows 7/Vista SEA builds)
+      --node-binary <path>   Node.js runtime for the target (only needed for win-xp-x86 and linux-x86; other legacy targets provision one automatically)
       --node-version <ver>   Official Node.js version to download (e.g. 22 or 22.11.0)
       --offline              Never download runtimes
       --include-dev          Bundle devDependencies too
@@ -36,11 +36,20 @@ Compile options:
       --allow-native-mismatch  Bundle native addons built for another platform
   -h, --help                 Show this help
 
-Targets with no official Node.js build (Windows 7/Vista, 32-bit Linux, FreeBSD, iSH) need a
-runtime supplied once, either with --node-binary each build or registered with
-'forgegraal runtimes add' (checksum-pinned, tried automatically after that). ForgeGraal ships
-no entries of its own — it has no way to vouch for a third-party binary's authenticity, so
-you register the URL and its exact SHA-256 yourself.
+Legacy targets that need a runtime handle it three different ways, automatically:
+  - iSH, FreeBSD          : the compiled executable installs Node.js itself on first run,
+                            using the device's own package manager (apk / pkg). Nothing to
+                            download or verify ahead of time.
+  - Windows 7 / Vista     : the last official Node.js release for Windows 7 (13.14.0) is
+                            downloaded and checksum-verified automatically. It predates
+                            syntax current discord.js depends on, so the build prints (and
+                            keeps printing at every build) a warning about that; see
+                            'forgegraal info win-legacy-x86'.
+  - win-xp-x86, linux-x86 : no automatable source exists (checked: the last community
+                            32-bit Linux build is Node 12.16.3, already below ForgeScript's
+                            own floor). Supply a runtime with --node-binary each build, or
+                            register one once (checksum-pinned) with 'forgegraal runtimes
+                            add' for it to be picked up automatically after that.
 `;
 
 function fail(message: string): never {
@@ -74,7 +83,13 @@ async function main(): Promise<void> {
 			for (const target of PolicyEnforcer.getAllowedTargets(pm)) {
 				const meta = TARGET_METADATA_MAP[target];
 				const tag = meta.is32BitOrLegacy ? "[32-bit/legacy]" : "[modern 64-bit]";
-				const runtime = meta.officialNodeFile ? "sea" : "portable / --node-binary";
+				const runtime = meta.officialNodeFile
+					? "sea, official"
+					: meta.bootstrapInstall
+						? "portable, auto-installs on device"
+						: meta.pinnedLegacyNode
+							? `portable, auto (Node ${meta.pinnedLegacyNode.version})`
+							: "portable, --node-binary required";
 				console.log(`  ${target.padEnd(20)} ${tag.padEnd(16)} ${meta.name.padEnd(32)} ${runtime}`);
 			}
 			if (pm === "bun") {
@@ -110,8 +125,17 @@ async function main(): Promise<void> {
 			console.log(`  Binary format  : ${meta.binaryFormat}`);
 			console.log(`  32-bit/legacy  : ${meta.is32BitOrLegacy ? "yes" : "no"}`);
 			console.log(`  Official Node  : ${meta.officialNodeFile ?? "none"}`);
+			if (meta.pinnedLegacyNode) {
+				console.log(
+					`  Pinned runtime : Node.js ${meta.pinnedLegacyNode.version} (${meta.pinnedLegacyNode.fileKey}), auto-fetched`
+				);
+			}
+			if (meta.bootstrapInstall) {
+				console.log(`  Auto-install   : ${meta.bootstrapInstall.command.join(" ")} (on-device, on first run)`);
+			}
 			console.log(`  Runtime        : ${meta.runtimeHint}`);
 			console.log(`  Description    : ${meta.description}`);
+			if (meta.pinnedLegacyNode) console.log(`\n  Warning: ${meta.pinnedLegacyNode.warning}`);
 			if (values.db) {
 				const driver = ForgeDBIntegration.parseDriver(values.db);
 				if (!driver)

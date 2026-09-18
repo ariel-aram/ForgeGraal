@@ -14,12 +14,21 @@ import {
 	TargetDevice,
 } from "../dist/index.js";
 
-function withFetch<T>(handler: (url: string) => Promise<Response> | Response, fn: () => T): T {
+/**
+ * Keeps the mock installed for the entire async operation, not just until its first
+ * `await` suspends — a plain synchronous try/finally around a call to an async `fn` tears
+ * the mock down after the first internal await, silently letting any *later* fetch inside
+ * `fn` (e.g. the actual file download after a checksum-file fetch) hit the real network.
+ */
+async function withFetch<T>(
+	handler: (url: string) => Promise<Response> | Response,
+	fn: () => Promise<T> | T
+): Promise<T> {
 	const original = globalThis.fetch;
 	// @ts-expect-error test-only stub
 	globalThis.fetch = (url: string) => handler(String(url));
 	try {
-		return fn();
+		return await fn();
 	} finally {
 		globalThis.fetch = original;
 	}
