@@ -147,27 +147,58 @@ Measured on v0.16.2, not assumed:
 | --- | --- | --- | --- | --- | --- |
 | Node.js 26 | 10/10 | 10/10 | 8/8 | 30/30 | **58/58** |
 | Node.js 12.22.12 (the Windows 7 pin) | 5/10 | 1/10 | 1/8 | 29/30 | **36/58** |
-| quickjs-ng 0.16.2 (32-bit) | 10/10 | 10/10 | 0/8 | 0/30 | **20/58** |
+| quickjs-ng 0.16.2, bare engine | 10/10 | 10/10 | 0/8 | 0/30 | **20/58** |
+| quickjs-ng + `quickjs/runtime/node-compat.js` | 10/10 | 10/10 | 4/8 | 16/30 | **40/58** |
 
-The two are exact complements. **Node 12 has the libraries but not the language; quickjs-ng has the
-language but not the libraries.** Every construct that fails to parse on the Windows 7 pin —
-optional chaining, `??=`, private methods calling `super`, class static blocks, async generators —
-runs on the 32-bit quickjs-ng build unmodified.
+Node 12 and the bare engine are exact complements: **Node 12 has the libraries but not the
+language; quickjs-ng has the language but not the libraries.** Every construct that fails to parse
+on the Windows 7 pin — optional chaining, `??=`, private methods calling `super`, class static
+blocks, async generators — runs on the 32-bit quickjs-ng build unmodified.
 
-So the remaining work is not the engine. It is the 8 host APIs and 30 Node builtin modules a bot
-requires, led by `assert`, `util`, `stream`, `buffer`, `fs`, `process`, `events` and `crypto`, plus
-sockets and TLS to reach Discord. A large share of those are pure JavaScript and portable as-is;
-the native core (fs, net, tls, crypto, zlib, timers) is the real build.
+### The compatibility layer
 
-**How old a Windows can it reach?** The published 32-bit binary declares PE subsystem 4.0, but the
-imports are what decide, and it needs four Vista-era functions: `InitOnceExecuteOnce`,
-`InitializeConditionVariable`, `WakeConditionVariable`, `SleepConditionVariableCS`. All four come
-from a single block in the engine's `cutils.h` guarded by `JS_HAVE_THREADS`. Vista and 7 should
-therefore run the stock binary, and **Windows XP needs that one block replaced, not a port** — which
-is checked by a test, so a future release that reaches for something newer gets noticed here rather
-than on someone's machine.
+`quickjs/runtime/node-compat.js` is the part of Node's surface that can be written in JavaScript,
+built on the engine's own `qjs:os` and `qjs:std` primitives: `Buffer`, `events`, `stream`
+(Readable/Writable/Duplex/Transform, piping and async iteration), `fs`, `path`, `process`, `util`,
+`assert`, `os`, `querystring`, `string_decoder`, `timers`, `diagnostics_channel`, plus
+`TextEncoder`/`TextDecoder`, `EventTarget`, `AbortController` and a real `structuredClone`. It also
+implements CommonJS `require`, including `node_modules` resolution, so an installed dependency tree
+loads.
 
-Nothing here runs a bot yet. It is the engine, the verification, and a way to measure the gap.
+`quickjs/runtime/selftest.js` runs **unmodified on both runtimes** and is the check that matters —
+a layer that merely loads proves nothing. It passes 26/26 on Node, 26/26 on quickjs-ng, and 26/26
+on the official 32-bit engine build. `pnpm test` runs that comparison automatically when a `qjs` is
+on PATH (or `FORGEGRAAL_QJS` points at one) and skips it otherwise.
+
+What is missing is now specific: `net`, `tls`, `http`, `dns`, `crypto`, `zlib` and
+`worker_threads`. Those need native work — **`qjs:os` exposes no socket API at all** — and a bot
+cannot reach Discord without them. They are registered as modules that throw an explanation when
+used rather than being stubbed, the same rule the native addon shim follows.
+
+### Windows XP
+
+The published 32-bit binary declares PE subsystem 4.0, but the imports are what decide, and it
+needs four Vista-era functions: `InitOnceExecuteOnce`, `InitializeConditionVariable`,
+`WakeConditionVariable`, `SleepConditionVariableCS` — all from one block in the engine's `cutils.h`
+guarded by `JS_HAVE_THREADS`.
+
+`quickjs/winxp-compat.patch` replaces that block with equivalents built from `CreateSemaphore`,
+`CreateEvent`, `CRITICAL_SECTION` and `InterlockedCompareExchange`, which are NT 3.1/4 era: a
+counting-semaphore condition variable with the waiters-done handshake, and an interlocked
+`js_once`. `quickjs/build-engine.sh win-xp-x86` fetches the pinned release, applies it, cross-builds
+with mingw-w64 and then **verifies the result imports nothing newer than XP**, failing the build if
+it does.
+
+```sh
+quickjs/build-engine.sh win-xp-x86     # patched, XP-compatible
+quickjs/build-engine.sh win-x86        # stock, Vista and later
+quickjs/build-engine.sh native
+```
+
+Confirmed: the patched build links clean and imports only `CreateEventA`, `CreateSemaphoreA`,
+`EnterCriticalSection`, `SetEvent`, `WaitForSingleObject` and `InterlockedCompareExchange`, against
+`KERNEL32.dll` and `msvcrt.dll` only. It has **not** been run on real XP hardware — linking clean is
+not the same as working, and that check is still outstanding.
 
 ---
 
