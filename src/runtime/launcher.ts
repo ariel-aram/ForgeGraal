@@ -1,5 +1,6 @@
 import { ARCHIVE_MAGIC } from "../compiler/Archive";
 import { createBunCompatSource } from "./bunCompat";
+import { createLegacyPolyfillSource, type LegacyPolyfillConfig } from "./legacyPolyfills";
 import { createNativeShimSource } from "./nativeShim";
 
 export interface LauncherConfig {
@@ -29,6 +30,14 @@ export interface LauncherConfig {
 	 * Node.js, so `Bun` is undefined on every target, not only legacy ones.
 	 */
 	bunCompat: boolean;
+	/**
+	 * Install the legacy runtime polyfills (Web Streams, AbortController, structuredClone, the
+	 * `node:` specifier prefix, ...). Set when the runtime this build targets predates the APIs
+	 * current discord.js calls, which is decided from the runtime's version at build time rather
+	 * than from the target id -- the same target can be built against a newer runtime with
+	 * `--node-binary`, and then none of this is wanted.
+	 */
+	legacyPolyfills: LegacyPolyfillConfig | null;
 }
 
 export const SEA_ASSET_NAME = "app.fgar";
@@ -45,6 +54,7 @@ export const PORTABLE_LAUNCHER_NAME = "boot.cjs";
 export function createLauncherSource(config: LauncherConfig): string {
 	const shim = config.nativeShim ? createNativeShimSource({ target: config.target }) : "";
 	const bunShim = config.bunCompat ? createBunCompatSource({ target: config.target }) : "";
+	const legacyShim = config.legacyPolyfills ? createLegacyPolyfillSource(config.legacyPolyfills) : "";
 
 	return `"use strict";
 var fs = require("fs");
@@ -196,17 +206,34 @@ function main() {
 
 ${shim}
 ${bunShim}
+${legacyShim}
 	var Module = require("module");
 	var load = sea ? Module.createRequire(entry) : require;
-	try {
-		load(entry);
-	} catch (err) {
-		if (!err || (err.code !== "ERR_REQUIRE_ESM" && err.code !== "ERR_REQUIRE_ASYNC_MODULE")) throw err;
-		var importer = load(path.join(appDir, ".forgegraal-import.cjs"));
-		importer(require("url").pathToFileURL(entry).href).catch(function (e) {
-			process.stderr.write((e && e.stack ? e.stack : String(e)) + "\\n");
+
+	function loadEntry() {
+		try {
+			load(entry);
+		} catch (err) {
+			if (!err || (err.code !== "ERR_REQUIRE_ESM" && err.code !== "ERR_REQUIRE_ASYNC_MODULE")) throw err;
+			var importer = load(path.join(appDir, ".forgegraal-import.cjs"));
+			importer(require("url").pathToFileURL(entry).href).catch(function (e) {
+				process.stderr.write((e && e.stack ? e.stack : String(e)) + "\\n");
+				process.exit(1);
+			});
+		}
+	}
+
+	// The legacy transpiler starts asynchronously but patches the synchronous Function
+	// constructor, so the bot must not be loaded until it is live -- ForgeScript compiles its
+	// functions through new Function() while its own modules are still being required.
+	var legacyReady = global.__forgegraalLegacyReady;
+	if (legacyReady && typeof legacyReady.then === "function") {
+		legacyReady.then(loadEntry, function (err) {
+			process.stderr.write((err && err.stack ? err.stack : String(err)) + "\\n");
 			process.exit(1);
 		});
+	} else {
+		loadEntry();
 	}
 }
 

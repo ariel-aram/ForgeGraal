@@ -4,6 +4,7 @@ exports.IMPORT_HELPER_PATH = exports.IMPORT_HELPER_SOURCE = exports.PORTABLE_LAU
 exports.createLauncherSource = createLauncherSource;
 const Archive_1 = require("../compiler/Archive");
 const bunCompat_1 = require("./bunCompat");
+const legacyPolyfills_1 = require("./legacyPolyfills");
 const nativeShim_1 = require("./nativeShim");
 exports.SEA_ASSET_NAME = "app.fgar";
 exports.PORTABLE_ARCHIVE_NAME = "app.fgar";
@@ -18,6 +19,7 @@ exports.PORTABLE_LAUNCHER_NAME = "boot.cjs";
 function createLauncherSource(config) {
     const shim = config.nativeShim ? (0, nativeShim_1.createNativeShimSource)({ target: config.target }) : "";
     const bunShim = config.bunCompat ? (0, bunCompat_1.createBunCompatSource)({ target: config.target }) : "";
+    const legacyShim = config.legacyPolyfills ? (0, legacyPolyfills_1.createLegacyPolyfillSource)(config.legacyPolyfills) : "";
     return `"use strict";
 var fs = require("fs");
 var path = require("path");
@@ -168,17 +170,34 @@ function main() {
 
 ${shim}
 ${bunShim}
+${legacyShim}
 	var Module = require("module");
 	var load = sea ? Module.createRequire(entry) : require;
-	try {
-		load(entry);
-	} catch (err) {
-		if (!err || (err.code !== "ERR_REQUIRE_ESM" && err.code !== "ERR_REQUIRE_ASYNC_MODULE")) throw err;
-		var importer = load(path.join(appDir, ".forgegraal-import.cjs"));
-		importer(require("url").pathToFileURL(entry).href).catch(function (e) {
-			process.stderr.write((e && e.stack ? e.stack : String(e)) + "\\n");
+
+	function loadEntry() {
+		try {
+			load(entry);
+		} catch (err) {
+			if (!err || (err.code !== "ERR_REQUIRE_ESM" && err.code !== "ERR_REQUIRE_ASYNC_MODULE")) throw err;
+			var importer = load(path.join(appDir, ".forgegraal-import.cjs"));
+			importer(require("url").pathToFileURL(entry).href).catch(function (e) {
+				process.stderr.write((e && e.stack ? e.stack : String(e)) + "\\n");
+				process.exit(1);
+			});
+		}
+	}
+
+	// The legacy transpiler starts asynchronously but patches the synchronous Function
+	// constructor, so the bot must not be loaded until it is live -- ForgeScript compiles its
+	// functions through new Function() while its own modules are still being required.
+	var legacyReady = global.__forgegraalLegacyReady;
+	if (legacyReady && typeof legacyReady.then === "function") {
+		legacyReady.then(loadEntry, function (err) {
+			process.stderr.write((err && err.stack ? err.stack : String(err)) + "\\n");
 			process.exit(1);
 		});
+	} else {
+		loadEntry();
 	}
 }
 

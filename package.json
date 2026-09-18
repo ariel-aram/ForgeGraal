@@ -43,7 +43,13 @@
   },
   "packageManager": "pnpm@12.4.2",
   "dependencies": {
-    "postject": "1.0.0-alpha.6"
+    "abort-controller": "^3.0.0",
+    "esbuild": "^0.28.2",
+    "esbuild-wasm": "^0.28.2",
+    "event-target-shim": "^6.0.2",
+    "formdata-node": "^4.4.1",
+    "postject": "1.0.0-alpha.6",
+    "web-streams-polyfill": "^3.3.3"
   },
   "peerDependencies": {
     "@tryforge/forgescript": "^2.7.1"

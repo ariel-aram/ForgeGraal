@@ -1,3 +1,4 @@
+import { type LegacyPolyfillConfig } from "./legacyPolyfills";
 export interface LauncherConfig {
     /** Application name, used for the data directory next to the executable. */
     name: string;
@@ -25,6 +26,14 @@ export interface LauncherConfig {
      * Node.js, so `Bun` is undefined on every target, not only legacy ones.
      */
     bunCompat: boolean;
+    /**
+     * Install the legacy runtime polyfills (Web Streams, AbortController, structuredClone, the
+     * `node:` specifier prefix, ...). Set when the runtime this build targets predates the APIs
+     * current discord.js calls, which is decided from the runtime's version at build time rather
+     * than from the target id -- the same target can be built against a newer runtime with
+     * `--node-binary`, and then none of this is wanted.
+     */
+    legacyPolyfills: LegacyPolyfillConfig | null;
 }
 export declare const SEA_ASSET_NAME = "app.fgar";
 export declare const PORTABLE_ARCHIVE_NAME = "app.fgar";
