@@ -7,14 +7,16 @@ import {
 	ALL_TARGETS,
 	InvalidPackageManagerError,
 	InvalidTargetError,
+	PACKAGE_MANAGERS,
 	PolicyEnforcer,
 	parseTargetDevice,
 	TARGET_METADATA_MAP,
 	TargetDevice,
 } from "../dist/index.js";
 
-test("Bun projects may build 32-bit and legacy Windows targets", () => {
+test("Every 32-bit and legacy target is buildable from a Bun project", () => {
 	for (const target of [
+		TargetDevice.WinXpX86,
 		TargetDevice.IosIshX86,
 		TargetDevice.WinLegacyX86,
 		TargetDevice.WinLegacyX64,
@@ -27,9 +29,12 @@ test("Bun projects may build 32-bit and legacy Windows targets", () => {
 	}
 });
 
-test("Bun projects can target legacy and modern targets without restriction", () => {
-	for (const target of ALL_TARGETS) {
-		assert.equal(PolicyEnforcer.assertTargetAllowed(target, "bun"), target);
+test("No package manager is restricted to a subset of targets", () => {
+	for (const pm of PACKAGE_MANAGERS) {
+		assert.deepEqual(PolicyEnforcer.getAllowedTargets(pm), [...ALL_TARGETS]);
+		for (const target of ALL_TARGETS) {
+			assert.equal(PolicyEnforcer.assertTargetAllowed(target, pm), target);
+		}
 	}
 });
 
@@ -42,7 +47,7 @@ test("NPM, PNPM and Yarn projects may build every target", () => {
 	}
 });
 
-test("Unknown package managers cannot bypass the Bun policy", () => {
+test("Unknown package managers are rejected rather than silently accepted", () => {
 	assert.throws(
 		() => PolicyEnforcer.assertTargetAllowed(TargetDevice.LinuxModernX64, "bunx" as never),
 		InvalidPackageManagerError

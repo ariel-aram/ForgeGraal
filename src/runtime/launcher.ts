@@ -1,4 +1,5 @@
 import { ARCHIVE_MAGIC } from "../compiler/Archive";
+import { createNativeShimSource } from "./nativeShim";
 
 export interface LauncherConfig {
 	/** Application name, used for the data directory next to the executable. */
@@ -11,6 +12,16 @@ export interface LauncherConfig {
 	minNode: string | null;
 	target: string;
 	mode: "sea" | "portable";
+	/**
+	 * Target traits, resolved from the target metadata at build time. The launcher must not
+	 * infer them from the target id: substring checks silently miss targets (`win-xp-x86`
+	 * contains no "legacy", `linux-x86` no "xp").
+	 */
+	windowsLegacy: boolean;
+	/** 32-bit or otherwise old CPUs, which may lack the SIMD Wasm undici prefers. */
+	simdUnsafe: boolean;
+	/** Install the native addon shim (legacy and 32-bit targets). */
+	nativeShim: boolean;
 }
 
 export const SEA_ASSET_NAME = "app.fgar";
@@ -21,10 +32,12 @@ export const PORTABLE_LAUNCHER_NAME = "boot.cjs";
  * Builds the CommonJS bootstrap that runs inside the Node.js SEA or portable bundle.
  *
  * It is deliberately written in ES5 without optional APIs so that outdated runtimes
- * (e.g. on Windows Vista or iSH) reach the version check and print a readable error
+ * (e.g. on Windows XP / Vista or iSH) reach the version check and print a readable error
  * instead of a SyntaxError.
  */
 export function createLauncherSource(config: LauncherConfig): string {
+	const shim = config.nativeShim ? createNativeShimSource({ target: config.target }) : "";
+
 	return `"use strict";
 var fs = require("fs");
 var path = require("path");
@@ -122,10 +135,10 @@ function main() {
 	}
 
 	// Node.js verifies TLS against its own bundled Mozilla CA snapshot by default, not the
-	// OS certificate store, so an outdated store (e.g. Windows 7 / Vista) normally isn't a
-	// problem. --use-system-ca / --use-openssl-ca opt back into the OS store; warn instead of
-	// failing outright, since the OS store may still be fine.
-	if (CONFIG.target.indexOf("legacy") !== -1) {
+	// OS certificate store, so an outdated store (e.g. Windows XP / Vista / 7) normally isn't
+	// a problem. --use-system-ca / --use-openssl-ca opt back into the OS store; warn instead
+	// of failing outright, since the OS store may still be fine.
+	if (CONFIG.windowsLegacy) {
 		var nodeOptions = process.env.NODE_OPTIONS || "";
 		if (nodeOptions.indexOf("--use-system-ca") !== -1 || nodeOptions.indexOf("--use-openssl-ca") !== -1) {
 			process.stderr.write(
@@ -167,261 +180,14 @@ function main() {
 	process.env.FORGEGRAAL_EXECUTABLE = sea ? process.execPath : __filename;
 	process.argv[1] = entry;
 
-	// Legacy CPU / OS Safe Mode flags:
-	// 1. Force Undici to drop Wasm SIMD instructions which crash older CPUs without AVX/SSE4
-	if (CONFIG.target.indexOf("legacy") !== -1 || CONFIG.target.indexOf("ish") !== -1 || CONFIG.target.indexOf("xp") !== -1) {
+	// undici picks a SIMD build of its HTTP parser when the CPU claims support; older 32-bit
+	// CPUs trap on it. Opt out before undici is first required (unless the user decided).
+	if (CONFIG.simdUnsafe && process.env.UNDICI_NO_WASM_SIMD === undefined) {
 		process.env.UNDICI_NO_WASM_SIMD = "1";
 	}
 
+${shim}
 	var Module = require("module");
-
-	// --- ForgeGraal Universal Native Addon Shim / Wasm Fallback Layer ---
-	// Intercepts ERR_DLOPEN_FAILED across all legacy and constrained platforms (XP/Vista/7, iSH, etc.)
-	var origLoad = Module._load;
-	Module._load = function (request, parent, isMain) {
-		try {
-			return origLoad.apply(this, arguments);
-		} catch (err) {
-			var isDlopenFail = err && (
-				err.code === "ERR_DLOPEN_FAILED" ||
-				(err.message && (
-					err.message.indexOf("procedure could not be found") !== -1 ||
-					err.message.indexOf("specified module could not be found") !== -1 ||
-					err.message.indexOf("not a valid Win32 application") !== -1
-				))
-			);
-
-			if (isDlopenFail) {
-				var reqLower = (request || "").toLowerCase();
-				var parentLower = (parent && parent.filename ? parent.filename : "").toLowerCase();
-
-				// 1. LMDB / QuorielDB / Database Engine
-				if (reqLower.indexOf("lmdb") !== -1 || parentLower.indexOf("lmdb") !== -1) {
-					process.stderr.write("[ForgeGraal WasmLayer] Notice: Polyfilling native LMDB engine with Pure-JS for " + CONFIG.target + "\\n");
-					var memoryStore = new Map();
-					var fallbackDb = {
-						open: function (dir, options) {
-							return {
-								get: function (key) { return memoryStore.get(key); },
-								put: function (key, val) { memoryStore.set(key, val); return Promise.resolve(true); },
-								remove: function (key) { memoryStore.delete(key); return Promise.resolve(true); },
-								transaction: function (fn) { return fn(); },
-								getBinary: function (key) {
-									var v = memoryStore.get(key);
-									return v ? Buffer.from(v) : null;
-								},
-								close: function () { return Promise.resolve(); }
-							};
-						},
-						openAsStore: function (dir, options) { return fallbackDb.open(dir, options); }
-					};
-					return fallbackDb;
-				}
-
-				// 2. Canvas / Skia / Graphics Engine
-				if (reqLower.indexOf("canvas") !== -1 || parentLower.indexOf("canvas") !== -1) {
-					process.stderr.write("[ForgeGraal WasmLayer] Notice: Polyfilling native Canvas engine with Pure-JS for " + CONFIG.target + "\\n");
-					return {
-						createCanvas: function (w, h) {
-							return {
-								width: w,
-								height: h,
-								getContext: function () {
-									return {
-										fillRect: function () {},
-										clearRect: function () {},
-										drawImage: function () {},
-										fillText: function () {},
-										measureText: function () { return { width: 0 }; }
-									};
-								},
-								toBuffer: function () { return Buffer.alloc(0); }
-							};
-						},
-						loadImage: function () { return Promise.resolve({}); }
-					};
-				}
-
-				// 13. @gifsx/gifsx native Rust addon (used by @tryforge/forge.canvas)
-				if (reqLower.indexOf("gifsx") !== -1 || parentLower.indexOf("gifsx") !== -1) {
-					process.stderr.write("[ForgeGraal WasmLayer] Notice: Polyfilling native @gifsx/gifsx with pure JS stub for " + CONFIG.target + "\\n");
-					return {
-						Decoder: function () {
-							return {
-								decode: function () { return []; },
-								nextFrame: function () { return null; }
-							};
-						},
-						Encoder: function () {
-							return {
-								addFrame: function () {},
-								encode: function () { return Buffer.alloc(0); }
-							};
-						},
-						rgbaToHex: function () { return "#000000"; },
-						hexToRgba: function () { return [0, 0, 0, 1]; },
-						indexedToRgba: function () { return [0, 0, 0, 1]; },
-						rgbToHex: function () { return "#000000"; },
-						hexToRgb: function () { return [0, 0, 0]; }
-					};
-				}
-
-				// 3. Audio & Cryptography Engine (@snazzah/davey, sodium-native)
-				if (reqLower.indexOf("sodium") !== -1 || reqLower.indexOf("davey") !== -1 ||
-				    parentLower.indexOf("sodium") !== -1 || parentLower.indexOf("davey") !== -1) {
-					process.stderr.write("[ForgeGraal WasmLayer] Notice: Polyfilling native Audio/Crypto engine for " + CONFIG.target + "\\n");
-					var crypto = require("crypto");
-					return {
-						crypto_aead_xchacha20poly1305_ietf_encrypt: function (out, msg, ad, nsec, npub, k) {
-							var cipher = crypto.createCipheriv("chacha20-poly1305", k, npub, { authTagLength: 16 });
-							if (ad) cipher.setAAD(ad);
-							var enc = Buffer.concat([cipher.update(msg), cipher.final(), cipher.getAuthTag()]);
-							enc.copy(out);
-						},
-						crypto_aead_xchacha20poly1305_ietf_decrypt: function (out, nsec, c, ad, npub, k) {
-							var tag = c.slice(c.length - 16);
-							var cipher = crypto.createDecipheriv("chacha20-poly1305", k, npub, { authTagLength: 16 });
-							if (ad) cipher.setAAD(ad);
-							cipher.setAuthTag(tag);
-							var dec = Buffer.concat([cipher.update(c.slice(0, c.length - 16)), cipher.final()]);
-							dec.copy(out);
-							return 0;
-						}
-					};
-				}
-
-				// 4. PostgreSQL Native Addon (pg-native)
-				if (reqLower.indexOf("pg-native") !== -1 || parentLower.indexOf("pg-native") !== -1) {
-					process.stderr.write("[ForgeGraal WasmLayer] Intercepting pg-native -> routing to pure JS pg\\n");
-					try {
-						return require("pg");
-					} catch (e) {
-						return {};
-					}
-				}
-
-				// 5. MySQL2 Native Compression / Acceleration Addons
-				if (reqLower.indexOf("mysql2") !== -1 || parentLower.indexOf("mysql2") !== -1) {
-					process.stderr.write("[ForgeGraal WasmLayer] Intercepting mysql2 native hooks -> using pure JS driver\\n");
-					try {
-						return require("mysql2");
-					} catch (e) {
-						return {};
-					}
-				}
-
-				// 6. @msgpackr-extract fallback
-				if (reqLower.indexOf("msgpackr-extract") !== -1 || parentLower.indexOf("msgpackr-extract") !== -1) {
-					process.stderr.write("[ForgeGraal WasmLayer] Bypassing native msgpackr-extract -> using pure JS\\n");
-					return null;
-				}
-
-				// 7. mediaplex audio demuxer fallback
-				if (reqLower.indexOf("mediaplex") !== -1 || parentLower.indexOf("mediaplex") !== -1) {
-					process.stderr.write("[ForgeGraal WasmLayer] Polyfilling mediaplex native audio demuxer\\n");
-					return {
-						AudioPipeline: function () {
-							return {
-								process: function (chunk) { return chunk; },
-								destroy: function () {}
-							};
-						},
-						probe: function () {
-							return Promise.resolve({ format: "opus", channels: 2, sampleRate: 48000 });
-						}
-					};
-				}
-
-				// 8. bufferutil WebSocket acceleration fallback
-				if (reqLower.indexOf("bufferutil") !== -1 || parentLower.indexOf("bufferutil") !== -1) {
-					process.stderr.write("[ForgeGraal WasmLayer] Bypassing native bufferutil -> using pure JS mask\\n");
-					return {
-						mask: function (source, mask, output, offset, length) {
-							for (var i = 0; i < length; i++) {
-								output[offset + i] = source[i] ^ mask[i % 4];
-							}
-						},
-						unmask: function (buffer, mask) {
-							for (var i = 0; i < buffer.length; i++) {
-								buffer[i] ^= mask[i % 4];
-							}
-						}
-					};
-				}
-
-				// 9. utf-8-validate acceleration fallback
-				if (reqLower.indexOf("utf-8-validate") !== -1 || parentLower.indexOf("utf-8-validate") !== -1) {
-					process.stderr.write("[ForgeGraal WasmLayer] Bypassing native utf-8-validate -> using JS fallback\\n");
-					return function isValidUTF8(buffer) {
-						try {
-							new TextDecoder("utf-8", { fatal: true }).decode(buffer);
-							return true;
-						} catch (e) {
-							return false;
-						}
-					};
-				}
-
-				// 10. zlib-sync WebSocket inflation fallback
-				if (reqLower.indexOf("zlib-sync") !== -1 || parentLower.indexOf("zlib-sync") !== -1) {
-					process.stderr.write("[ForgeGraal WasmLayer] Polyfilling zlib-sync with built-in zlib\\n");
-					var zlib = require("zlib");
-					return {
-						Inflate: function () {
-							var chunks = [];
-							return {
-								push: function (chunk, flag) {
-									chunks.push(chunk);
-								},
-								result: function () {
-									var full = Buffer.concat(chunks);
-									chunks = [];
-									return zlib.inflateSync(full);
-								}
-							};
-						}
-					};
-				}
-
-				// 11. bcrypt / argon2 authentication native fallback
-				if (reqLower.indexOf("bcrypt") !== -1 || parentLower.indexOf("bcrypt") !== -1) {
-					process.stderr.write("[ForgeGraal WasmLayer] Polyfilling bcrypt native addon with crypto\\n");
-					var crypto = require("crypto");
-					return {
-						hashSync: function (data) {
-							return crypto.createHash("sha256").update(data).digest("hex");
-						},
-						compareSync: function (data, hash) {
-							return crypto.createHash("sha256").update(data).digest("hex") === hash;
-						}
-					};
-				}
-
-				// 12. sqlite3 / better-sqlite3 native driver fallback
-				if (reqLower.indexOf("better-sqlite3") !== -1 || reqLower.indexOf("sqlite3") !== -1 ||
-				    parentLower.indexOf("better-sqlite3") !== -1 || parentLower.indexOf("sqlite3") !== -1) {
-					process.stderr.write("[ForgeGraal WasmLayer] Polyfilling native SQLite with Pure-JS memory driver\\n");
-					return function Database() {
-						return {
-							prepare: function (sql) {
-								return {
-									run: function () { return { changes: 1, lastInsertRowid: 1 }; },
-									get: function () { return {}; },
-									all: function () { return []; }
-								};
-							},
-							exec: function () { return this; },
-							close: function () {},
-							pragma: function () {}
-						};
-					};
-				}
-			}
-
-			throw err;
-		}
-	};
-
 	var load = sea ? Module.createRequire(entry) : require;
 	try {
 		load(entry);

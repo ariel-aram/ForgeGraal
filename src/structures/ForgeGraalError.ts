@@ -11,6 +11,12 @@ export class ForgeGraalError extends Error {
 	}
 }
 
+/**
+ * @deprecated Nothing throws this any more: `PolicyEnforcer` now allows every target for
+ * every package manager. Kept so code that catches it still compiles. Restore the check in
+ * `PolicyEnforcer.assertTargetAllowed` if Bun projects should be limited to 32-bit and
+ * legacy targets again.
+ */
 export class BunTargetRestrictionError extends ForgeGraalError {
 	public override readonly name: string = "BunTargetRestrictionError";
 	public readonly target: string;

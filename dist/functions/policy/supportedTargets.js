@@ -6,7 +6,7 @@ const functions_1 = require("../../util/functions");
 exports.default = new forgescript_1.NativeFunction({
     name: "$supportedTargets",
     version: "1.0.0",
-    description: "Returns the targets ForgeGraal builds for a package manager (32-bit and legacy Windows only on Bun)",
+    description: "Returns the targets ForgeGraal builds for a package manager",
     unwrap: true,
     brackets: false,
     output: forgescript_1.ArgType.String,

@@ -19,7 +19,7 @@ const forgescript_1 = require("@tryforge/forgescript");
 __exportStar(require("./compiler"), exports);
 __exportStar(require("./integrations"), exports);
 __exportStar(require("./runtime/launcher"), exports);
-__exportStar(require("./runtime/wasmPolyfills"), exports);
+__exportStar(require("./runtime/nativeShim"), exports);
 __exportStar(require("./structures"), exports);
 exports.VERSION = require("../package.json").version;
 class ForgeGraal extends forgescript_1.ForgeExtension {

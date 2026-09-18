@@ -1,8 +1,13 @@
 "use strict";
 /**
- * Extension Ecosystem Integrations for BotForge / ForgeScript
- * Provides compatibility metadata, native dependency analysis, and fallback suggestions
- * for official and community extensions.
+ * Compatibility notes for official BotForge / ForgeScript extensions.
+ *
+ * `legacySafe` means the extension runs on targets that cannot load native addons
+ * (Windows XP / Vista / 7, iSH, linux-x86, freebsd-x86) — that is, it either has no native
+ * dependency or ForgeGraal's native shim has a replacement that behaves like the real one.
+ * Extensions whose features genuinely need a native addon are marked unsafe: the shim
+ * refuses to stub them, because empty images or broken voice encryption are worse than a
+ * clear failure.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ExtensionRegistry = exports.FORGE_EXTENSIONS_MAP = void 0;
@@ -12,20 +17,20 @@ exports.FORGE_EXTENSIONS_MAP = {
         name: "ForgeCanvas",
         package: "@tryforge/forge.canvas",
         description: "Image generation and manipulation using canvas APIs",
-        nativeAddons: ["canvas", "@napi-rs/canvas"],
+        nativeAddons: ["@napi-rs/canvas", "canvas", "@gifsx/gifsx"],
         requiresNetwork: false,
-        legacySafe: true, // Polyfilled by ForgeGraal WasmLayer
-        notes: "Pure-JS / Wasm canvas stub prevents ERR_DLOPEN_FAILED on legacy Windows and iSH.",
+        legacySafe: false,
+        notes: "Rendering is done by a native addon with no pure JavaScript equivalent. On targets that cannot load it the bot fails at require() with an explanation instead of silently producing blank images.",
     },
     "forge.music": {
         id: "forge.music",
         name: "ForgeMusic",
         package: "@tryforge/forge.music",
         description: "Audio streaming and music playback",
-        nativeAddons: ["@snazzah/davey", "sodium-native", "@discordjs/opus"],
+        nativeAddons: ["@snazzah/davey", "sodium-native", "@discordjs/opus", "mediaplex"],
         requiresNetwork: true,
-        legacySafe: true, // Polyfilled by ForgeGraal WasmLayer
-        notes: "Voice encryption routed to Node crypto; ffmpeg/opus fallbacks applied.",
+        legacySafe: false,
+        notes: "Discord voice needs XChaCha20-Poly1305 and Opus, which Node's crypto and zlib cannot provide. Use forge.linked (Lavalink) on legacy targets instead.",
     },
     "forge.minecraft": {
         id: "forge.minecraft",
@@ -35,7 +40,7 @@ exports.FORGE_EXTENSIONS_MAP = {
         nativeAddons: [],
         requiresNetwork: true,
         legacySafe: true,
-        notes: "Pure JS socket and protocol handling; runs natively on all targets.",
+        notes: "Pure JS socket and protocol handling; runs on every target.",
     },
     "forge.linked": {
         id: "forge.linked",
@@ -45,7 +50,7 @@ exports.FORGE_EXTENSIONS_MAP = {
         nativeAddons: [],
         requiresNetwork: true,
         legacySafe: true,
-        notes: "Offloads heavy audio processing to remote Lavalink servers; optimal for legacy OS.",
+        notes: "Audio work happens on a remote Lavalink server, which is what makes it the workable music option on legacy targets.",
     },
     "forge.topgg": {
         id: "forge.topgg",
@@ -55,7 +60,7 @@ exports.FORGE_EXTENSIONS_MAP = {
         nativeAddons: [],
         requiresNetwork: true,
         legacySafe: true,
-        notes: "Uses HTTP client and express/native HTTP server; fully safe across all platforms.",
+        notes: "HTTP client and server only.",
     },
     "forge.giveaways": {
         id: "forge.giveaways",
@@ -65,7 +70,7 @@ exports.FORGE_EXTENSIONS_MAP = {
         nativeAddons: [],
         requiresNetwork: false,
         legacySafe: true,
-        notes: "Integrates with ForgeDB / QuorielDB; database compatibility rules apply.",
+        notes: "Stores state through ForgeDB, so the database driver's own compatibility applies (see $dbDriverCompat).",
     },
     "forge.api": {
         id: "forge.api",
@@ -75,7 +80,7 @@ exports.FORGE_EXTENSIONS_MAP = {
         nativeAddons: [],
         requiresNetwork: true,
         legacySafe: true,
-        notes: "Standard HTTP/HTTPS routing; fully compatible with legacy systems.",
+        notes: "Standard HTTP/HTTPS routing.",
     },
     "forge.webserver": {
         id: "forge.webserver",
@@ -85,7 +90,7 @@ exports.FORGE_EXTENSIONS_MAP = {
         nativeAddons: [],
         requiresNetwork: true,
         legacySafe: true,
-        notes: "Native Node.js HTTP server backend; zero native addon friction.",
+        notes: "Built on Node's HTTP server; no native addons.",
     },
 };
 class ExtensionRegistry {
@@ -93,12 +98,19 @@ class ExtensionRegistry {
         return Object.values(exports.FORGE_EXTENSIONS_MAP);
     }
     static getExtension(id) {
-        const normalized = id.toLowerCase().replace("@tryforge/", "").replace("tryforge/", "");
+        const normalized = id
+            .trim()
+            .toLowerCase()
+            .replace(/^@tryforge\//, "")
+            .replace(/^tryforge\//, "");
         return exports.FORGE_EXTENSIONS_MAP[normalized] ?? null;
     }
+    /**
+     * `null` for extensions this registry does not know, so callers can say "unknown"
+     * instead of claiming an unlisted extension is safe.
+     */
     static isLegacySafe(id) {
-        const ext = ExtensionRegistry.getExtension(id);
-        return ext ? ext.legacySafe : true;
+        return ExtensionRegistry.getExtension(id)?.legacySafe ?? null;
     }
 }
 exports.ExtensionRegistry = ExtensionRegistry;

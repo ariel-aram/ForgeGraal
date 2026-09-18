@@ -5,7 +5,7 @@ const functions_1 = require("../../util/functions");
 exports.default = new forgescript_1.NativeFunction({
     name: "$canPackageOnBun",
     version: "1.0.0",
-    description: "Returns whether ForgeGraal builds a target for Bun projects (32-bit and legacy Windows only)",
+    description: "Returns whether a target is one Bun cannot compile itself (32-bit or legacy), so ForgeGraal is the way to build it",
     unwrap: true,
     brackets: true,
     output: forgescript_1.ArgType.Boolean,

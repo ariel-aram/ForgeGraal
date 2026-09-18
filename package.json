@@ -17,6 +17,7 @@
     "typecheck": "tsc --noEmit",
     "check": "biome check src test",
     "format": "biome format --write src test",
+    "docgen": "tsc && node dist/docgen.js",
     "test": "tsc && node --test \"test/**/*.test.ts\""
   },
   "keywords": [
@@ -29,7 +30,7 @@
     "32bit"
   ],
   "author": "Ariel Aram",
-  "license": "ISC",
+  "license": "GPL-3.0-or-later",
   "engines": {
     "node": ">=20.12.0"
   },

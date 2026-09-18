@@ -8,14 +8,17 @@ const structures_1 = require("../structures");
 exports.BUNDLE_MARKER = ".forgegraal-bundle";
 class PortablePackager {
     static windowsLauncher() {
+        // `where.exe` does not exist on Windows XP, so the PATH search uses the `%~$PATH:i`
+        // expansion of a for-loop variable, which every cmd.exe since NT 4 understands.
         return [
             "@echo off",
             "setlocal",
             'set "FORGEGRAAL_DIR=%~dp0"',
-            `if exist "%FORGEGRAAL_DIR%node.exe" goto bundled`,
-            "where node >nul 2>nul",
-            "if errorlevel 1 goto missing",
-            `node "%FORGEGRAAL_DIR%${launcher_1.PORTABLE_LAUNCHER_NAME}" %*`,
+            'if exist "%FORGEGRAAL_DIR%node.exe" goto bundled',
+            'set "FORGEGRAAL_NODE="',
+            'for %%i in (node.exe) do @if not "%%~$PATH:i"=="" set "FORGEGRAAL_NODE=%%~$PATH:i"',
+            "if not defined FORGEGRAAL_NODE goto missing",
+            `"%FORGEGRAAL_NODE%" "%FORGEGRAAL_DIR%${launcher_1.PORTABLE_LAUNCHER_NAME}" %*`,
             "exit /b %ERRORLEVEL%",
             ":bundled",
             `"%FORGEGRAAL_DIR%node.exe" "%FORGEGRAAL_DIR%${launcher_1.PORTABLE_LAUNCHER_NAME}" %*`,
