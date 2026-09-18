@@ -236,6 +236,30 @@ function main() {
 					};
 				}
 
+				// 13. @gifsx/gifsx native Rust addon (used by @tryforge/forge.canvas)
+				if (reqLower.indexOf("gifsx") !== -1 || parentLower.indexOf("gifsx") !== -1) {
+					process.stderr.write("[ForgeGraal WasmLayer] Notice: Polyfilling native @gifsx/gifsx with pure JS stub for " + CONFIG.target + "\\n");
+					return {
+						Decoder: function () {
+							return {
+								decode: function () { return []; },
+								nextFrame: function () { return null; }
+							};
+						},
+						Encoder: function () {
+							return {
+								addFrame: function () {},
+								encode: function () { return Buffer.alloc(0); }
+							};
+						},
+						rgbaToHex: function () { return "#000000"; },
+						hexToRgba: function () { return [0, 0, 0, 1]; },
+						indexedToRgba: function () { return [0, 0, 0, 1]; },
+						rgbToHex: function () { return "#000000"; },
+						hexToRgb: function () { return [0, 0, 0]; }
+					};
+				}
+
 				// 3. Audio & Cryptography Engine (@snazzah/davey, sodium-native)
 				if (reqLower.indexOf("sodium") !== -1 || reqLower.indexOf("davey") !== -1 ||
 				    parentLower.indexOf("sodium") !== -1 || parentLower.indexOf("davey") !== -1) {
