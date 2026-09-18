@@ -167,6 +167,12 @@ function main() {
 	process.env.FORGEGRAAL_EXECUTABLE = sea ? process.execPath : __filename;
 	process.argv[1] = entry;
 
+	// Legacy CPU / OS Safe Mode flags:
+	// 1. Force Undici to drop Wasm SIMD instructions which crash older CPUs without AVX/SSE4
+	if (CONFIG.target.indexOf("legacy") !== -1 || CONFIG.target.indexOf("ish") !== -1 || CONFIG.target.indexOf("xp") !== -1) {
+		process.env.UNDICI_NO_WASM_SIMD = "1";
+	}
+
 	var Module = require("module");
 
 	// --- ForgeGraal Universal Native Addon Shim / Wasm Fallback Layer ---
