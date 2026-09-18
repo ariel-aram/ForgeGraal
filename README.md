@@ -128,6 +128,49 @@ compiles while its own modules are still being required.
 
 ---
 
+## quickjs-ng: the way past Node's ceiling (in progress)
+
+Everything above works around a constraint that is really Node's, not the hardware's. Node decides
+which *language* an old machine may run: Windows 7 is stuck on Node 12, 32-bit Linux on an
+unofficial Node 12.16.3. Lowering code to fit that is what the legacy pipeline does, and it works —
+but it is treating a symptom.
+
+[quickjs-ng](https://github.com/quickjs-ng/quickjs) does not have that coupling. It is a ~72k-line
+C99 engine that publishes *current* builds for exactly the platforms Node abandoned, including
+32-bit Windows (1.85 MiB) and 32-bit Linux. `QuickJsRuntime` fetches and checksum-verifies those
+binaries; `tools/engine-conformance.js` measures any engine against what a ForgeScript bot actually
+needs. Run it against anything: `node tools/engine-conformance.js`, `qjs tools/engine-conformance.js`.
+
+Measured on v0.16.2, not assumed:
+
+| | language | builtins | host APIs | node modules | total |
+| --- | --- | --- | --- | --- | --- |
+| Node.js 26 | 10/10 | 10/10 | 8/8 | 30/30 | **58/58** |
+| Node.js 12.22.12 (the Windows 7 pin) | 5/10 | 1/10 | 1/8 | 29/30 | **36/58** |
+| quickjs-ng 0.16.2 (32-bit) | 10/10 | 10/10 | 0/8 | 0/30 | **20/58** |
+
+The two are exact complements. **Node 12 has the libraries but not the language; quickjs-ng has the
+language but not the libraries.** Every construct that fails to parse on the Windows 7 pin —
+optional chaining, `??=`, private methods calling `super`, class static blocks, async generators —
+runs on the 32-bit quickjs-ng build unmodified.
+
+So the remaining work is not the engine. It is the 8 host APIs and 30 Node builtin modules a bot
+requires, led by `assert`, `util`, `stream`, `buffer`, `fs`, `process`, `events` and `crypto`, plus
+sockets and TLS to reach Discord. A large share of those are pure JavaScript and portable as-is;
+the native core (fs, net, tls, crypto, zlib, timers) is the real build.
+
+**How old a Windows can it reach?** The published 32-bit binary declares PE subsystem 4.0, but the
+imports are what decide, and it needs four Vista-era functions: `InitOnceExecuteOnce`,
+`InitializeConditionVariable`, `WakeConditionVariable`, `SleepConditionVariableCS`. All four come
+from a single block in the engine's `cutils.h` guarded by `JS_HAVE_THREADS`. Vista and 7 should
+therefore run the stock binary, and **Windows XP needs that one block replaced, not a port** — which
+is checked by a test, so a future release that reaches for something newer gets noticed here rather
+than on someone's machine.
+
+Nothing here runs a bot yet. It is the engine, the verification, and a way to measure the gap.
+
+---
+
 ## Bun projects
 
 ForgeGraal builds every target for Bun projects, including the modern 64-bit ones Bun's own

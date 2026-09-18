@@ -10,7 +10,8 @@
   "files": [
     "dist",
     "metadata",
-    "README.md"
+    "README.md",
+    "tools"
   ],
   "scripts": {
     "build": "tsc",
@@ -18,7 +19,8 @@
     "check": "biome check src test",
     "format": "biome format --write src test",
     "docgen": "tsc && node dist/docgen.js",
-    "test": "tsc && node --test \"test/**/*.test.ts\""
+    "test": "tsc && node --test \"test/**/*.test.ts\"",
+    "conformance": "node tools/engine-conformance.js"
   },
   "keywords": [
     "forgescript",
