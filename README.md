@@ -175,6 +175,52 @@ What is missing is now specific: `net`, `tls`, `http`, `dns`, `crypto`, `zlib` a
 cannot reach Discord without them. They are registered as modules that throw an explanation when
 used rather than being stubbed, the same rule the native addon shim follows.
 
+### The native host (`runtime/`, Rust)
+
+The engine plus a JavaScript compatibility layer still cannot reach Discord: `qjs:os` has no
+socket API, so `net`, `tls`, `http` and everything above them are unreachable no matter how much
+JavaScript is written. `runtime/` is the missing half — a Rust binary that embeds quickjs-ng and
+supplies exactly the capabilities that require native code:
+
+- **TCP and TLS** (tokio + rustls). Sockets stay on the Rust side and are handed to JavaScript as
+  integer ids, so a JavaScript bug cannot produce a use-after-free or a descriptor mix-up.
+  Certificates verify against rustls's compiled-in roots rather than the OS store, which is what
+  makes an old machine able to reach Discord at all — a Windows 7 certificate store is typically a
+  decade stale.
+- **Hashing, HMAC and secure randomness.** A hash written in JavaScript would be correct but slow;
+  randomness written in JavaScript would not be random, which is a security bug rather than a
+  performance one.
+- **Compression** (zlib/deflate/gzip), which the gateway needs.
+- **Timers, filesystem and process**, so the JavaScript layer has one host abstraction to target
+  instead of one per backend.
+
+`quickjs/runtime/native-modules.js` gives those Node's shapes, so a library sees `tls.connect()`
+and `crypto.createHash()` rather than an integer id. Verified end to end, against live Discord:
+
+```
+$ ./runtime/target/release/forgegraal-runtime quickjs/runtime/native-selftest.js
+crypto.createHash sha256: ba7816bf…f20015ad   (matches the known vector)
+createHmac sha256       : f7bc83f4…2d1a3cd8   (matches the RFC vector)
+zlib deflate/inflate    : true (330 -> 38)
+tls.connect status      : HTTP/1.1 200 OK
+tls.connect body        : {"url":"wss://gateway.discord.gg"}
+```
+
+```sh
+cd runtime && cargo build --release                        # host platform
+cargo build --release --target i686-pc-windows-gnu         # 32-bit Windows
+```
+
+Cross-compiling needs mingw-w64; the repo's `runtime/.cargo/config.toml` carries the linker and
+bindgen settings so it works without per-machine setup.
+
+**The platform cost, stated plainly.** Rust's standard library for 32-bit Windows imports
+`ProcessPrng` (Windows 10), `WaitOnAddress` and `GetSystemTimePreciseAsFileTime` (Windows 8), and
+the `api-ms-win-core-synch` API set (Windows 7). So **this host cannot serve Windows XP or Vista**,
+and the 32-bit Windows build it produces requires Windows 10. That is a real regression against the
+patched C engine below, which reaches XP. Rust buys memory safety on the code that parses bytes off
+a network, and costs the oldest targets; both halves of that trade are in the repo.
+
 ### Windows XP
 
 The published 32-bit binary declares PE subsystem 4.0, but the imports are what decide, and it
