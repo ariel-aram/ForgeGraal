@@ -191,8 +191,8 @@ test("BinaryPackager auto-provisions the pinned legacy Node.js for Windows 7/Vis
 	);
 });
 
-test("a project whose dependencies declare a higher engines.node floor refuses to build on the pinned Node 12", async () => {
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-win7-floor-"));
+function projectNeedingNode(prefix: string, floor: string): string {
+	const root = mkdtempSync(join(tmpdir(), prefix));
 	mkdirSync(join(root, "node_modules/needs-new-node"), { recursive: true });
 	writeFileSync(
 		join(root, "package.json"),
@@ -200,24 +200,67 @@ test("a project whose dependencies declare a higher engines.node floor refuses t
 	);
 	writeFileSync(
 		join(root, "node_modules/needs-new-node/package.json"),
-		JSON.stringify({ name: "needs-new-node", version: "1.0.0", engines: { node: ">=20.0.0" } })
+		JSON.stringify({ name: "needs-new-node", version: "1.0.0", engines: { node: `>=${floor}` } })
 	);
 	writeFileSync(join(root, "node_modules/needs-new-node/index.js"), "module.exports = {};");
 	writeFileSync(join(root, "index.js"), "require('needs-new-node');");
+	return root;
+}
 
+test("a dependency's engines.node floor is overridden, with a warning, when its code is being lowered", async () => {
+	// The whole point of the legacy pipeline is to run code on a runtime older than the one its
+	// authors declared. Refusing the build here would reject the only runtime the target has.
+	const root = projectNeedingNode("forgegraal-win7-floor-", "20.0.0");
 	const content = fakeOfficialNodeExe(0x8664, "12.22.12"); // AMD64
 	await withIsolatedCache(() =>
 		withFetch(serveFakeDist("win-x64-exe", content), async () => {
-			await assert.rejects(
-				BinaryPackager.compile({
-					entrypoint: join(root, "index.js"),
-					target: TargetDevice.WinLegacyX64,
-					packageManager: "npm",
-					offline: false,
-				}),
-				/require Node\.js >= 20\.0\.0, but the target runtime is 12\.22\.12/
+			const result = await BinaryPackager.compile({
+				entrypoint: join(root, "index.js"),
+				target: TargetDevice.WinLegacyX64,
+				packageManager: "npm",
+				offline: false,
+			});
+			assert.equal(result.runtimeVersion, "12.22.12");
+			assert.ok(
+				result.warnings.some(
+					(w: string) => w.includes("declare they need Node.js >= 20.0.0") && w.includes("override")
+				),
+				"overriding a declared engines floor must be stated, not silent"
 			);
 		})
+	);
+});
+
+test("the engines.node floor is still enforced when nothing is being done about it", async () => {
+	// A modern runtime gets no lowering and no polyfills, so a dependency that needs something
+	// newer still has no way to run and the build must stop.
+	const root = projectNeedingNode("forgegraal-modern-floor-", "99.0.0");
+	const content = fakeOfficialNodeExe(0x014c, "22.11.0");
+	RuntimeRegistry.add(
+		{
+			target: TargetDevice.WinLegacyX86,
+			version: "22.11.0",
+			url: "https://example.invalid/modern-node.exe",
+			sha256: createHash("sha256").update(content).digest("hex"),
+		},
+		{ root }
+	);
+
+	await withIsolatedCache(() =>
+		withFetch(
+			() => response(content),
+			async () => {
+				await assert.rejects(
+					BinaryPackager.compile({
+						entrypoint: join(root, "index.js"),
+						target: TargetDevice.WinLegacyX86,
+						packageManager: "npm",
+						offline: false,
+					}),
+					/require Node\.js >= 99\.0\.0, but the target runtime is 22\.11\.0/
+				);
+			}
+		)
 	);
 });
 

@@ -48,8 +48,17 @@ Legacy targets that need a runtime handle it three different ways, automatically
                             see 'forgegraal info win-legacy-x86'.
   - Windows Vista         : a separate, older pin (5.12.0) — Node.js 6.0.0 dropped Vista
                             entirely, so the Windows 7 build above will not even launch
-                            there. 5.12.0 is pre-ES6 and only runs bots with no modern
-                            dependency in their chain; see 'forgegraal info win-vista-x86'.
+                            there. 5.12.0 is pre-ES6, below what the legacy pipeline can
+                            rewrite for, so its code ships unchanged; see
+                            'forgegraal info win-vista-x86'.
+
+Targeting a runtime older than Node.js 20 also rewrites the bot so it can run there at all:
+bundled code is lowered to that runtime's language level, ES modules are converted to
+CommonJS, the missing platform APIs (Web Streams, AbortController, structuredClone, the
+'node:' prefix, ...) are polyfilled at startup, and esbuild's WebAssembly build is shipped so
+code the bot generates at runtime can be lowered on the device. Things that cannot be done
+correctly are refused rather than faked: Intl.Segmenter throws on these targets instead of
+mis-splitting emoji. Your node_modules on disk is never modified.
   - win-xp-x86, linux-x86 : no automatable source exists (checked: the last community
                             32-bit Linux build is Node 12.16.3, already below ForgeScript's
                             own floor). Supply a runtime with --node-binary each build, or

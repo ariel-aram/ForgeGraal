@@ -54,20 +54,21 @@ But that Tier declaration reflects Node's CI image (Windows Server 2012 R2), not
 hardware; community reports describe later 13.x/14.x builds crashing on real Windows 7 with missing
 `ws2_32.dll` entry points, unconfirmed here without real hardware to test on. ForgeGraal pins **v12.22.12**
 instead, the version community guidance converges on as actually launching there, and downloads/verifies
-it automatically, no `--node-binary` needed. It does **not** make current discord.js-based bots run
-there, though: tested directly at v13.14.0 (same generation, older ES coverage than v12.22.12),
-`@tryforge/forgescript` fails to parse (`Unexpected token '.'`, optional chaining, ES2020), and with
-`--harmony` it gets further before failing on `??=` (ES2021, used by `@discordjs/util`) — a syntax gap no
-runtime flag closes, on top of `undici` needing Node >= 18 at the API level regardless of syntax. The
-build still succeeds and prints this as a loud warning (see `forgegraal info win-legacy-x86`), for
-projects with a lighter dependency tree that doesn't reach that far.
+it automatically, no `--node-binary` needed.
+
+Node 12 cannot parse or run current discord.js as published, so ForgeGraal rewrites the bot instead of
+giving up — see **[Legacy runtimes](#legacy-runtimes-running-modern-code-on-old-nodejs)** below. A real
+ForgeScript bot built this way was verified end to end on a real Node.js 12.22.12: 1120 native functions
+registered, `$sum[$multi[3;4];$sum[10;5]]` evaluated to `27`, and live HTTPS calls to Discord's API
+returning real responses through both `undici.request()` and `fetch()`.
 
 **Windows Vista** is a separate, older pin — Node.js dropped Vista support entirely in v6.0.0, so the
 Windows 7 build above will not even launch there (missing Win32 APIs, not a syntax problem). The last
 release that runs on Vista at all is **v5.12.0**, checksum-verified and fetched automatically for
-`win-vista-x86` / `win-vista-x64`. It is pre-ES6: no classes, no async/await, no template literals — only
-a bot written specifically for it, with no modern dependency (including current discord.js or
-ForgeScript) in its chain, can run there. See `forgegraal info win-vista-x86` for the full warning.
+`win-vista-x86` / `win-vista-x64`. It is pre-ES6, and that puts it below what the legacy pipeline can
+reach: esbuild refuses to emit below ES6, so the bundled code is shipped unchanged and the build says so.
+Only a bot whose entire dependency tree is already ES5 can run there. See
+`forgegraal info win-vista-x86`.
 
 **iSH and FreeBSD** were never actually missing a binary — `apk`/`pkg` already have a real, current Node.js
 build for their own platform. The executable now runs that install command itself on first launch instead
@@ -77,6 +78,53 @@ of just telling you to.
 ES6 and modern TLS by years; 32-bit Linux's last community build (`unofficial-builds.nodejs.org`, checked
 directly) is Node 12.16.3, already below ForgeScript's own `engines.node` floor. These stay `--node-binary`
 or `forgegraal runtimes add` (checksum-pinned, tried automatically after that).
+
+---
+
+## Legacy runtimes: running modern code on old Node.js
+
+When the runtime a build targets is older than Node.js 20, ForgeGraal stops treating the bot as
+something to ship as-is and starts rewriting it. Two gaps have to be closed, and they are separate
+problems:
+
+**Syntax.** Every bundled JavaScript file is re-emitted for the target's exact language level
+(`node12.22`, not a fixed guess) with esbuild. ES modules become CommonJS and `"type": "module"` is
+dropped, because `require()` of an ES module only works on Node 20.19+/22.12+ and ForgeScript
+`require()`s chalk, which is published as pure ESM. Your `node_modules` on disk is never touched — the
+rewrite happens on the way into the archive.
+
+> esbuild is used rather than the TypeScript compiler on evidence, not preference: TypeScript's ES2019
+> downlevel hoists private class methods out of the class body but leaves their `super.x()` calls
+> behind, emitting `SyntaxError: 'super' keyword unexpected here`. undici's decompress interceptor hits
+> this. esbuild emits a `__superGet` helper, and is about six times faster over a real dependency tree.
+
+**APIs.** The runtime's missing platform surface is filled in at startup: Web Streams, `EventTarget`,
+`AbortController`, `Blob`/`File`/`FormData`, `DOMException`, `AggregateError`, `WeakRef`, the `node:`
+specifier prefix, `diagnostics_channel`, `structuredClone`, `crypto.randomUUID`, `stream.isDisturbed`,
+and the newer `Array`/`String`/`Promise` statics. The gap was measured against a real Node 12.22.12
+rather than assumed.
+
+**Code generated at runtime.** Rewriting files ahead of time cannot reach source a program builds while
+running, and ForgeScript's compiler does exactly that — it generates a template literal containing `??`
+and hands it to `new Function`. So esbuild's WebAssembly build ships with the bundle (~3.6 MiB
+compressed) and lowers generated source on the device, memoised so repeated templates cost one transform
+instead of one per call. The launcher waits for it to come up before loading the bot, since ForgeScript
+compiles while its own modules are still being required.
+
+### What it deliberately does not do
+
+- **`Intl.Segmenter` throws** instead of being approximated. Correct grapheme and word breaking needs
+  ICU's segmentation tables; splitting by code point would mis-handle emoji, combining marks and ZWJ
+  sequences while looking like it worked. `$segmentTextSplit` and friends fail loudly on these targets.
+- **`WeakRef` and `FinalizationRegistry` never collect.** Neither can be implemented without
+  garbage-collector integration the engine does not expose, so they hold strong references and never
+  finalize. undici uses them only to evict idle per-origin dispatchers, so what leaks is bounded by the
+  number of hosts the bot talks to.
+- **A dependency's `engines.node` floor is overridden, and says so.** Running code on a runtime older
+  than its authors declared is the entire point, but the build prints that it did this rather than
+  passing silently.
+- **Below Node.js 6, nothing is rewritten.** esbuild cannot emit below ES6, so Windows Vista's Node 5.12
+  pin gets its code shipped unchanged and a warning saying why.
 
 ---
 

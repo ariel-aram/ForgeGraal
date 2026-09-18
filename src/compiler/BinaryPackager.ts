@@ -14,6 +14,8 @@ import {
 import { Archive } from "./Archive";
 import { BinaryInspector } from "./BinaryInspector";
 import { BUN_TRANSPILABLE_EXTENSIONS, BunTranspiler } from "./BunTranspiler";
+import { LEGACY_ASSET_DIR, LegacyRuntimeAssets } from "./LegacyRuntimeAssets";
+import { LegacyTranspiler } from "./LegacyTranspiler";
 import { MIN_SEA_NODE_VERSION, NodeRuntime } from "./NodeRuntime";
 import { type PackageManager, PolicyEnforcer } from "./PolicyEnforcer";
 import { PortablePackager } from "./PortablePackager";
@@ -22,6 +24,29 @@ import { RuntimeRegistry } from "./RuntimeRegistry";
 import { SeaPackager } from "./SeaPackager";
 
 export type BuildStrategy = "auto" | "sea" | "portable";
+
+type LauncherLegacyConfig = Parameters<typeof createLauncherSource>[0]["legacyPolyfills"];
+
+/**
+ * Runtimes below this major need their bundled code lowered and the modern platform APIs
+ * supplied. Node.js 20 is the floor because that is where the last of what current discord.js
+ * reaches for lands: `fetch`, Web Streams and `AbortController` are Node 18, but undici also
+ * calls `String.prototype.toWellFormed`, which is Node 20.
+ */
+export const MIN_MODERN_API_NODE_MAJOR = 20;
+
+/**
+ * Lowest runtime the legacy pipeline can actually serve. esbuild refuses to emit below ES6
+ * ("Transforming const to the configured target environment is not supported yet"), so a
+ * runtime older than Node.js 6 cannot have modern code lowered for it at all. That is a real
+ * ceiling, not a setting: the Windows Vista pin (Node.js 5.12.0) sits below it.
+ */
+export const MIN_TRANSPILABLE_NODE_MAJOR = 6;
+
+export type LegacyRuntimePlan =
+	| { kind: "modern" }
+	| { kind: "lower"; jsTarget: string }
+	| { kind: "unreachable"; reason: string };
 
 export interface BuildOptions {
 	entrypoint: string;
@@ -139,9 +164,22 @@ export class BinaryPackager {
 			if (meta.pinnedLegacyNode && runtime.version === meta.pinnedLegacyNode.version) {
 				warnings.push(meta.pinnedLegacyNode.warning);
 			}
+			const legacy = BinaryPackager.legacyRuntimePlan(runtime.version);
 			if (runtime.version && project.minNode && compareVersions(runtime.version, project.minNode) < 0) {
-				throw new RuntimeError(
-					`The bundled dependencies require Node.js >= ${project.minNode}, but the target runtime is ${runtime.version}.`
+				// A dependency's `engines.node` is that package's own statement about what it needs,
+				// and lowering its code plus supplying the missing platform APIs is exactly how this
+				// build intends to override it. So the floor is only fatal when nothing is going to
+				// be done about it; otherwise it is reported and the build continues.
+				if (legacy.kind !== "lower") {
+					throw new RuntimeError(
+						`The bundled dependencies require Node.js >= ${project.minNode}, but the target runtime is ${runtime.version}.`
+					);
+				}
+				warnings.push(
+					`The bundled dependencies declare they need Node.js >= ${project.minNode}, but this build targets ` +
+						`${runtime.version}. Their code is being lowered and the missing APIs polyfilled, which is what makes ` +
+						"that declaration surmountable — but it is an override, not a guarantee, so test the executable before " +
+						"relying on it."
 				);
 			}
 
@@ -158,8 +196,47 @@ export class BinaryPackager {
 				}
 			}
 
+			// A runtime older than the APIs current discord.js is written against needs its code
+			// lowered and the missing platform APIs supplied. Decided from the runtime actually
+			// selected, not from the target: the same target built with a newer --node-binary
+			// needs none of this, and doing it anyway would be pure cost.
+			let entries = project.entries;
+			let legacyPolyfills: LauncherLegacyConfig = null;
+
+			if (legacy.kind === "unreachable") warnings.push(legacy.reason);
+			if (legacy.kind === "lower") {
+				log(`Runtime is Node.js ${runtime.version}; lowering bundled code to ${legacy.jsTarget}`);
+				const transpiled = await LegacyTranspiler.transpile(entries, { jsTarget: legacy.jsTarget, onLog: log });
+				entries = transpiled.entries;
+				if (transpiled.failures.length) {
+					warnings.push(
+						`${transpiled.failures.length} bundled file(s) could not be lowered to ${legacy.jsTarget} and were ` +
+							`kept as-is; they will only matter if the bot actually loads them. First: ${transpiled.failures[0]}`
+					);
+				}
+
+				const assets = await LegacyRuntimeAssets.build({
+					jsTarget: legacy.jsTarget,
+					runtimeCodegen: true,
+					onLog: log,
+				});
+				entries = [...entries, ...assets.entries];
+				legacyPolyfills = {
+					target,
+					jsTarget: legacy.jsTarget,
+					assetDir: LEGACY_ASSET_DIR,
+					runtimeCodegen: true,
+				};
+				warnings.push(
+					`Built for Node.js ${runtime.version}: bundled code was lowered to ${legacy.jsTarget} and missing ` +
+						"platform APIs are polyfilled at startup. Text segmentation ($segmentTextSplit and friends) throws " +
+						"on this runtime rather than returning wrong results, because Intl.Segmenter needs ICU data this " +
+						"runtime does not ship."
+				);
+			}
+
 			const archive = Archive.pack([
-				...project.entries,
+				...entries,
 				{
 					path: IMPORT_HELPER_PATH,
 					source: Buffer.from(IMPORT_HELPER_SOURCE),
@@ -170,7 +247,12 @@ export class BinaryPackager {
 				name: project.name,
 				entry: project.entry,
 				hash: archive.sha256,
-				minNode: project.minNode,
+				// With the legacy pipeline active, the dependencies' declared floor has deliberately
+				// been overridden, so enforcing it at startup would reject the very runtime this
+				// build was made for. The guard is kept, just re-aimed at that runtime: running the
+				// bundle on something even older than what its code was lowered for is still a
+				// mistake worth stopping.
+				minNode: legacyPolyfills && runtime.version ? runtime.version : project.minNode,
 				target,
 				mode: chosen,
 				// Resolved here rather than in the launcher: matching substrings of the target id
@@ -179,6 +261,7 @@ export class BinaryPackager {
 				simdUnsafe: meta.is32BitOrLegacy,
 				nativeShim: meta.is32BitOrLegacy,
 				bunCompat: project.usesBunApis.length > 0,
+				legacyPolyfills,
 			});
 			log(
 				`Packed ${archive.files} files from ${project.packages} packages (${(archive.buffer.length / 1048576).toFixed(1)} MiB compressed)`
@@ -247,6 +330,30 @@ export class BinaryPackager {
 		} finally {
 			cleanupTranspiled?.();
 		}
+	}
+
+	/**
+	 * Decides whether a build needs the legacy treatment, and which language level to lower to.
+	 * `null` means the runtime is modern enough to run current code as published.
+	 *
+	 * The esbuild target is built from the runtime's own major and minor rather than a fixed
+	 * string, so lowering is never more aggressive than the runtime requires.
+	 */
+	public static legacyRuntimePlan(runtimeVersion: string | null): LegacyRuntimePlan {
+		if (!runtimeVersion) return { kind: "modern" };
+		const [major, minor] = runtimeVersion.split(".").map((part) => Number.parseInt(part, 10) || 0);
+		if (major >= MIN_MODERN_API_NODE_MAJOR) return { kind: "modern" };
+		if (major < MIN_TRANSPILABLE_NODE_MAJOR) {
+			return {
+				kind: "unreachable",
+				reason:
+					`Node.js ${runtimeVersion} predates ES6, and esbuild cannot lower modern JavaScript that far ` +
+					`(its floor is Node.js ${MIN_TRANSPILABLE_NODE_MAJOR}). Bundled code is shipped unchanged, so anything ` +
+					"written in modern syntax — which is all of current discord.js and ForgeScript — will fail to parse " +
+					"on this runtime. Only a bot whose whole dependency tree is ES5 can run here.",
+			};
+		}
+		return { kind: "lower", jsTarget: `node${major}.${minor}` };
 	}
 
 	private static checkNativeAddons(

@@ -20,6 +20,7 @@ __exportStar(require("./compiler"), exports);
 __exportStar(require("./integrations"), exports);
 __exportStar(require("./runtime/bunCompat"), exports);
 __exportStar(require("./runtime/launcher"), exports);
+__exportStar(require("./runtime/legacyPolyfills"), exports);
 __exportStar(require("./runtime/nativeShim"), exports);
 __exportStar(require("./structures"), exports);
 exports.VERSION = require("../package.json").version;
