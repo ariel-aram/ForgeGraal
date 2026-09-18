@@ -19,11 +19,11 @@ const TARGETS_WITH_VISTA_PIN = [TargetDevice.WinVistaX86, TargetDevice.WinVistaX
 const TARGETS_WITH_PINNED_LEGACY_NODE = [...TARGETS_WITH_WIN7_PIN, ...TARGETS_WITH_VISTA_PIN];
 const TARGETS_WITH_BOOTSTRAP = [TargetDevice.IosIshX86, TargetDevice.FreeBsdX86];
 
-test("only Windows 7 targets pin Node.js 13.14.0", () => {
+test("only Windows 7 targets pin Node.js 12.22.12", () => {
 	for (const target of ALL_TARGETS) {
 		const meta = TARGET_METADATA_MAP[target];
 		if (TARGETS_WITH_WIN7_PIN.includes(target)) {
-			assert.equal(meta.pinnedLegacyNode?.version, "13.14.0", target);
+			assert.equal(meta.pinnedLegacyNode?.version, "12.22.12", target);
 			assert.match(meta.pinnedLegacyNode!.fileKey, /^win-x(86|64)-exe$/, target);
 			assert.match(meta.pinnedLegacyNode!.warning, /discord\.js/i, target);
 		}
@@ -115,7 +115,7 @@ async function withFetch<T>(
 /**
  * Runs `fn` with FORGEGRAAL_CACHE pointed at a throwaway directory. `ensureOfficial` trusts
  * whatever is already on disk at that path without re-verifying it, and win-x86-exe/
- * win-x64-exe at version 13.14.0 is the *exact* real path a genuine `forgegraal compile
+ * win-x64-exe at version 12.22.12 is the *exact* real path a genuine `forgegraal compile
  * --target win-legacy-x86` uses on this machine — writing synthetic test data there would
  * corrupt every future real build until the cache is cleared by hand.
  */
@@ -140,7 +140,7 @@ function response(body: Buffer): Response {
 
 /**
  * A synthetic Windows PE that also carries the update-check URL string real official Node.js
- * Windows builds embed, so NodeRuntime.readVersion() reads "13.14.0" from it exactly as it
+ * Windows builds embed, so NodeRuntime.readVersion() reads the requested version from it exactly as it
  * would from the genuine binary — this must behave identically to the real download for the
  * test to mean anything, not just happen to pass on a machine where the real one is cached.
  */
@@ -172,7 +172,7 @@ test("BinaryPackager auto-provisions the pinned legacy Node.js for Windows 7/Vis
 	writeFileSync(join(root, "package.json"), JSON.stringify({ name: "win7-bot" }));
 	writeFileSync(join(root, "index.js"), "console.log('hi');");
 
-	const content = fakeOfficialNodeExe(0x014c, "13.14.0"); // I386
+	const content = fakeOfficialNodeExe(0x014c, "12.22.12"); // I386
 	await withIsolatedCache(() =>
 		withFetch(serveFakeDist("win-x86-exe", content), async () => {
 			const result = await BinaryPackager.compile({
@@ -181,17 +181,17 @@ test("BinaryPackager auto-provisions the pinned legacy Node.js for Windows 7/Vis
 				packageManager: "npm",
 				offline: false,
 			});
-			assert.equal(result.strategy, "portable", "Node 13 predates SEA, so this must fall back to portable");
-			assert.equal(result.runtimeVersion, "13.14.0");
+			assert.equal(result.strategy, "portable", "Node 12 predates SEA, so this must fall back to portable");
+			assert.equal(result.runtimeVersion, "12.22.12");
 			assert.ok(
-				result.warnings.some((w: string) => w.includes("discord.js") && w.includes("13.14.0")),
+				result.warnings.some((w: string) => w.includes("discord.js") && w.includes("12.22.12")),
 				"the discord.js-incompatibility warning must be in the build output, not just a doc"
 			);
 		})
 	);
 });
 
-test("a project whose dependencies declare a higher engines.node floor refuses to build on the pinned Node 13", async () => {
+test("a project whose dependencies declare a higher engines.node floor refuses to build on the pinned Node 12", async () => {
 	const root = mkdtempSync(join(tmpdir(), "forgegraal-win7-floor-"));
 	mkdirSync(join(root, "node_modules/needs-new-node"), { recursive: true });
 	writeFileSync(
@@ -205,7 +205,7 @@ test("a project whose dependencies declare a higher engines.node floor refuses t
 	writeFileSync(join(root, "node_modules/needs-new-node/index.js"), "module.exports = {};");
 	writeFileSync(join(root, "index.js"), "require('needs-new-node');");
 
-	const content = fakeOfficialNodeExe(0x8664, "13.14.0"); // AMD64
+	const content = fakeOfficialNodeExe(0x8664, "12.22.12"); // AMD64
 	await withIsolatedCache(() =>
 		withFetch(serveFakeDist("win-x64-exe", content), async () => {
 			await assert.rejects(
@@ -215,7 +215,7 @@ test("a project whose dependencies declare a higher engines.node floor refuses t
 					packageManager: "npm",
 					offline: false,
 				}),
-				/require Node\.js >= 20\.0\.0, but the target runtime is 13\.14\.0/
+				/require Node\.js >= 20\.0\.0, but the target runtime is 12\.22\.12/
 			);
 		})
 	);
@@ -236,7 +236,7 @@ test("BinaryPackager auto-provisions the older pinned Node.js for Windows Vista,
 				offline: false,
 			});
 			assert.equal(result.strategy, "portable");
-			assert.equal(result.runtimeVersion, "5.12.0", "Vista must not get the 13.14.0 Windows 7 pin");
+			assert.equal(result.runtimeVersion, "5.12.0", "Vista must not get the 12.22.12 Windows 7 pin");
 			assert.ok(
 				result.warnings.some((w: string) => w.includes("5.12.0") && w.includes("Vista")),
 				"the Vista-specific warning must be in the build output"
@@ -272,9 +272,9 @@ test("a user's own registered runtime takes priority over the pinned legacy Node
 					packageManager: "npm",
 					offline: false,
 				});
-				assert.equal(result.runtimeVersion, "20.99.0", "the registered runtime, not the 13.14.0 pin, must be used");
+				assert.equal(result.runtimeVersion, "20.99.0", "the registered runtime, not the 12.22.12 pin, must be used");
 				assert.ok(
-					!result.warnings.some((w: string) => w.includes("13.14.0")),
+					!result.warnings.some((w: string) => w.includes("12.22.12")),
 					"the pinned-fallback warning must not appear when a registered runtime was used instead"
 				);
 			}

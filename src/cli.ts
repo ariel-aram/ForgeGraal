@@ -40,11 +40,12 @@ Legacy targets that need a runtime handle it three different ways, automatically
   - iSH, FreeBSD          : the compiled executable installs Node.js itself on first run,
                             using the device's own package manager (apk / pkg). Nothing to
                             download or verify ahead of time.
-  - Windows 7             : the last official Node.js release for Windows 7 (13.14.0) is
-                            downloaded and checksum-verified automatically. It predates
-                            syntax current discord.js depends on, so the build prints (and
-                            keeps printing at every build) a warning about that; see
-                            'forgegraal info win-legacy-x86'.
+  - Windows 7             : Node.js 12.22.12 (community-reported as the version that actually
+                            launches on real Windows 7 hardware, not just Node's own doc-
+                            declared Tier 1) is downloaded and checksum-verified automatically.
+                            It predates syntax current discord.js depends on, so the build
+                            prints (and keeps printing at every build) a warning about that;
+                            see 'forgegraal info win-legacy-x86'.
   - Windows Vista         : a separate, older pin (5.12.0) — Node.js 6.0.0 dropped Vista
                             entirely, so the Windows 7 build above will not even launch
                             there. 5.12.0 is pre-ES6 and only runs bots with no modern
