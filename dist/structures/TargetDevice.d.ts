@@ -33,12 +33,40 @@ export interface TargetMetadata {
     /** `process.arch` of a host that can execute this target natively. */
     nodeArch: "ia32" | "x64" | "arm" | "arm64";
     /**
-     * Key used by https://nodejs.org/dist/index.json `files` for an official runtime,
-     * or `null` when no official modern Node.js build exists (a runtime must be supplied).
+     * Key used by https://nodejs.org/dist/index.json `files` for the *current* official
+     * runtime, or `null` when no current official build targets this platform (a runtime
+     * must be supplied, or see `pinnedLegacyNode`).
      */
     officialNodeFile: string | null;
+    /**
+     * A specific, old official Node.js release verified to still run on this target, used
+     * when `officialNodeFile` is null. Distinct from `officialNodeFile` because it names one
+     * exact version rather than "whatever the newest matching release is" — Node's own
+     * platform floor moved on, so there is no "newest" to auto-select from any more.
+     */
+    pinnedLegacyNode: PinnedLegacyNode | null;
+    /**
+     * A package-manager command that installs Node.js on-device, run automatically by the
+     * portable launcher when no runtime is bundled and none is found on PATH (e.g. iSH's own
+     * `apk`, FreeBSD's own `pkg`). `null` when the target has no such on-device installer.
+     */
+    bootstrapInstall: BootstrapInstall | null;
     /** Hint shown when the user must supply a Node.js runtime themselves. */
     runtimeHint: string;
+}
+export interface PinnedLegacyNode {
+    /** Exact version to fetch, not "newest available" — there is no newer compatible one. */
+    version: string;
+    /** nodejs.org/dist file key for this version, same convention as `officialNodeFile`. */
+    fileKey: string;
+    /** Printed as a build warning whenever this runtime is actually selected. */
+    warning: string;
+}
+export interface BootstrapInstall {
+    /** Command and args run on-device, e.g. `["apk", "add", "--no-cache", "nodejs"]`. */
+    command: readonly string[];
+    /** One-line description of what the command installs, shown before it runs. */
+    description: string;
 }
 export declare const TARGET_METADATA_MAP: Readonly<Record<TargetDevice, Readonly<TargetMetadata>>>;
 export declare const ALL_TARGETS: readonly TargetDevice[];

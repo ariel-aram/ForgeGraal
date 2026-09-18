@@ -1,7 +1,12 @@
 import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { PORTABLE_ARCHIVE_NAME, PORTABLE_LAUNCHER_NAME } from "../runtime/launcher";
-import { getTargetMetadata, ProjectError, RuntimeError } from "../structures";
+import { getTargetMetadata, ProjectError, RuntimeError, type TargetMetadata } from "../structures";
+
+/** POSIX single-quoting: safe for the plain identifier-like argv tokens bootstrap commands use. */
+function shQuote(value: string): string {
+	return `'${value.replace(/'/g, "'\\''")}'`;
+}
 
 export interface PortableBuildOptions {
 	target: string;
@@ -48,9 +53,15 @@ export class PortablePackager {
 		].join("\r\n");
 	}
 
-	public static unixLauncher(runtimeHint: string): string {
-		const hint = runtimeHint.replace(/[`"$\\]/g, "\\$&");
-		return [
+	/**
+	 * When `bootstrapInstall` is set (iSH's `apk`, FreeBSD's `pkg`), the launcher runs it
+	 * itself instead of just telling the user to — the device already has a real package
+	 * manager that ships a real Node.js build for its own platform, so there is nothing to
+	 * hunt down or verify a checksum for. Announced on stderr before it runs, since it does
+	 * modify the system; not silent.
+	 */
+	public static unixLauncher(meta: Pick<TargetMetadata, "runtimeHint" | "bootstrapInstall">): string {
+		const lines = [
 			"#!/bin/sh",
 			'FORGEGRAAL_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1',
 			'if [ -x "$FORGEGRAAL_DIR/node" ]; then',
@@ -59,10 +70,27 @@ export class PortablePackager {
 			"if command -v node >/dev/null 2>&1; then",
 			`  exec node "$FORGEGRAAL_DIR/${PORTABLE_LAUNCHER_NAME}" "$@"`,
 			"fi",
-			`echo "[ForgeGraal] Node.js was not found. ${hint}" >&2`,
-			"exit 127",
-			"",
-		].join("\n");
+		];
+
+		if (meta.bootstrapInstall) {
+			const { command, description } = meta.bootstrapInstall;
+			const quoted = command.map(shQuote).join(" ");
+			lines.push(
+				`echo "[ForgeGraal] Node.js was not found; installing ${description} (${quoted})..." >&2`,
+				`if ${quoted} >&2; then`,
+				"  if command -v node >/dev/null 2>&1; then",
+				`    exec node "$FORGEGRAAL_DIR/${PORTABLE_LAUNCHER_NAME}" "$@"`,
+				"  fi",
+				"fi",
+				`echo "[ForgeGraal] Automatic install failed, or node is still not on PATH. Run manually: ${quoted}" >&2`
+			);
+		} else {
+			const hint = meta.runtimeHint.replace(/[`"$\\]/g, "\\$&");
+			lines.push(`echo "[ForgeGraal] Node.js was not found. ${hint}" >&2`);
+		}
+
+		lines.push("exit 127", "");
+		return lines.join("\n");
 	}
 
 	public static build(options: PortableBuildOptions): PortableBuildResult {
@@ -93,7 +121,7 @@ export class PortablePackager {
 			writeFileSync(launcherPath, PortablePackager.windowsLauncher());
 		} else {
 			launcherPath = join(out, options.name);
-			writeFileSync(launcherPath, PortablePackager.unixLauncher(meta.runtimeHint));
+			writeFileSync(launcherPath, PortablePackager.unixLauncher(meta));
 			chmodSync(launcherPath, 0o755);
 		}
 
@@ -103,10 +131,15 @@ export class PortablePackager {
 			copyFileSync(options.runtimeBinary, runtimeDest);
 			if (!isWindows) chmodSync(runtimeDest, 0o755);
 			sizeBytes += statSync(runtimeDest).size;
+		} else if (meta.bootstrapInstall) {
+			// Expected, not degraded: the launcher installs a real, current build for its own
+			// platform on first run (see unixLauncher), so there is nothing to bundle.
 		} else {
 			warnings.push(
 				`No Node.js runtime bundled for ${meta.name}; the launcher uses the node found on PATH. ` +
-					(meta.officialNodeFile ? "Build without --offline or pass --node-binary to bundle one." : meta.runtimeHint)
+					(meta.officialNodeFile || meta.pinnedLegacyNode
+						? "Build without --offline or pass --node-binary to bundle one."
+						: meta.runtimeHint)
 			);
 		}
 

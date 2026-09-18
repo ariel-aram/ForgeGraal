@@ -73,6 +73,9 @@ class BinaryPackager {
             }
             BinaryPackager.checkNativeAddons(project.nativeAddons, target, options, warnings);
             const runtime = await BinaryPackager.selectRuntime(target, meta, project.minNode, options, root, log);
+            if (meta.pinnedLegacyNode && runtime.version === meta.pinnedLegacyNode.version) {
+                warnings.push(meta.pinnedLegacyNode.warning);
+            }
             if (runtime.version && project.minNode && (0, ProjectCollector_1.compareVersions)(runtime.version, project.minNode) < 0) {
                 throw new structures_1.RuntimeError(`The bundled dependencies require Node.js >= ${project.minNode}, but the target runtime is ${runtime.version}.`);
             }
@@ -241,6 +244,8 @@ class BinaryPackager {
             binary = await NodeRuntime_1.NodeRuntime.ensureOfficial(version, meta.officialNodeFile);
         }
         else if (!options.offline) {
+            // A user-registered runtime is their own explicit, trusted choice (e.g. a newer
+            // unofficial Windows 7 build) and wins over ForgeGraal's own pinned fallback below.
             const [entry] = RuntimeRegistry_1.RuntimeRegistry.find(target, root);
             if (entry) {
                 log(`Using registered community runtime for ${target}: Node.js ${entry.version} (${entry.url})`);
@@ -252,13 +257,18 @@ class BinaryPackager {
                         "Remove it with 'forgegraal runtimes remove' and register a correct one.");
                 }
             }
+            else if (meta.pinnedLegacyNode) {
+                const { version, fileKey } = meta.pinnedLegacyNode;
+                log(`Downloading Node.js ${version} (${fileKey}), the last official release for ${meta.name}`);
+                binary = await NodeRuntime_1.NodeRuntime.ensureOfficial(version, fileKey);
+            }
         }
         if (!binary) {
             return {
                 binary: null,
                 version: null,
                 seaReady: false,
-                reason: meta.officialNodeFile
+                reason: meta.officialNodeFile || meta.pinnedLegacyNode
                     ? "runtime downloads are disabled (offline) and no --node-binary was given."
                     : `no Node.js runtime was given and none is registered for this target. ${meta.runtimeHint} ` +
                         `Or register one once with 'forgegraal runtimes add ${target} <version> <url> --sha256 <hex>'.`,
