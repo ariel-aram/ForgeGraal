@@ -201,16 +201,23 @@ test("the Node compatibility layer behaves the same on quickjs-ng as on Node", {
 	);
 });
 
-test("the compatibility layer refuses to fake the modules it has not implemented", () => {
+test("modules needing a socket are real with a native layer and explicit without one", () => {
 	const source = readFileSync(join(process.cwd(), "quickjs/runtime/node-compat.js"), "utf-8");
-	// net/tls/http/crypto need native work the engine cannot do yet. Stubbing them would produce
-	// a bot that looks like it started and then fails somewhere unrelated.
-	for (const name of ["net", "tls", "http", "crypto", "zlib"]) {
-		assert.match(source, new RegExp(`\\b${name}: notImplemented\\(`), `${name} must not be quietly stubbed`);
+	// The property that matters is not that these are unimplemented -- they are implemented now --
+	// but that they are never quietly stubbed: with a native layer they are real, and without one
+	// they say what is missing rather than half-working.
+	for (const name of ["net", "tls", "http", "https", "crypto", "zlib"]) {
+		assert.match(
+			source,
+			new RegExp(`\\b${name}: nativeModules\\?\\.\\w+ \\?\\? notImplemented\\(`),
+			`${name} must be native-backed with an explicit fallback`
+		);
 	}
+	// http2 is the one still outstanding, and it explains itself rather than pretending.
+	assert.match(source, /http2: notImplemented\(/);
 	assert.ok(
 		source.includes("__forgegraalUnavailable"),
-		"unavailable modules must be detectable by the conformance tool"
+		"unavailable modules must stay detectable by the conformance tool"
 	);
 });
 
@@ -225,7 +232,10 @@ test("the compatibility layer refuses to fake the modules it has not implemented
  */
 function findBackends(): Array<{ name: string; bin: string }> {
 	const candidates = [
-		{ name: "rust", bin: process.env.FORGEGRAAL_RUNTIME ?? join(process.cwd(), "runtime/target/release/forgegraal-runtime") },
+		{
+			name: "rust",
+			bin: process.env.FORGEGRAAL_RUNTIME ?? join(process.cwd(), "runtime/target/release/forgegraal-runtime"),
+		},
 		{ name: "c", bin: process.env.FORGEGRAAL_C ?? "" },
 	];
 	return candidates.filter((entry) => entry.bin && existsSync(entry.bin));
@@ -233,7 +243,9 @@ function findBackends(): Array<{ name: string; bin: string }> {
 
 const backends = findBackends();
 
-test("the native backends agree on crypto, compression and TLS", { skip: backends.length ? false : "no native backend built" }, () => {
+test("the native backends agree on crypto, compression and TLS", {
+	skip: backends.length ? false : "no native backend built",
+}, () => {
 	const selftest = join(process.cwd(), "quickjs/runtime/native-selftest.js");
 	for (const backend of backends) {
 		const run = spawnSync(backend.bin, [selftest], { encoding: "utf-8", timeout: 60_000 });
@@ -253,7 +265,11 @@ test("the native backends agree on crypto, compression and TLS", { skip: backend
 		);
 		assert.match(output, /zlib deflate\/inflate\s+: true/, `${backend.name}: zlib must round-trip\n${output}`);
 		// The whole point of the native layer: a Node-shaped tls.connect() reaching Discord.
-		assert.match(output, /tls\.connect status\s+: HTTP\/1\.1 200 OK/, `${backend.name}: TLS must work\n${output}${run.stderr}`);
+		assert.match(
+			output,
+			/tls\.connect status\s+: HTTP\/1\.1 200 OK/,
+			`${backend.name}: TLS must work\n${output}${run.stderr}`
+		);
 	}
 });
 
@@ -262,5 +278,8 @@ test("native-modules.js works against a synchronous or an asynchronous backend",
 	// The Rust host's socket calls return promises; the C host's return values directly. Every
 	// call is wrapped so the code above is written once, which is what keeps the two in step.
 	assert.ok(source.includes("const settled ="), "a promise/value adapter must exist");
-	assert.ok(!/native\.(write|close|connect|read)\([^)]*\)\.(then|catch)\(/.test(source), "native calls must go through it");
+	assert.ok(
+		!/native\.(write|close|connect|read)\([^)]*\)\.(then|catch)\(/.test(source),
+		"native calls must go through it"
+	);
 });

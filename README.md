@@ -141,19 +141,21 @@ C99 engine that publishes *current* builds for exactly the platforms Node abando
 binaries; `tools/engine-conformance.js` measures any engine against what a ForgeScript bot actually
 needs. Run it against anything: `node tools/engine-conformance.js`, `qjs tools/engine-conformance.js`.
 
-Measured on v0.16.2, not assumed:
+Measured, not assumed:
 
 | | language | builtins | host APIs | node modules | total |
 | --- | --- | --- | --- | --- | --- |
 | Node.js 26 | 10/10 | 10/10 | 8/8 | 30/30 | **58/58** |
 | Node.js 12.22.12 (the Windows 7 pin) | 5/10 | 1/10 | 1/8 | 29/30 | **36/58** |
-| quickjs-ng 0.16.2, bare engine | 10/10 | 10/10 | 0/8 | 0/30 | **20/58** |
-| quickjs-ng + `quickjs/runtime/node-compat.js` | 10/10 | 10/10 | 4/8 | 16/30 | **40/58** |
+| quickjs-ng, bare engine | 10/10 | 10/10 | 0/8 | 0/30 | **20/58** |
+| quickjs-ng + JavaScript layer | 10/10 | 10/10 | 8/8 | 21/30 | **49/58** |
+| quickjs-ng + JavaScript layer + native host | 10/10 | 10/10 | 8/8 | 29/30 | **57/58** |
 
-Node 12 and the bare engine are exact complements: **Node 12 has the libraries but not the
-language; quickjs-ng has the language but not the libraries.** Every construct that fails to parse
-on the Windows 7 pin — optional chaining, `??=`, private methods calling `super`, class static
-blocks, async generators — runs on the 32-bit quickjs-ng build unmodified.
+The one remaining gap is `http2`, and it is left as an error that explains itself rather than a
+stub. A working HTTP/2 client needs HPACK header compression, stream multiplexing and flow
+control, plus ALPN negotiation in the TLS layer — a protocol implementation in its own right, and
+one nothing here needs: Discord's REST API is HTTP/1.1 and its gateway is a WebSocket. A stub that
+loaded and then failed somewhere unrelated would be worse than the current message.
 
 ### The compatibility layer
 
@@ -170,10 +172,16 @@ a layer that merely loads proves nothing. It passes 26/26 on Node, 26/26 on quic
 on the official 32-bit engine build. `pnpm test` runs that comparison automatically when a `qjs` is
 on PATH (or `FORGEGRAAL_QJS` points at one) and skips it otherwise.
 
-What is missing is now specific: `net`, `tls`, `http`, `dns`, `crypto`, `zlib` and
-`worker_threads`. Those need native work — **`qjs:os` exposes no socket API at all** — and a bot
-cannot reach Discord without them. They are registered as modules that throw an explanation when
-used rather than being stubbed, the same rule the native addon shim follows.
+With a native host underneath, that layer now covers `net`, `tls`, `http`, `https`, `dns`, `crypto`,
+`zlib`, `worker_threads`, `child_process`, `async_hooks`, `v8`, `tty` and `readline`, plus `fetch`,
+Web Streams and `Blob`/`File` — and `Intl.Segmenter`, implemented per UAX #29 rather than
+approximated: grapheme and word granularity pass Unicode's own conformance files in full
+(`GraphemeBreakTest` 1187/1187, `WordBreakTest` 1826/1826). Sentence granularity throws, because
+those rules are locale-tailorable and one untailored implementation would be wrong for the locales
+that need it.
+
+Without a native host the socket-dependent modules stay unavailable and say so, which is why the
+bare-engine row above is 49/58 rather than a number propped up by stubs.
 
 ### The native host (`runtime/`, Rust)
 

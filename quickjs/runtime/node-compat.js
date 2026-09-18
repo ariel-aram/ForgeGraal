@@ -21,6 +21,9 @@
 
 import * as os from "qjs:os";
 import * as std from "qjs:std";
+import * as web from "./node-web.js";
+import * as misc from "./node-misc.js";
+import { Segmenter } from "./segmenter.js";
 
 const globalObject = globalThis;
 
@@ -1268,6 +1271,75 @@ const NEEDS_NATIVE_WORK =
 	"It needs native support the engine does not have yet (quickjs-ng exposes no socket API), " +
 	"so ForgeGraal cannot provide it in JavaScript.";
 
+/*
+ * Modules that need the native layer. Present only when running under a ForgeGraal host (the C
+ * build or the Rust one); on a bare `qjs` there are no sockets, so these stay unavailable and say
+ * so rather than half-working.
+ */
+const nativeLayer = globalThis.__forgegraal_native ?? null;
+let nativeModules = null;
+if (nativeLayer) {
+	const nm = await import("./native-modules.js");
+	const { net, tls } = nm.createNetModules(EventEmitter);
+	const { http, https, fetch } = web.createHttpModules({ net, tls }, nm.zlib, EventEmitter);
+	nativeModules = { net, tls, http, https, fetch, crypto: nm.crypto, zlib: nm.zlib };
+
+	// Web globals that only become real once there is a socket and a compressor behind them.
+	defGlobal("fetch", fetch);
+	defGlobal("Headers", web.Headers);
+	defGlobal("Request", web.Request);
+	defGlobal("Response", web.Response);
+}
+
+function defGlobal(name, value) {
+	if (typeof globalObject[name] === "undefined" && value) globalObject[name] = value;
+}
+
+// Web Streams and Blob/File do not need the native layer at all, so they are installed either way.
+defGlobal("ReadableStream", web.ReadableStream);
+defGlobal("WritableStream", web.WritableStream);
+defGlobal("TransformStream", web.TransformStream);
+defGlobal("ByteLengthQueuingStrategy", web.ByteLengthQueuingStrategy);
+defGlobal("CountQueuingStrategy", web.CountQueuingStrategy);
+defGlobal("Blob", web.Blob);
+defGlobal("File", web.File);
+
+/*
+ * Intl.Segmenter, implemented per UAX #29 in segmenter.js rather than approximated: grapheme and
+ * word granularity pass Unicode's own conformance suites in full (GraphemeBreakTest 1187/1187,
+ * WordBreakTest 1826/1826). Sentence granularity throws, because those rules are locale-tailorable
+ * and a single untailored implementation would be wrong for the locales that need tailoring.
+ */
+// quickjs-ng ships no Intl namespace at all, so it is created rather than extended. Only
+// Segmenter is provided; the other Intl constructors need CLDR data this runtime does not carry,
+// and inventing them would be the approximation this implementation exists to avoid.
+if (typeof globalObject.Intl === "undefined") {
+	globalObject.Intl = {};
+}
+if (typeof globalObject.Intl.Segmenter === "undefined") {
+	globalObject.Intl.Segmenter = Segmenter;
+}
+
+/*
+ * Name resolution. The native layer resolves a host as part of connect(), so the only thing
+ * needed here is a way to ask it without opening a connection; where the host exposes no
+ * resolver, dns.lookup reports that rather than inventing an address.
+ */
+function dnsLookup(hostname) {
+	if (hostname === "localhost") return "127.0.0.1";
+	if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) return hostname;
+	if (nativeLayer?.lookup) return nativeLayer.lookup(hostname);
+	throw new Error(
+		`cannot resolve '${hostname}': this runtime's native layer exposes no resolver. Connecting by ` +
+			"hostname still works, because the connect() call resolves it itself."
+	);
+}
+
+function createReadlineModule() {
+	const readline = misc.createReadline(EventEmitter);
+	return readline;
+}
+
 const builtins = {
 	assert,
 	"assert/strict": assert,
@@ -1293,24 +1365,35 @@ const builtins = {
 	perf_hooks: { performance: globalObject.performance },
 	url: { URL: globalObject.URL, URLSearchParams: globalObject.URLSearchParams },
 
-	// Not implemented, and saying so rather than pretending.
-	net: notImplemented("net", NEEDS_NATIVE_WORK),
-	tls: notImplemented("tls", NEEDS_NATIVE_WORK),
-	http: notImplemented("http", NEEDS_NATIVE_WORK),
-	https: notImplemented("https", NEEDS_NATIVE_WORK),
-	http2: notImplemented("http2", NEEDS_NATIVE_WORK),
-	dns: notImplemented("dns", NEEDS_NATIVE_WORK),
-	crypto: notImplemented("crypto", "It needs a native crypto library (hashing, HMAC and the TLS primitives)."),
-	zlib: notImplemented("zlib", "It needs a native compression library."),
-	worker_threads: notImplemented("worker_threads", "The engine has a Worker API, but it is not wired up to Node's interface yet."),
-	child_process: notImplemented("child_process", "Process spawning is not mapped onto the engine's exec() yet."),
+	// Backed by the native layer when there is one; otherwise they say what is missing.
+	net: nativeModules?.net ?? notImplemented("net", NEEDS_NATIVE_WORK),
+	tls: nativeModules?.tls ?? notImplemented("tls", NEEDS_NATIVE_WORK),
+	http: nativeModules?.http ?? notImplemented("http", NEEDS_NATIVE_WORK),
+	https: nativeModules?.https ?? notImplemented("https", NEEDS_NATIVE_WORK),
+	dns: nativeModules ? misc.createDns(dnsLookup) : notImplemented("dns", NEEDS_NATIVE_WORK),
+	"dns/promises": nativeModules ? misc.createDns(dnsLookup).promises : notImplemented("dns/promises", NEEDS_NATIVE_WORK),
+	http2: notImplemented(
+		"http2",
+		"An HTTP/2 client needs HPACK header compression and stream multiplexing, which is a protocol " +
+			"implementation in its own right. Nothing a bot does requires it: Discord's REST API is " +
+			"HTTP/1.1 and its gateway is a WebSocket, both of which are supported."
+	),
+	crypto: nativeModules?.crypto ?? notImplemented("crypto", "It needs a native crypto library (hashing, HMAC and the TLS primitives)."),
+	zlib: nativeModules?.zlib ?? notImplemented("zlib", "It needs a native compression library."),
+	worker_threads:
+		misc.createWorkerThreads(os.Worker, EventEmitter) ??
+		notImplemented("worker_threads", "This engine build has no Worker implementation."),
+	child_process:
+		misc.createChildProcess(os, EventEmitter) ??
+		notImplemented("child_process", "This engine build exposes no exec()."),
+	async_hooks: misc.asyncHooks,
+	v8: misc.v8,
+	tty: misc.createTty({ isatty: os.isatty, write: (text) => std.out.puts(text) }),
+	readline: createReadlineModule(),
+	"readline/promises": createReadlineModule(),
 	stream: streamModule,
 	"stream/promises": streamModule.promises,
-	async_hooks: notImplemented("async_hooks", "It needs engine-level async context tracking."),
 	diagnostics_channel: diagnosticsChannel,
-	v8: notImplemented("v8", "There is no V8 here; serialize/deserialize would need its own implementation."),
-	tty: notImplemented("tty", "Not written yet."),
-	readline: notImplemented("readline", "Not written yet."),
 };
 
 /* -------------------------------------------------------- CommonJS require */
@@ -1343,6 +1426,37 @@ function resolveModule(specifier, fromDir) {
 	return { file: found };
 }
 
+/**
+ * Picks the CommonJS entry out of a package's "exports" field.
+ *
+ * Only the root export and the conditions this runtime satisfies are considered: "require" and
+ * "node" before "default", and "import" last, because everything here is loaded through require().
+ */
+function resolveExports(exports) {
+	if (!exports) return null;
+	if (typeof exports === "string") return exports;
+	if (Array.isArray(exports)) {
+		for (const candidate of exports) {
+			const resolved = resolveExports(candidate);
+			if (resolved) return resolved;
+		}
+		return null;
+	}
+	if (typeof exports !== "object") return null;
+
+	const root = Object.hasOwn(exports, ".") ? exports["."] : exports;
+	if (typeof root === "string") return root;
+	if (!root || typeof root !== "object") return null;
+
+	for (const condition of ["require", "node", "default", "import"]) {
+		if (Object.hasOwn(root, condition)) {
+			const resolved = resolveExports(root[condition]);
+			if (resolved) return resolved;
+		}
+	}
+	return null;
+}
+
 function resolvePackage(base) {
 	for (const candidate of [base, `${base}.js`, `${base}.cjs`, `${base}.json`]) {
 		if (fs.existsSync(candidate) && !fs.statSync(candidate).isDirectory()) return candidate;
@@ -1352,9 +1466,11 @@ function resolvePackage(base) {
 		if (fs.existsSync(manifestPath)) {
 			try {
 				const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
-				const main = typeof manifest.main === "string" ? manifest.main : null;
-				if (main) {
-					const resolved = resolvePackage(pathModule.join(base, main));
+				// "exports" wins over "main", as in Node. Most current packages ship only
+				// "exports", so a resolver that reads just "main" cannot load them at all.
+				const entry = resolveExports(manifest.exports) ?? (typeof manifest.main === "string" ? manifest.main : null);
+				if (entry) {
+					const resolved = resolvePackage(pathModule.join(base, entry));
 					if (resolved) return resolved;
 				}
 			} catch {
