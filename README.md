@@ -28,8 +28,10 @@ legacy Windows (XP, Vista, 7).
 | Target               | Platform                                | Runtime                                                      |
 | -------------------- | --------------------------------------- | -------------------------------------------------------------- |
 | `win-xp-x86`         | Windows XP / Server 2003 (NT 5.1/5.2)   | portable, `--node-binary` — no automatable source (see below) |
-| `win-legacy-x86`     | Windows Vista / 7 (32-bit)              | portable, **auto**: official Node.js 13.14.0                  |
-| `win-legacy-x64`     | Windows Vista / 7 (64-bit)              | portable, **auto**: official Node.js 13.14.0                  |
+| `win-vista-x86`      | Windows Vista (32-bit)                  | portable, **auto**: official Node.js 5.12.0                   |
+| `win-vista-x64`      | Windows Vista (64-bit)                  | portable, **auto**: official Node.js 5.12.0                   |
+| `win-legacy-x86`     | Windows 7 (32-bit)                      | portable, **auto**: official Node.js 13.14.0                  |
+| `win-legacy-x64`     | Windows 7 (64-bit)                      | portable, **auto**: official Node.js 13.14.0                  |
 | `ios-ish-x86`        | Alpine (musl i686) under iOS iSH        | portable, **auto**: installs itself on-device (`apk`)         |
 | `linux-x86`          | Linux 32-bit (i686)                     | portable, `--node-binary` — no automatable source (see below) |
 | `freebsd-x86`        | FreeBSD 32-bit                          | portable, **auto**: installs itself on-device (`pkg`)         |
@@ -46,17 +48,22 @@ set `nodeLinker: node-modules` in `.yarnrc.yml` and reinstall.
 
 ### Why some legacy targets still need `--node-binary`
 
-**Windows 7 / Vista** used to say "supply a community build yourself." That was wrong — Node.js itself
-still hosts and checksums the last release that officially supported Windows 7: **v13.14.0** (Node 14
-bumped the floor to Windows 8.1, confirmed against `BUILDING.md` at both tags). ForgeGraal now downloads
-and verifies it automatically, no `--node-binary` needed. It does **not** make current discord.js-based
-bots run there, though: tested directly, `@tryforge/forgescript` fails to parse on it (`Unexpected token
-'.'`, optional chaining, ES2020), and with `--harmony` it gets further before failing on `??=` (ES2021,
-used by `@discordjs/util`) — a syntax gap no runtime flag closes, on top of `undici` needing Node >= 18 at
-the API level regardless of syntax. The build still succeeds and prints this as a loud warning (see
-`forgegraal info win-legacy-x86`), for projects with a lighter dependency tree that doesn't reach that far.
-Vista's own Node.js support floor was not confirmed as part of this — 13.14.0 is verified for Windows 7
-specifically.
+**Windows 7** used to say "supply a community build yourself." That was wrong — Node.js itself still
+hosts and checksums the last release that officially supported Windows 7: **v13.14.0** (Node 14 bumped
+the floor to Windows 8.1, confirmed against `BUILDING.md` at both tags). ForgeGraal now downloads and
+verifies it automatically, no `--node-binary` needed. It does **not** make current discord.js-based bots
+run there, though: tested directly, `@tryforge/forgescript` fails to parse on it (`Unexpected token '.'`,
+optional chaining, ES2020), and with `--harmony` it gets further before failing on `??=` (ES2021, used by
+`@discordjs/util`) — a syntax gap no runtime flag closes, on top of `undici` needing Node >= 18 at the API
+level regardless of syntax. The build still succeeds and prints this as a loud warning (see `forgegraal
+info win-legacy-x86`), for projects with a lighter dependency tree that doesn't reach that far.
+
+**Windows Vista** is a separate, older pin — Node.js dropped Vista support entirely in v6.0.0, so the
+Windows 7 build above will not even launch there (missing Win32 APIs, not a syntax problem). The last
+release that runs on Vista at all is **v5.12.0**, checksum-verified and fetched automatically for
+`win-vista-x86` / `win-vista-x64`. It is pre-ES6: no classes, no async/await, no template literals — only
+a bot written specifically for it, with no modern dependency (including current discord.js or
+ForgeScript) in its chain, can run there. See `forgegraal info win-vista-x86` for the full warning.
 
 **iSH and FreeBSD** were never actually missing a binary — `apk`/`pkg` already have a real, current Node.js
 build for their own platform. The executable now runs that install command itself on first launch instead
@@ -132,6 +139,7 @@ XP/Vista/7's outdated store is normally not why a bot cannot reach Discord. Forc
 forgegraal compile dist/index.js --target linux-modern-x64
 forgegraal compile dist/index.js --target ios-ish-x86          # installs Node.js on-device itself
 forgegraal compile dist/index.js --target win-legacy-x64       # auto-fetches Node.js 13.14.0
+forgegraal compile dist/index.js --target win-vista-x86        # auto-fetches Node.js 5.12.0
 forgegraal compile dist/index.js --target win-xp-x86 --node-binary ./node-xp/node.exe
 forgegraal compile dist/index.js --target linux-x86 --node-binary ./node-linux-x86/node
 

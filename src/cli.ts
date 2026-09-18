@@ -28,7 +28,7 @@ Compile options:
   -o, --output <path>        Output file (sea) or directory (portable)
   -s, --strategy <name>      auto (default), sea or portable
       --pm <name>            Package manager override (bun, pnpm, npm, yarn)
-      --node-binary <path>   Node.js runtime for the target (only needed for win-xp-x86 and linux-x86; other legacy targets provision one automatically)
+      --node-binary <path>   Node.js runtime for the target (only needed for win-xp-x86 and linux-x86; every other legacy target provisions one automatically)
       --node-version <ver>   Official Node.js version to download (e.g. 22 or 22.11.0)
       --offline              Never download runtimes
       --include-dev          Bundle devDependencies too
@@ -40,11 +40,15 @@ Legacy targets that need a runtime handle it three different ways, automatically
   - iSH, FreeBSD          : the compiled executable installs Node.js itself on first run,
                             using the device's own package manager (apk / pkg). Nothing to
                             download or verify ahead of time.
-  - Windows 7 / Vista     : the last official Node.js release for Windows 7 (13.14.0) is
+  - Windows 7             : the last official Node.js release for Windows 7 (13.14.0) is
                             downloaded and checksum-verified automatically. It predates
                             syntax current discord.js depends on, so the build prints (and
                             keeps printing at every build) a warning about that; see
                             'forgegraal info win-legacy-x86'.
+  - Windows Vista         : a separate, older pin (5.12.0) — Node.js 6.0.0 dropped Vista
+                            entirely, so the Windows 7 build above will not even launch
+                            there. 5.12.0 is pre-ES6 and only runs bots with no modern
+                            dependency in their chain; see 'forgegraal info win-vista-x86'.
   - win-xp-x86, linux-x86 : no automatable source exists (checked: the last community
                             32-bit Linux build is Node 12.16.3, already below ForgeScript's
                             own floor). Supply a runtime with --node-binary each build, or
