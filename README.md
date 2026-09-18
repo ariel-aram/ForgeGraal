@@ -30,8 +30,8 @@ legacy Windows (XP, Vista, 7).
 | `win-xp-x86`         | Windows XP / Server 2003 (NT 5.1/5.2)   | portable, `--node-binary` — no automatable source (see below) |
 | `win-vista-x86`      | Windows Vista (32-bit)                  | portable, **auto**: official Node.js 5.12.0                   |
 | `win-vista-x64`      | Windows Vista (64-bit)                  | portable, **auto**: official Node.js 5.12.0                   |
-| `win-legacy-x86`     | Windows 7 (32-bit)                      | portable, **auto**: official Node.js 13.14.0                  |
-| `win-legacy-x64`     | Windows 7 (64-bit)                      | portable, **auto**: official Node.js 13.14.0                  |
+| `win-legacy-x86`     | Windows 7 (32-bit)                      | portable, **auto**: official Node.js 12.22.12                 |
+| `win-legacy-x64`     | Windows 7 (64-bit)                      | portable, **auto**: official Node.js 12.22.12                 |
 | `ios-ish-x86`        | Alpine (musl i686) under iOS iSH        | portable, **auto**: installs itself on-device (`apk`)         |
 | `linux-x86`          | Linux 32-bit (i686)                     | portable, `--node-binary` — no automatable source (see below) |
 | `freebsd-x86`        | FreeBSD 32-bit                          | portable, **auto**: installs itself on-device (`pkg`)         |
@@ -48,15 +48,19 @@ set `nodeLinker: node-modules` in `.yarnrc.yml` and reinstall.
 
 ### Why some legacy targets still need `--node-binary`
 
-**Windows 7** used to say "supply a community build yourself." That was wrong — Node.js itself still
-hosts and checksums the last release that officially supported Windows 7: **v13.14.0** (Node 14 bumped
-the floor to Windows 8.1, confirmed against `BUILDING.md` at both tags). ForgeGraal now downloads and
-verifies it automatically, no `--node-binary` needed. It does **not** make current discord.js-based bots
-run there, though: tested directly, `@tryforge/forgescript` fails to parse on it (`Unexpected token '.'`,
-optional chaining, ES2020), and with `--harmony` it gets further before failing on `??=` (ES2021, used by
-`@discordjs/util`) — a syntax gap no runtime flag closes, on top of `undici` needing Node >= 18 at the API
-level regardless of syntax. The build still succeeds and prints this as a loud warning (see `forgegraal
-info win-legacy-x86`), for projects with a lighter dependency tree that doesn't reach that far.
+**Windows 7** used to say "supply a community build yourself." That was wrong — Node.js's own
+`BUILDING.md` declares Windows 7 Tier 1 support through v13.x (Node 14 bumped the floor to Windows 8.1).
+But that Tier declaration reflects Node's CI image (Windows Server 2012 R2), not genuine Windows 7
+hardware; community reports describe later 13.x/14.x builds crashing on real Windows 7 with missing
+`ws2_32.dll` entry points, unconfirmed here without real hardware to test on. ForgeGraal pins **v12.22.12**
+instead, the version community guidance converges on as actually launching there, and downloads/verifies
+it automatically, no `--node-binary` needed. It does **not** make current discord.js-based bots run
+there, though: tested directly at v13.14.0 (same generation, older ES coverage than v12.22.12),
+`@tryforge/forgescript` fails to parse (`Unexpected token '.'`, optional chaining, ES2020), and with
+`--harmony` it gets further before failing on `??=` (ES2021, used by `@discordjs/util`) — a syntax gap no
+runtime flag closes, on top of `undici` needing Node >= 18 at the API level regardless of syntax. The
+build still succeeds and prints this as a loud warning (see `forgegraal info win-legacy-x86`), for
+projects with a lighter dependency tree that doesn't reach that far.
 
 **Windows Vista** is a separate, older pin — Node.js dropped Vista support entirely in v6.0.0, so the
 Windows 7 build above will not even launch there (missing Win32 APIs, not a syntax problem). The last
@@ -138,7 +142,7 @@ XP/Vista/7's outdated store is normally not why a bot cannot reach Discord. Forc
 # The entrypoint must be JavaScript: build TypeScript first.
 forgegraal compile dist/index.js --target linux-modern-x64
 forgegraal compile dist/index.js --target ios-ish-x86          # installs Node.js on-device itself
-forgegraal compile dist/index.js --target win-legacy-x64       # auto-fetches Node.js 13.14.0
+forgegraal compile dist/index.js --target win-legacy-x64       # auto-fetches Node.js 12.22.12
 forgegraal compile dist/index.js --target win-vista-x86        # auto-fetches Node.js 5.12.0
 forgegraal compile dist/index.js --target win-xp-x86 --node-binary ./node-xp/node.exe
 forgegraal compile dist/index.js --target linux-x86 --node-binary ./node-linux-x86/node

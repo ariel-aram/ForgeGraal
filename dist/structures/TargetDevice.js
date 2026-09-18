@@ -32,40 +32,48 @@ var TargetDevice;
 const XP_WIN_HINT = "Windows XP (NT 5.1/5.2) requires a backported runtime (e.g. One-Core-API patched Node or community XP builds). Supply with --node-binary.";
 /**
  * Node.js's own platform floor moved from "Windows 7/2008 R2" (Node <= 13) to "Windows
- * 8.1/2012 R2" (Node >= 14) — confirmed against BUILDING.md at both tags. v13.14.0 is the
- * last v13.x patch and is still hosted with a valid SHASUMS256.txt on nodejs.org/dist, so it
- * downloads and verifies exactly like a current official release.
+ * 8.1/2012 R2" (Node >= 14) — confirmed against BUILDING.md at both tags, which declares
+ * Windows 7 Tier 1 identically at v12.22.12 and v13.14.0 (no documented distinction between
+ * them). Community reports (real user hardware, not covered by Node's own CI matrix) describe
+ * later 13.x/14.x builds crashing on genuine Windows 7 with missing ws2_32.dll entry points,
+ * which BUILDING.md's Tier declaration does not catch since Node's CI runs on Server 2012 R2,
+ * not real Windows 7. Pinned to v12.22.12, the version community guidance converges on as
+ * actually launching there, rather than 13.14.0's higher but doc-unverified ceiling. Both are
+ * still hosted with a valid SHASUMS256.txt on nodejs.org/dist and download/verify identically.
  *
- * That does not make current ForgeScript bots runnable on it. Verified directly: loading
+ * That does not make current ForgeScript bots runnable on it either way. Verified directly: loading
  * @tryforge/forgescript on a real v13.14.0 raises `Unexpected token '.'` (optional chaining,
  * ES2020); with --harmony that parses, but @discordjs/util's compiled output then fails on
  * `??=` (nullish assignment, ES2021), which no V8 this old has under any flag. discord.js's
  * gateway/REST layer also depends on undici, which needs Node >= 18 at runtime (fetch, Web
  * Streams), independent of syntax. This is a ceiling in discord.js's own dependency chain,
  * not something a Node.js binary — official, unofficial, or hand-built — can be picked
- * around: no Node.js old enough to run on Windows 7 is new enough to parse it.
+ * around: no Node.js old enough to run on Windows 7 is new enough to parse it. v12.22.12 has
+ * even less ES2020+ coverage than v13.14.0, so this loses nothing practical.
  *
- * v13.14.0 does NOT run on Vista at all — Node dropped Vista in v6.0.0, so this pin is
+ * This pin does NOT run on Vista at all — Node dropped Vista in v6.0.0, so this pin is
  * Windows 7-only. Vista gets its own, older pin below.
  */
-const WIN7_PINNED_WARNING = "Using Node.js 13.14.0, the last official release Node.js itself lists as supporting this platform " +
-    "(Node 14+ requires Windows 8.1+). This predates syntax current discord.js's own dependencies use " +
+const WIN7_PINNED_WARNING = "Using Node.js 12.22.12, the version community reports converge on as the last that actually launches " +
+    "on real Windows 7 hardware (13.x/14.x are Tier 1 in Node's own docs, but that reflects Node's CI image " +
+    "— Server 2012 R2 — not genuine Windows 7, and real-hardware reports describe later builds crashing on " +
+    "missing ws2_32.dll entry points). This predates syntax current discord.js's own dependencies use " +
     "(@discordjs/util needs '??=', ES2021, which this runtime cannot parse under any flag) and undici's " +
     "runtime requirements (Node >= 18). A bot built on current discord.js will not start here.";
 const WIN7_PINNED_NODE_X86 = {
-    version: "13.14.0",
+    version: "12.22.12",
     fileKey: "win-x86-exe",
     warning: WIN7_PINNED_WARNING,
 };
 const WIN7_PINNED_NODE_X64 = {
-    version: "13.14.0",
+    version: "12.22.12",
     fileKey: "win-x64-exe",
     warning: WIN7_PINNED_WARNING,
 };
 /**
  * Node.js dropped Windows Vista support in v6.0.0 (confirmed against the v6.0.0 release
  * notes); the last release still supporting Vista/XP-era Windows is v5.12.0, still hosted
- * with a valid SHASUMS256.txt. This is older than WIN7_PINNED_NODE above (13.14.0 won't even
+ * with a valid SHASUMS256.txt. This is older than WIN7_PINNED_NODE above (12.22.12 won't even
  * launch on Vista, missing Windows APIs Node >= 6 requires), and far short of ES6: no
  * classes, no arrow functions under strict parsing in all cases, no destructuring in some
  * forms. A ForgeScript bot needs a build targeting this runtime specifically, not just a
@@ -180,10 +188,10 @@ exports.TARGET_METADATA_MAP = {
         officialNodeFile: null,
         pinnedLegacyNode: WIN7_PINNED_NODE_X86,
         bootstrapInstall: null,
-        runtimeHint: "Node.js 13.14.0 (the last official Windows 7 release) is downloaded and verified automatically; " +
-            "see the build warning this produces for why current discord.js-based bots still won't run on it. " +
-            "Pass --node-binary for a newer runtime instead. For Windows Vista use win-vista-x86 instead — " +
-            "this build's 13.14.0 pin does not launch on Vista at all.",
+        runtimeHint: "Node.js 12.22.12 (community-reported as the version that actually launches on real Windows 7 " +
+            "hardware) is downloaded and verified automatically; see the build warning this produces for why " +
+            "current discord.js-based bots still won't run on it. Pass --node-binary for a newer runtime " +
+            "instead. For Windows Vista use win-vista-x86 instead — this pin does not launch on Vista at all.",
     },
     [TargetDevice.WinLegacyX64]: {
         id: TargetDevice.WinLegacyX64,
@@ -199,10 +207,10 @@ exports.TARGET_METADATA_MAP = {
         officialNodeFile: null,
         pinnedLegacyNode: WIN7_PINNED_NODE_X64,
         bootstrapInstall: null,
-        runtimeHint: "Node.js 13.14.0 (the last official Windows 7 release) is downloaded and verified automatically; " +
-            "see the build warning this produces for why current discord.js-based bots still won't run on it. " +
-            "Pass --node-binary for a newer runtime instead. For Windows Vista use win-vista-x64 instead — " +
-            "this build's 13.14.0 pin does not launch on Vista at all.",
+        runtimeHint: "Node.js 12.22.12 (community-reported as the version that actually launches on real Windows 7 " +
+            "hardware) is downloaded and verified automatically; see the build warning this produces for why " +
+            "current discord.js-based bots still won't run on it. Pass --node-binary for a newer runtime " +
+            "instead. For Windows Vista use win-vista-x64 instead — this pin does not launch on Vista at all.",
     },
     [TargetDevice.LinuxX86]: {
         id: TargetDevice.LinuxX86,
