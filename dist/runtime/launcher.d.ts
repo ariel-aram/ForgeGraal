@@ -19,6 +19,12 @@ export interface LauncherConfig {
     simdUnsafe: boolean;
     /** Install the native addon shim (legacy and 32-bit targets). */
     nativeShim: boolean;
+    /**
+     * Install the Bun compatibility layer (bun:sqlite, the Bun global). Set whenever the
+     * source used Bun-specific APIs, independent of the target — executables always run on
+     * Node.js, so `Bun` is undefined on every target, not only legacy ones.
+     */
+    bunCompat: boolean;
 }
 export declare const SEA_ASSET_NAME = "app.fgar";
 export declare const PORTABLE_ARCHIVE_NAME = "app.fgar";

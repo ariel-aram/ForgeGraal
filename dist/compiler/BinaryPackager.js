@@ -8,6 +8,7 @@ const launcher_1 = require("../runtime/launcher");
 const structures_1 = require("../structures");
 const Archive_1 = require("./Archive");
 const BinaryInspector_1 = require("./BinaryInspector");
+const BunTranspiler_1 = require("./BunTranspiler");
 const NodeRuntime_1 = require("./NodeRuntime");
 const PolicyEnforcer_1 = require("./PolicyEnforcer");
 const PortablePackager_1 = require("./PortablePackager");
@@ -36,118 +37,144 @@ class BinaryPackager {
         const excludePaths = [defaultOutDir];
         if (options.output)
             excludePaths.push((0, node_path_1.resolve)(options.output));
-        log(`Collecting project files from ${root} (${pm})`);
-        const project = ProjectCollector_1.ProjectCollector.collect({
-            entrypoint: options.entrypoint,
-            includeDev: options.includeDev,
-            includeEnv: options.includeEnv,
-            excludePaths,
-        });
-        if (pm === "bun" && project.usesBunApis.length) {
-            warnings.push(`Bun-only APIs detected (${project.usesBunApis.slice(0, 5).join(", ")}). Executables run on Node.js, where these APIs do not exist.`);
-        }
-        if (!options.includeEnv) {
-            warnings.push(".env files were not bundled; provide secrets through the environment at runtime.");
-        }
-        BinaryPackager.checkNativeAddons(project.nativeAddons, target, options, warnings);
-        const runtime = await BinaryPackager.selectRuntime(target, meta, project.minNode, options, root, log);
-        if (runtime.version && project.minNode && (0, ProjectCollector_1.compareVersions)(runtime.version, project.minNode) < 0) {
-            throw new structures_1.RuntimeError(`The bundled dependencies require Node.js >= ${project.minNode}, but the target runtime is ${runtime.version}.`);
-        }
-        let chosen;
-        if (strategy === "sea") {
-            if (!runtime.seaReady)
-                throw new structures_1.RuntimeError(`Cannot build a SEA for ${meta.name}: ${runtime.reason}`);
-            chosen = "sea";
-        }
-        else if (strategy === "portable") {
-            chosen = "portable";
-        }
-        else {
-            chosen = runtime.seaReady ? "sea" : "portable";
-            if (!runtime.seaReady && runtime.binary) {
-                warnings.push(`Falling back to a portable bundle: ${runtime.reason}`);
+        // Bun projects are frequently run straight from .ts with no separate build step.
+        // Node.js cannot require() that directly; transpile it with Bun's own bundler rather
+        // than asking the user to pre-build, keeping installed packages external so
+        // ProjectCollector resolves them from the real node_modules afterward.
+        let entrypoint = (0, node_path_1.resolve)(options.entrypoint);
+        let cleanupTranspiled = null;
+        if (pm === "bun" && BunTranspiler_1.BUN_TRANSPILABLE_EXTENSIONS.has((0, node_path_1.extname)(entrypoint))) {
+            if (!BunTranspiler_1.BunTranspiler.isAvailable()) {
+                throw new structures_1.RuntimeError(`Entrypoint '${entrypoint}' is not plain JavaScript and 'bun' is not on PATH to transpile it. ` +
+                    "Run 'bun build --target=node --outdir dist' (or tsc) first and pass the built file.");
             }
+            log(`Transpiling ${options.entrypoint} with 'bun build' (packages kept external)`);
+            const transpiled = BunTranspiler_1.BunTranspiler.transpile(entrypoint);
+            entrypoint = transpiled.entrypoint;
+            cleanupTranspiled = transpiled.cleanup;
         }
-        const archive = Archive_1.Archive.pack([
-            ...project.entries,
-            {
-                path: launcher_1.IMPORT_HELPER_PATH,
-                source: Buffer.from(launcher_1.IMPORT_HELPER_SOURCE),
-                mode: 0o644,
-            },
-        ]);
-        const launcherSource = (0, launcher_1.createLauncherSource)({
-            name: project.name,
-            entry: project.entry,
-            hash: archive.sha256,
-            minNode: project.minNode,
-            target,
-            mode: chosen,
-            // Resolved here rather than in the launcher: matching substrings of the target id
-            // misses targets (`win-xp-x86` contains no "legacy", `linux-x86` no "xp").
-            windowsLegacy: meta.os === "windows-legacy",
-            simdUnsafe: meta.is32BitOrLegacy,
-            nativeShim: meta.is32BitOrLegacy,
-        });
-        log(`Packed ${archive.files} files from ${project.packages} packages (${(archive.buffer.length / 1048576).toFixed(1)} MiB compressed)`);
-        let outputPath;
-        let launcherPath;
-        let sizeBytes;
-        if (chosen === "sea") {
-            outputPath = (0, node_path_1.resolve)(options.output ?? (0, node_path_1.join)(defaultOutDir, `${project.name}-${target}${(0, structures_1.executableExtension)(target)}`));
-            if ((0, node_fs_1.existsSync)(outputPath) && (0, node_fs_1.statSync)(outputPath).isDirectory()) {
-                throw new structures_1.RuntimeError(`SEA output '${outputPath}' is a directory; pass a file path`);
-            }
-            const { binary, version } = runtime;
-            if (!binary || !version) {
-                throw new structures_1.RuntimeError("SEA builds need a runtime with a known version");
-            }
-            const generator = await BinaryPackager.selectGenerator(target, binary, version, options, warnings, log);
-            log(`Injecting SEA blob into Node.js ${runtime.version ?? "(unknown version)"}`);
-            const res = await SeaPackager_1.SeaPackager.build({
-                target,
-                runtimeBinary: binary,
-                generatorBinary: generator,
-                launcherSource,
-                archive: archive.buffer,
-                outputPath,
+        try {
+            log(`Collecting project files from ${root} (${pm})`);
+            // The transpiled file (if any) lives inside root and is walked and bundled like any
+            // other project file — it is the entrypoint, so it must not be excluded.
+            const project = ProjectCollector_1.ProjectCollector.collect({
+                entrypoint,
+                includeDev: options.includeDev,
+                includeEnv: options.includeEnv,
+                excludePaths,
             });
-            warnings.push(...res.warnings);
-            launcherPath = outputPath;
-            sizeBytes = res.sizeBytes;
-        }
-        else {
-            outputPath = (0, node_path_1.resolve)(options.output ?? (0, node_path_1.join)(defaultOutDir, `${project.name}-${target}`));
-            const res = PortablePackager_1.PortablePackager.build({
-                target,
+            if (project.usesBunApis.length) {
+                warnings.push(`Bun APIs detected (${project.usesBunApis.slice(0, 5).join(", ")}). The compiled executable runs on ` +
+                    "Node.js: bun:sqlite and common Bun globals (env, file, write, serve, sleep, which) are polyfilled " +
+                    "at startup, but anything else (Bun.password, Bun.hash, FFI, Bun.spawn, ...) will fail when reached.");
+            }
+            if (!options.includeEnv) {
+                warnings.push(".env files were not bundled; provide secrets through the environment at runtime.");
+            }
+            BinaryPackager.checkNativeAddons(project.nativeAddons, target, options, warnings);
+            const runtime = await BinaryPackager.selectRuntime(target, meta, project.minNode, options, root, log);
+            if (runtime.version && project.minNode && (0, ProjectCollector_1.compareVersions)(runtime.version, project.minNode) < 0) {
+                throw new structures_1.RuntimeError(`The bundled dependencies require Node.js >= ${project.minNode}, but the target runtime is ${runtime.version}.`);
+            }
+            let chosen;
+            if (strategy === "sea") {
+                if (!runtime.seaReady)
+                    throw new structures_1.RuntimeError(`Cannot build a SEA for ${meta.name}: ${runtime.reason}`);
+                chosen = "sea";
+            }
+            else if (strategy === "portable") {
+                chosen = "portable";
+            }
+            else {
+                chosen = runtime.seaReady ? "sea" : "portable";
+                if (!runtime.seaReady && runtime.binary) {
+                    warnings.push(`Falling back to a portable bundle: ${runtime.reason}`);
+                }
+            }
+            const archive = Archive_1.Archive.pack([
+                ...project.entries,
+                {
+                    path: launcher_1.IMPORT_HELPER_PATH,
+                    source: Buffer.from(launcher_1.IMPORT_HELPER_SOURCE),
+                    mode: 0o644,
+                },
+            ]);
+            const launcherSource = (0, launcher_1.createLauncherSource)({
                 name: project.name,
-                launcherSource,
-                archive: archive.buffer,
-                outputPath,
-                runtimeBinary: runtime.binary,
+                entry: project.entry,
+                hash: archive.sha256,
+                minNode: project.minNode,
+                target,
+                mode: chosen,
+                // Resolved here rather than in the launcher: matching substrings of the target id
+                // misses targets (`win-xp-x86` contains no "legacy", `linux-x86` no "xp").
+                windowsLegacy: meta.os === "windows-legacy",
+                simdUnsafe: meta.is32BitOrLegacy,
+                nativeShim: meta.is32BitOrLegacy,
+                bunCompat: project.usesBunApis.length > 0,
             });
-            warnings.push(...res.warnings);
-            launcherPath = res.launcherPath;
-            sizeBytes = res.sizeBytes;
+            log(`Packed ${archive.files} files from ${project.packages} packages (${(archive.buffer.length / 1048576).toFixed(1)} MiB compressed)`);
+            let outputPath;
+            let launcherPath;
+            let sizeBytes;
+            if (chosen === "sea") {
+                outputPath = (0, node_path_1.resolve)(options.output ?? (0, node_path_1.join)(defaultOutDir, `${project.name}-${target}${(0, structures_1.executableExtension)(target)}`));
+                if ((0, node_fs_1.existsSync)(outputPath) && (0, node_fs_1.statSync)(outputPath).isDirectory()) {
+                    throw new structures_1.RuntimeError(`SEA output '${outputPath}' is a directory; pass a file path`);
+                }
+                const { binary, version } = runtime;
+                if (!binary || !version) {
+                    throw new structures_1.RuntimeError("SEA builds need a runtime with a known version");
+                }
+                const generator = await BinaryPackager.selectGenerator(target, binary, version, options, warnings, log);
+                log(`Injecting SEA blob into Node.js ${runtime.version ?? "(unknown version)"}`);
+                const res = await SeaPackager_1.SeaPackager.build({
+                    target,
+                    runtimeBinary: binary,
+                    generatorBinary: generator,
+                    launcherSource,
+                    archive: archive.buffer,
+                    outputPath,
+                });
+                warnings.push(...res.warnings);
+                launcherPath = outputPath;
+                sizeBytes = res.sizeBytes;
+            }
+            else {
+                outputPath = (0, node_path_1.resolve)(options.output ?? (0, node_path_1.join)(defaultOutDir, `${project.name}-${target}`));
+                const res = PortablePackager_1.PortablePackager.build({
+                    target,
+                    name: project.name,
+                    launcherSource,
+                    archive: archive.buffer,
+                    outputPath,
+                    runtimeBinary: runtime.binary,
+                });
+                warnings.push(...res.warnings);
+                launcherPath = res.launcherPath;
+                sizeBytes = res.sizeBytes;
+            }
+            return {
+                success: true,
+                strategy: chosen,
+                outputPath,
+                launcherPath,
+                target,
+                packageManager: pm,
+                sizeBytes,
+                is32BitOrLegacy: (0, structures_1.is32BitOrLegacy)(target),
+                metadata: meta,
+                runtimeVersion: runtime.version,
+                archiveSha256: archive.sha256,
+                files: archive.files,
+                packages: project.packages,
+                durationMs: Math.round(performance.now() - startTime),
+                warnings,
+            };
         }
-        return {
-            success: true,
-            strategy: chosen,
-            outputPath,
-            launcherPath,
-            target,
-            packageManager: pm,
-            sizeBytes,
-            is32BitOrLegacy: (0, structures_1.is32BitOrLegacy)(target),
-            metadata: meta,
-            runtimeVersion: runtime.version,
-            archiveSha256: archive.sha256,
-            files: archive.files,
-            packages: project.packages,
-            durationMs: Math.round(performance.now() - startTime),
-            warnings,
-        };
+        finally {
+            cleanupTranspiled?.();
+        }
     }
     static checkNativeAddons(addons, target, options, warnings) {
         // Prebuilt packages often ship addons for several platforms: a package is fine

@@ -1,6 +1,7 @@
 export * from "./Archive";
 export * from "./BinaryInspector";
 export * from "./BinaryPackager";
+export * from "./BunTranspiler";
 export * from "./NodeRuntime";
 export * from "./PolicyEnforcer";
 export * from "./PortablePackager";

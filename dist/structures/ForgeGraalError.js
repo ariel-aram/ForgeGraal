@@ -3,7 +3,7 @@
  * Error hierarchy for the ForgeGraal compiler and package manager policy.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.NativeAddonMismatchError = exports.RuntimeError = exports.PathOutsideRootError = exports.ProjectError = exports.InvalidPackageManagerError = exports.InvalidTargetError = exports.BunTargetRestrictionError = exports.ForgeGraalError = void 0;
+exports.NativeAddonMismatchError = exports.RuntimeError = exports.PathOutsideRootError = exports.ProjectError = exports.InvalidPackageManagerError = exports.InvalidTargetError = exports.ForgeGraalError = void 0;
 class ForgeGraalError extends Error {
     name = "ForgeGraalError";
     constructor(message) {
@@ -12,26 +12,6 @@ class ForgeGraalError extends Error {
     }
 }
 exports.ForgeGraalError = ForgeGraalError;
-/**
- * @deprecated Nothing throws this any more: `PolicyEnforcer` now allows every target for
- * every package manager. Kept so code that catches it still compiles. Restore the check in
- * `PolicyEnforcer.assertTargetAllowed` if Bun projects should be limited to 32-bit and
- * legacy targets again.
- */
-class BunTargetRestrictionError extends ForgeGraalError {
-    name = "BunTargetRestrictionError";
-    target;
-    constructor(target) {
-        super(`Target '${target}' is not available for Bun projects. ` +
-            "Bun already compiles modern 64-bit executables with 'bun build --compile' " +
-            "(linux-x64, linux-arm64, windows-x64, darwin-x64, darwin-arm64), but not 32-bit " +
-            "(iSH, x86, ARMv7) or legacy Windows (7 / Vista) executables. " +
-            "ForgeGraal therefore only builds 32-bit and legacy targets for Bun projects; " +
-            "use 'bun build --compile' for modern targets, or NPM, PNPM, or Yarn for the full matrix.");
-        this.target = target;
-    }
-}
-exports.BunTargetRestrictionError = BunTargetRestrictionError;
 class InvalidTargetError extends ForgeGraalError {
     name = "InvalidTargetError";
     invalidTarget;
