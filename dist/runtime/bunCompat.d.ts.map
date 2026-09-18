@@ -1,0 +1,1 @@
+{"version":3,"file":"bunCompat.d.ts","sourceRoot":"","sources":["../../src/runtime/bunCompat.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;;;;;;;;;;;;;;;;;GA0BG;AAEH,MAAM,WAAW,eAAe;IAC/B,2CAA2C;IAC3C,MAAM,EAAE,MAAM,CAAC;CACf;AAED,0EAA0E;AAC1E,eAAO,MAAM,kBAAkB,uHAYrB,CAAC;AAEX,4FAA4F;AAC5F,eAAO,MAAM,iBAAiB,+CAAgD,CAAC;AAE/E,wBAAgB,qBAAqB,CAAC,MAAM,EAAE,eAAe,GAAG,MAAM,CAgXrE"}

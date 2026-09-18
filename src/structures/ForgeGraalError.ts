@@ -11,29 +11,6 @@ export class ForgeGraalError extends Error {
 	}
 }
 
-/**
- * @deprecated Nothing throws this any more: `PolicyEnforcer` now allows every target for
- * every package manager. Kept so code that catches it still compiles. Restore the check in
- * `PolicyEnforcer.assertTargetAllowed` if Bun projects should be limited to 32-bit and
- * legacy targets again.
- */
-export class BunTargetRestrictionError extends ForgeGraalError {
-	public override readonly name: string = "BunTargetRestrictionError";
-	public readonly target: string;
-
-	constructor(target: string) {
-		super(
-			`Target '${target}' is not available for Bun projects. ` +
-				"Bun already compiles modern 64-bit executables with 'bun build --compile' " +
-				"(linux-x64, linux-arm64, windows-x64, darwin-x64, darwin-arm64), but not 32-bit " +
-				"(iSH, x86, ARMv7) or legacy Windows (7 / Vista) executables. " +
-				"ForgeGraal therefore only builds 32-bit and legacy targets for Bun projects; " +
-				"use 'bun build --compile' for modern targets, or NPM, PNPM, or Yarn for the full matrix."
-		);
-		this.target = target;
-	}
-}
-
 export class InvalidTargetError extends ForgeGraalError {
 	public override readonly name: string = "InvalidTargetError";
 	public readonly invalidTarget: string;

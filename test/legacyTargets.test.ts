@@ -67,12 +67,32 @@ test("launcher flags are derived from metadata for every target", () => {
 			windowsLegacy: meta.os === "windows-legacy",
 			simdUnsafe: meta.is32BitOrLegacy,
 			nativeShim: meta.is32BitOrLegacy,
+			bunCompat: false,
 		});
 		assert.equal(
 			/installForgeGraalNativeShim/.test(source),
 			meta.is32BitOrLegacy,
 			`${target}: shim presence must follow is32BitOrLegacy`
 		);
+	}
+});
+
+test("the Bun compatibility layer is independent of the target's legacy status", () => {
+	for (const target of [TargetDevice.LinuxModernX64, TargetDevice.WinXpX86]) {
+		const meta = TARGET_METADATA_MAP[target];
+		const source = createLauncherSource({
+			name: "bot",
+			entry: "index.js",
+			hash: "0".repeat(64),
+			minNode: null,
+			target,
+			mode: "portable",
+			windowsLegacy: meta.os === "windows-legacy",
+			simdUnsafe: meta.is32BitOrLegacy,
+			nativeShim: meta.is32BitOrLegacy,
+			bunCompat: true,
+		});
+		assert.match(source, /installForgeGraalBunCompat/, `${target}: bunCompat must install regardless of legacy status`);
 	}
 });
 

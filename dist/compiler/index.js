@@ -17,6 +17,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 __exportStar(require("./Archive"), exports);
 __exportStar(require("./BinaryInspector"), exports);
 __exportStar(require("./BinaryPackager"), exports);
+__exportStar(require("./BunTranspiler"), exports);
 __exportStar(require("./NodeRuntime"), exports);
 __exportStar(require("./PolicyEnforcer"), exports);
 __exportStar(require("./PortablePackager"), exports);

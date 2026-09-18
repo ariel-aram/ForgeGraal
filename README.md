@@ -49,6 +49,33 @@ registered (checksum-pinned) with `forgegraal runtimes add`, after which builds 
 
 ---
 
+## Bun projects
+
+ForgeGraal builds every target for Bun projects, including the modern 64-bit ones Bun's own
+`bun build --compile` already covers — use whichever fits: `bun build --compile` for a quick modern
+binary with no other cooperation needed, ForgeGraal for 32-bit/legacy targets, or when you also want
+one of the things below.
+
+- **TypeScript and JSX entrypoints are transpiled automatically.** Bun projects are commonly run straight
+  from `.ts`/`.tsx` with no separate build step; ForgeGraal runs `bun build --target=node --format=cjs
+  --packages=external` on the entrypoint itself so local imports are bundled but installed packages stay
+  external — the real, installed `node_modules` your lockfile pinned are what gets shipped, not a
+  bundler's copy of them. Requires `bun` on PATH at build time only; the compiled executable never needs it.
+- **`bun:sqlite` and common `Bun` globals work in the compiled executable.** It runs on Node.js
+  regardless of target, so code written against Bun's own APIs is polyfilled at startup:
+  - `import { Database } from "bun:sqlite"` — backed by Node's built-in `node:sqlite` (Node.js >= 22.5),
+    matching Bun's synchronous API. Rows go to the real database file.
+  - `Bun.env`, `Bun.file`, `Bun.write`, `Bun.sleep`, `Bun.which`, `Bun.nanoseconds` — real, working
+    implementations over `node:fs` / `node:process`.
+  - `Bun.serve({ fetch })` — bridged onto `node:http`, so a Fetch API handler written for Bun runs
+    unmodified.
+  - `Bun.password` and `Bun.hash` throw instead of being polyfilled: Node's standard library has no
+    algorithm that reproduces their output, and a different algorithm behind the same name is a silent
+    correctness bug (hashes that don't verify, cache keys that never hit), not a compatibility shim.
+    `Bun.spawn`, FFI, and anything else not listed above throw the same way, at the point of use.
+
+---
+
 ## Legacy behaviour
 
 Old and 32-bit targets get two adjustments, both derived from the target metadata rather than guessed

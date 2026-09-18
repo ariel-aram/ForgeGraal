@@ -74,7 +74,11 @@ async function main() {
                 console.log(`  ${target.padEnd(20)} ${tag.padEnd(16)} ${meta.name.padEnd(32)} ${runtime}`);
             }
             if (pm === "bun") {
-                console.log("\nBun projects: modern 64-bit targets are built with 'bun build --compile'; ForgeGraal covers 32-bit and legacy Windows.");
+                console.log("\nBun projects: every target above is available. TypeScript/JSX entrypoints are transpiled " +
+                    "automatically with 'bun build' (packages stay external, so your installed node_modules are " +
+                    "used). bun:sqlite and common Bun globals (env, file, write, serve, sleep, which) work in the " +
+                    "compiled executable through a Node.js compatibility layer; run 'forgegraal compile --help' " +
+                    "for details, or use 'bun build --compile' directly if you only need a modern 64-bit binary.");
             }
             return;
         }

@@ -1,4 +1,5 @@
 import { ARCHIVE_MAGIC } from "../compiler/Archive";
+import { createBunCompatSource } from "./bunCompat";
 import { createNativeShimSource } from "./nativeShim";
 
 export interface LauncherConfig {
@@ -22,6 +23,12 @@ export interface LauncherConfig {
 	simdUnsafe: boolean;
 	/** Install the native addon shim (legacy and 32-bit targets). */
 	nativeShim: boolean;
+	/**
+	 * Install the Bun compatibility layer (bun:sqlite, the Bun global). Set whenever the
+	 * source used Bun-specific APIs, independent of the target — executables always run on
+	 * Node.js, so `Bun` is undefined on every target, not only legacy ones.
+	 */
+	bunCompat: boolean;
 }
 
 export const SEA_ASSET_NAME = "app.fgar";
@@ -37,6 +44,7 @@ export const PORTABLE_LAUNCHER_NAME = "boot.cjs";
  */
 export function createLauncherSource(config: LauncherConfig): string {
 	const shim = config.nativeShim ? createNativeShimSource({ target: config.target }) : "";
+	const bunShim = config.bunCompat ? createBunCompatSource({ target: config.target }) : "";
 
 	return `"use strict";
 var fs = require("fs");
@@ -187,6 +195,7 @@ function main() {
 	}
 
 ${shim}
+${bunShim}
 	var Module = require("module");
 	var load = sea ? Module.createRequire(entry) : require;
 	try {

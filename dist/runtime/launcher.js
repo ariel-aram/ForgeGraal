@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.IMPORT_HELPER_PATH = exports.IMPORT_HELPER_SOURCE = exports.PORTABLE_LAUNCHER_NAME = exports.PORTABLE_ARCHIVE_NAME = exports.SEA_ASSET_NAME = void 0;
 exports.createLauncherSource = createLauncherSource;
 const Archive_1 = require("../compiler/Archive");
+const bunCompat_1 = require("./bunCompat");
 const nativeShim_1 = require("./nativeShim");
 exports.SEA_ASSET_NAME = "app.fgar";
 exports.PORTABLE_ARCHIVE_NAME = "app.fgar";
@@ -16,6 +17,7 @@ exports.PORTABLE_LAUNCHER_NAME = "boot.cjs";
  */
 function createLauncherSource(config) {
     const shim = config.nativeShim ? (0, nativeShim_1.createNativeShimSource)({ target: config.target }) : "";
+    const bunShim = config.bunCompat ? (0, bunCompat_1.createBunCompatSource)({ target: config.target }) : "";
     return `"use strict";
 var fs = require("fs");
 var path = require("path");
@@ -165,6 +167,7 @@ function main() {
 	}
 
 ${shim}
+${bunShim}
 	var Module = require("module");
 	var load = sea ? Module.createRequire(entry) : require;
 	try {
