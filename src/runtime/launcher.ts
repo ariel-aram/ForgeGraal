@@ -279,6 +279,28 @@ function main() {
 						return {};
 					}
 				}
+
+				// 6. @msgpackr-extract fallback
+				if (reqLower.indexOf("msgpackr-extract") !== -1 || parentLower.indexOf("msgpackr-extract") !== -1) {
+					process.stderr.write("[ForgeGraal WasmLayer] Bypassing native msgpackr-extract -> using pure JS\\n");
+					return null;
+				}
+
+				// 7. mediaplex audio demuxer fallback
+				if (reqLower.indexOf("mediaplex") !== -1 || parentLower.indexOf("mediaplex") !== -1) {
+					process.stderr.write("[ForgeGraal WasmLayer] Polyfilling mediaplex native audio demuxer\\n");
+					return {
+						AudioPipeline: function () {
+							return {
+								process: function (chunk) { return chunk; },
+								destroy: function () {}
+							};
+						},
+						probe: function () {
+							return Promise.resolve({ format: "opus", channels: 2, sampleRate: 48000 });
+						}
+					};
+				}
 			}
 
 			throw err;
