@@ -1,0 +1,36 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+const forgescript_1 = require("@tryforge/forgescript");
+const PolicyEnforcer_1 = require("../../compiler/PolicyEnforcer");
+const functions_1 = require("../../util/functions");
+exports.default = new forgescript_1.NativeFunction({
+    name: "$supportedTargets",
+    version: "1.0.0",
+    description: "Returns the targets ForgeGraal builds for a package manager (32-bit and legacy Windows only on Bun)",
+    unwrap: true,
+    brackets: false,
+    output: forgescript_1.ArgType.String,
+    args: [
+        {
+            name: "packageManager",
+            description: "Package manager (bun, pnpm, npm, yarn), detected from the project when empty",
+            rest: false,
+            type: forgescript_1.ArgType.String,
+        },
+        {
+            name: "separator",
+            description: "Separator between targets, defaults to ,",
+            rest: false,
+            type: forgescript_1.ArgType.String,
+        },
+    ],
+    execute(ctx, [pm, separator]) {
+        try {
+            return this.success(PolicyEnforcer_1.PolicyEnforcer.getAllowedTargets((0, functions_1.packageManagerArg)(ctx, pm)).join(separator ?? ","));
+        }
+        catch (err) {
+            return this.error((0, functions_1.toError)(err));
+        }
+    },
+});
+//# sourceMappingURL=supportedTargets.js.map

@@ -1,0 +1,180 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.NodeRuntime = exports.SEA_FUSE = exports.MIN_SEA_NODE_VERSION = void 0;
+const node_child_process_1 = require("node:child_process");
+const node_crypto_1 = require("node:crypto");
+const node_fs_1 = require("node:fs");
+const node_os_1 = require("node:os");
+const node_path_1 = require("node:path");
+const node_zlib_1 = require("node:zlib");
+const structures_1 = require("../structures");
+const ProjectCollector_1 = require("./ProjectCollector");
+/** Node.js >= 20.12 is required for SEA assets (`sea.getAsset`). */
+exports.MIN_SEA_NODE_VERSION = "20.12.0";
+exports.SEA_FUSE = "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2";
+const DIST_URL = "https://nodejs.org/dist";
+class NodeRuntime {
+    static cacheDir() {
+        if (process.env.FORGEGRAAL_CACHE)
+            return process.env.FORGEGRAAL_CACHE;
+        if (process.platform === "win32" && process.env.LOCALAPPDATA) {
+            return (0, node_path_1.join)(process.env.LOCALAPPDATA, "forgegraal", "cache");
+        }
+        return (0, node_path_1.join)(process.env.XDG_CACHE_HOME ?? (0, node_path_1.join)((0, node_os_1.homedir)(), ".cache"), "forgegraal");
+    }
+    /** index.json key of an official runtime that runs on this host. */
+    static hostFileKey() {
+        const arch = { x64: "x64", arm64: "arm64", arm: "armv7l", ia32: "x86" }[process.arch];
+        if (!arch)
+            return null;
+        if (process.platform === "linux")
+            return arch === "x86" ? null : `linux-${arch}`;
+        if (process.platform === "darwin")
+            return `osx-${arch}-tar`;
+        if (process.platform === "win32")
+            return `win-${arch}-exe`;
+        return null;
+    }
+    static canRunOnHost(target) {
+        const meta = (0, structures_1.getTargetMetadata)(target);
+        return (meta !== null &&
+            meta.nodePlatform === process.platform &&
+            meta.nodeArch === process.arch &&
+            meta.os !== "ios-ish");
+    }
+    /**
+     * Reads the Node.js version embedded in a runtime binary without executing it.
+     */
+    static readVersion(binaryPath) {
+        const content = (0, node_fs_1.readFileSync)(binaryPath).toString("latin1");
+        const match = /nodejs\.org\/download\/release\/v(\d+\.\d+\.\d+)\//.exec(content);
+        if (match)
+            return match[1];
+        try {
+            return (0, node_child_process_1.execFileSync)(binaryPath, ["--version"], {
+                encoding: "utf-8",
+                timeout: 15_000,
+            })
+                .trim()
+                .replace(/^v/, "");
+        }
+        catch {
+            return null;
+        }
+    }
+    /** "absent" | "ready" (fuse unflipped) | "injected" (already a SEA). */
+    static seaFuseState(binary) {
+        const at = binary.indexOf(exports.SEA_FUSE, 0, "latin1");
+        if (at === -1)
+            return "absent";
+        return binary[at + exports.SEA_FUSE.length + 1] === 0x31 ? "injected" : "ready";
+    }
+    static async fetchBuffer(url) {
+        const res = await fetch(url);
+        if (!res.ok)
+            throw new structures_1.RuntimeError(`Download failed (${res.status}) for ${url}`);
+        return Buffer.from(await res.arrayBuffer());
+    }
+    /**
+     * Picks the newest official release that ships `fileKey` and satisfies `minNode`.
+     * `requested` may be a full version ("22.11.0") or a major ("22").
+     */
+    static async resolveOfficialVersion(fileKey, requested, minNode) {
+        const index = JSON.parse((await NodeRuntime.fetchBuffer(`${DIST_URL}/index.json`)).toString("utf-8"));
+        const wanted = requested?.replace(/^v/, "");
+        const floor = [exports.MIN_SEA_NODE_VERSION, minNode ?? "0.0.0"].sort(ProjectCollector_1.compareVersions)[1];
+        const match = index
+            .map((r) => ({ ...r, version: r.version.replace(/^v/, "") }))
+            .filter((r) => r.files.includes(fileKey))
+            .filter((r) => (0, ProjectCollector_1.compareVersions)(r.version, floor) >= 0)
+            .filter((r) => wanted
+            ? r.version === wanted || r.version.startsWith(`${wanted}.`)
+            : r.lts !== false)
+            .sort((a, b) => (0, ProjectCollector_1.compareVersions)(b.version, a.version))[0];
+        if (!match) {
+            throw new structures_1.RuntimeError(`No official Node.js release provides '${fileKey}'` +
+                (wanted ? ` for version '${wanted}'` : "") +
+                ` (>= ${floor}). Pass --node-binary instead.`);
+        }
+        return match.version;
+    }
+    /**
+     * Downloads (once) and verifies an official Node.js runtime, returning the binary path.
+     */
+    static async ensureOfficial(version, fileKey) {
+        const isWindows = fileKey.startsWith("win-");
+        const dir = (0, node_path_1.join)(NodeRuntime.cacheDir(), "node", `v${version}`, fileKey);
+        const binary = (0, node_path_1.join)(dir, isWindows ? "node.exe" : "node");
+        if ((0, node_fs_1.existsSync)(binary))
+            return binary;
+        let remotePath;
+        let innerPath = null;
+        if (isWindows) {
+            remotePath = `${fileKey.replace(/-exe$/, "")}/node.exe`;
+        }
+        else {
+            const platform = fileKey.replace(/^osx-/, "darwin-").replace(/-tar$/, "");
+            const folder = `node-v${version}-${platform}`;
+            remotePath = `${folder}.tar.gz`;
+            innerPath = `${folder}/bin/node`;
+        }
+        const base = `${DIST_URL}/v${version}`;
+        const sums = (await NodeRuntime.fetchBuffer(`${base}/SHASUMS256.txt`)).toString("utf-8");
+        const expected = sums
+            .split("\n")
+            .map((line) => line.trim().split(/\s+/))
+            .find(([, file]) => file === remotePath)?.[0];
+        if (!expected)
+            throw new structures_1.RuntimeError(`No checksum published for ${remotePath}`);
+        const download = await NodeRuntime.fetchBuffer(`${base}/${remotePath}`);
+        const actual = (0, node_crypto_1.createHash)("sha256").update(download).digest("hex");
+        if (actual !== expected) {
+            throw new structures_1.RuntimeError(`Checksum mismatch for ${remotePath}: expected ${expected}, got ${actual}`);
+        }
+        const content = innerPath
+            ? NodeRuntime.extractFromTarGz(download, innerPath)
+            : download;
+        (0, node_fs_1.mkdirSync)(dir, { recursive: true });
+        const tmp = `${binary}.${process.pid}.tmp`;
+        (0, node_fs_1.writeFileSync)(tmp, content);
+        if (!isWindows)
+            (0, node_fs_1.chmodSync)(tmp, 0o755);
+        (0, node_fs_1.renameSync)(tmp, binary);
+        return binary;
+    }
+    static extractFromTarGz(archive, wanted) {
+        const tar = (0, node_zlib_1.gunzipSync)(archive);
+        let offset = 0;
+        let longName = null;
+        while (offset + 512 <= tar.length) {
+            const header = tar.subarray(offset, offset + 512);
+            if (header.every((b) => b === 0))
+                break;
+            const field = (start, len) => header.toString("utf-8", start, start + len).replace(/\0.*$/s, "");
+            const size = Number.parseInt(field(124, 12).trim() || "0", 8);
+            const type = field(156, 1);
+            const prefix = field(345, 155);
+            let name = longName ?? (prefix ? `${prefix}/${field(0, 100)}` : field(0, 100));
+            longName = null;
+            const dataStart = offset + 512;
+            const data = tar.subarray(dataStart, dataStart + size);
+            offset = dataStart + Math.ceil(size / 512) * 512;
+            if (type === "L") {
+                longName = data.toString("utf-8").replace(/\0.*$/s, "");
+                continue;
+            }
+            if (type === "x") {
+                const path = /\d+ path=([^\n]*)\n/.exec(data.toString("utf-8"));
+                if (path)
+                    longName = path[1];
+                continue;
+            }
+            name = name.replace(/^\.\//, "");
+            if (name === wanted && (type === "0" || type === ""))
+                return Buffer.from(data);
+        }
+        throw new structures_1.RuntimeError(`'${wanted}' not found in downloaded archive`);
+    }
+}
+exports.NodeRuntime = NodeRuntime;
+//# sourceMappingURL=NodeRuntime.js.map

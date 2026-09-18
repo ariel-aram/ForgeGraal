@@ -3,18 +3,12 @@
 ForgeScript extension and CLI that turns [ForgeScript](https://github.com/tryforge/ForgeScript) bots into
 standalone executables and portable bundles — including 32-bit devices (iSH on iOS, x86, ARMv7, FreeBSD) and legacy Windows (Windows XP, Windows Vista, Windows 7).
 
-## Translations & Crowdin Documentation
+## Documentation
 
-ForgeGraal documentation and function metadata translations follow the BotForge documentation system.
-
-- **Translate on Crowdin**: [BotForge Crowdin Project](https://crowdin.com/project/botforge)
-- **Official Documentation**: [https://docs.botforge.org/p/ForgeGraal/](https://docs.botforge.org/p/ForgeGraal/)
-- **Translations Directory**: `metadata/translations/` (`en.json`, `es.json`, etc.)
-
-To update and generate translation and metadata files after modifying functions:
-```sh
-pnpm docgen
-```
+Full documentation and guides are available under the [`docs/`](docs/) directory:
+- [Architecture & Target Matrix](docs/README.md)
+- [Universal WebAssembly Layer](docs/README.md#universal-webassembly--pure-js-virtual-layer)
+- [CLI Reference](docs/README.md#cli-commands)
 
 ---
 

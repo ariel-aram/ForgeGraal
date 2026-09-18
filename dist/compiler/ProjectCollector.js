@@ -1,0 +1,335 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.ProjectCollector = void 0;
+exports.isInside = isInside;
+exports.resolveInside = resolveInside;
+exports.compareVersions = compareVersions;
+const node_fs_1 = require("node:fs");
+const node_path_1 = require("node:path");
+const structures_1 = require("../structures");
+const BinaryInspector_1 = require("./BinaryInspector");
+const ALWAYS_EXCLUDED_NAMES = new Set([
+    ".git",
+    ".hg",
+    ".svn",
+    "node_modules",
+    ".DS_Store",
+    "Thumbs.db",
+    ".npmrc",
+    ".yarnrc",
+    ".yarnrc.yml",
+    ".yarn",
+    ".pnpm-store",
+    ".forgegraal-cache",
+    "coverage",
+]);
+const SUPPORTED_ENTRY_EXTENSIONS = new Set([".js", ".cjs", ".mjs"]);
+const SOURCE_EXTENSIONS = new Set([".js", ".cjs", ".mjs"]);
+const BUN_API_PATTERN = /\bBun\.[a-zA-Z]|["']bun:[a-z]/;
+function toPosix(p) {
+    return p.split(node_path_1.sep).join("/");
+}
+function isInside(child, parent) {
+    const rel = (0, node_path_1.relative)(parent, child);
+    return rel === "" || (rel.split(node_path_1.sep)[0] !== ".." && !(0, node_path_1.isAbsolute)(rel));
+}
+/**
+ * Resolves `input` against `root` and throws when it escapes `root` (symlinks included).
+ */
+function resolveInside(root, input) {
+    const absRoot = (0, node_path_1.resolve)(root);
+    const abs = (0, node_path_1.resolve)(absRoot, input);
+    if (!isInside(abs, absRoot))
+        throw new structures_1.PathOutsideRootError(input, absRoot);
+    if ((0, node_fs_1.existsSync)(abs) && !isInside((0, node_fs_1.realpathSync)(abs), (0, node_fs_1.realpathSync)(absRoot))) {
+        throw new structures_1.PathOutsideRootError(input, absRoot);
+    }
+    return abs;
+}
+function readJson(file) {
+    try {
+        return JSON.parse((0, node_fs_1.readFileSync)(file, "utf-8"));
+    }
+    catch {
+        return null;
+    }
+}
+function parseMinVersion(range) {
+    if (typeof range !== "string")
+        return null;
+    // Use the smallest version referenced by the range: good enough for ">=x", "^x", "x || y"
+    const versions = [...range.matchAll(/(\d+)(?:\.(\d+))?(?:\.(\d+))?/g)].map((m) => `${m[1]}.${m[2] ?? 0}.${m[3] ?? 0}`);
+    return versions.sort(compareVersions)[0] ?? null;
+}
+function compareVersions(a, b) {
+    const pa = a.replace(/^v/, "").split(".").map(Number);
+    const pb = b.replace(/^v/, "").split(".").map(Number);
+    for (let i = 0; i < 3; i++) {
+        const d = (pa[i] || 0) - (pb[i] || 0);
+        if (d !== 0)
+            return d;
+    }
+    return 0;
+}
+class ProjectCollector {
+    root;
+    options;
+    excluded;
+    /**
+     * Finds the closest directory above `start` that contains a package.json.
+     */
+    static findProjectRoot(start) {
+        let dir = (0, node_path_1.resolve)(start);
+        if ((0, node_fs_1.existsSync)(dir) && (0, node_fs_1.statSync)(dir).isFile())
+            dir = (0, node_path_1.dirname)(dir);
+        for (;;) {
+            if ((0, node_fs_1.existsSync)((0, node_path_1.join)(dir, "package.json")))
+                return dir;
+            const parent = (0, node_path_1.dirname)(dir);
+            if (parent === dir) {
+                throw new structures_1.ProjectError(`No package.json found above '${start}'`);
+            }
+            dir = parent;
+        }
+    }
+    static collect(options) {
+        const entryAbs = (0, node_path_1.resolve)(options.entrypoint);
+        if (!(0, node_fs_1.existsSync)(entryAbs) || !(0, node_fs_1.statSync)(entryAbs).isFile()) {
+            throw new structures_1.ProjectError(`Entrypoint file not found: ${entryAbs}`);
+        }
+        const ext = (0, node_path_1.extname)(entryAbs);
+        if (!SUPPORTED_ENTRY_EXTENSIONS.has(ext)) {
+            throw new structures_1.ProjectError(`Entrypoint '${(0, node_path_1.basename)(entryAbs)}' must be JavaScript (.js, .cjs, .mjs). ` +
+                "Compile TypeScript first (e.g. `tsc`, or `bun build --target=node --outdir dist`) and pass the built file.");
+        }
+        const root = (0, node_fs_1.realpathSync)(ProjectCollector.findProjectRoot(entryAbs));
+        const entryReal = (0, node_fs_1.realpathSync)(entryAbs);
+        if (!isInside(entryReal, root))
+            throw new structures_1.PathOutsideRootError(entryAbs, root);
+        if ((0, node_fs_1.existsSync)((0, node_path_1.join)(root, ".pnp.cjs")) ||
+            (0, node_fs_1.existsSync)((0, node_path_1.join)(root, ".pnp.js"))) {
+            throw new structures_1.ProjectError("Yarn Plug'n'Play projects have no node_modules to bundle. Set `nodeLinker: node-modules` in .yarnrc.yml and reinstall.");
+        }
+        const pkg = readJson((0, node_path_1.join)(root, "package.json")) ?? {};
+        const excluded = (options.excludePaths ?? []).map((p) => (0, node_path_1.resolve)(p));
+        const collector = new ProjectCollector(root, options, excluded);
+        collector.addProjectFiles(root, "");
+        collector.addDependencies(pkg, options.includeDev === true);
+        collector.addEngines(pkg);
+        const rawName = typeof pkg.name === "string" ? pkg.name : (0, node_path_1.basename)(root);
+        return {
+            root,
+            name: rawName.replace(/^@[^/]+\//, "").replace(/[^a-zA-Z0-9._-]/g, "-") ||
+                "bot",
+            entry: toPosix((0, node_path_1.relative)(root, entryReal)),
+            entries: collector.entries,
+            nativeAddons: collector.nativeAddons,
+            minNode: collector.minNode,
+            usesBunApis: collector.usesBunApis,
+            packages: collector.placed.size,
+        };
+    }
+    entries = [];
+    nativeAddons = [];
+    usesBunApis = [];
+    minNode = null;
+    /** Destination package dir (e.g. "node_modules/a/node_modules/b") -> real source dir. */
+    placed = new Map();
+    /** Positions that must stay empty because a package resolves past them. */
+    reserved = new Set();
+    visitedDirs = new Set();
+    constructor(root, options, excluded) {
+        this.root = root;
+        this.options = options;
+        this.excluded = excluded;
+    }
+    isExcluded(abs, name, isProjectFile) {
+        if (ALWAYS_EXCLUDED_NAMES.has(name))
+            return true;
+        if (name.endsWith(".forgegraal"))
+            return true;
+        if (isProjectFile &&
+            !this.options.includeEnv &&
+            /^\.env(\..*)?$/.test(name))
+            return true;
+        return this.excluded.some((p) => isInside(abs, p));
+    }
+    addFile(abs, dest, stats, isProjectFile) {
+        this.entries.push({ path: dest, source: abs, mode: stats.mode });
+        if (dest.endsWith(".node")) {
+            let info = null;
+            try {
+                info = BinaryInspector_1.BinaryInspector.inspect(abs);
+            }
+            catch {
+                // Unreadable addon: reported with unknown info
+            }
+            this.nativeAddons.push({ path: dest, info });
+        }
+        else if (isProjectFile &&
+            SOURCE_EXTENSIONS.has((0, node_path_1.extname)(dest)) &&
+            stats.size < 4 * 1024 * 1024 &&
+            BUN_API_PATTERN.test((0, node_fs_1.readFileSync)(abs, "utf-8"))) {
+            this.usesBunApis.push(dest);
+        }
+    }
+    /**
+     * Copies a directory tree, following symlinks while guarding against cycles.
+     */
+    walk(dir, destPrefix, isProjectFile, skipNodeModules) {
+        const real = (0, node_fs_1.realpathSync)(dir);
+        const visitKey = `${real}\0${destPrefix}`;
+        if (this.visitedDirs.has(visitKey))
+            return;
+        this.visitedDirs.add(visitKey);
+        for (const name of (0, node_fs_1.readdirSync)(dir).sort()) {
+            const abs = (0, node_path_1.join)(dir, name);
+            if (name === "node_modules" && skipNodeModules)
+                continue;
+            if (this.isExcluded(abs, name, isProjectFile))
+                continue;
+            let stats;
+            try {
+                stats = (0, node_fs_1.statSync)(abs);
+            }
+            catch {
+                continue; // Broken symlink
+            }
+            if ((0, node_fs_1.lstatSync)(abs).isSymbolicLink() && stats.isDirectory()) {
+                const target = (0, node_fs_1.realpathSync)(abs);
+                // A link to an ancestor would recurse forever
+                if (isInside(real, target))
+                    continue;
+            }
+            const dest = destPrefix ? `${destPrefix}/${name}` : name;
+            if (stats.isDirectory())
+                this.walk(abs, dest, isProjectFile, true);
+            else if (stats.isFile())
+                this.addFile(abs, dest, stats, isProjectFile);
+        }
+    }
+    addProjectFiles(root, prefix) {
+        this.walk(root, prefix, true, true);
+    }
+    addEngines(pkg) {
+        const engines = pkg.engines;
+        const min = parseMinVersion(engines?.node);
+        if (min && (!this.minNode || compareVersions(min, this.minNode) > 0)) {
+            this.minNode = min;
+        }
+    }
+    /**
+     * Node.js resolution: look for `name` in node_modules directories from `fromDir` upwards.
+     */
+    resolvePackageDir(name, fromDir) {
+        let dir = fromDir;
+        for (;;) {
+            const candidate = (0, node_path_1.join)(dir, "node_modules", name);
+            if ((0, node_fs_1.existsSync)((0, node_path_1.join)(candidate, "package.json")))
+                return (0, node_fs_1.realpathSync)(candidate);
+            // Also check pnpm / yarn virtual store resolution
+            const pnpmCandidate = (0, node_path_1.join)(dir, "node_modules", ".pnpm");
+            if ((0, node_fs_1.existsSync)(pnpmCandidate)) {
+                // Search inside virtual store
+                try {
+                    const entries = (0, node_fs_1.readdirSync)(pnpmCandidate);
+                    for (const entry of entries) {
+                        if (entry.startsWith(name.replace("/", "+"))) {
+                            const targetPkg = (0, node_path_1.join)(pnpmCandidate, entry, "node_modules", name);
+                            if ((0, node_fs_1.existsSync)((0, node_path_1.join)(targetPkg, "package.json"))) {
+                                return (0, node_fs_1.realpathSync)(targetPkg);
+                            }
+                        }
+                    }
+                }
+                catch { }
+            }
+            const parent = (0, node_path_1.dirname)(dir);
+            if (parent === dir)
+                return null;
+            dir = parent;
+        }
+    }
+    addDependencies(rootPkg, includeDev) {
+        const queue = [{ realDir: this.root, dest: "", pkg: rootPkg, isRoot: true }];
+        // Breadth-first so parents claim shallow positions before their children resolve
+        for (let item = queue.shift(); item; item = queue.shift()) {
+            const { realDir, dest, pkg, isRoot } = item;
+            const required = { ...pkg.dependencies };
+            const optional = {
+                ...(isRoot && includeDev ? pkg.devDependencies : {}),
+                ...pkg.peerDependencies,
+                ...pkg.optionalDependencies,
+            };
+            const names = [
+                ...Object.keys(required).map((n) => [n, true]),
+                ...Object.keys(optional)
+                    .filter((n) => !(n in required))
+                    .map((n) => [n, false]),
+            ];
+            for (const [name, isRequired] of names) {
+                const depReal = this.resolvePackageDir(name, realDir);
+                if (!depReal) {
+                    if (isRequired &&
+                        !(pkg.bundleDependencies || pkg.bundledDependencies)) {
+                        throw new structures_1.ProjectError(`Dependency '${name}' required by '${isRoot ? "project" : dest}' is not installed. Run your package manager's install first.`);
+                    }
+                    continue;
+                }
+                const position = this.place(name, depReal, dest);
+                if (position.isNew) {
+                    const depPkg = readJson((0, node_path_1.join)(depReal, "package.json")) ?? {};
+                    this.walk(depReal, position.dest, false, true);
+                    this.addEngines(depPkg);
+                    queue.push({
+                        realDir: depReal,
+                        dest: position.dest,
+                        pkg: depPkg,
+                        isRoot: false,
+                    });
+                }
+            }
+        }
+    }
+    place(name, realDir, parentDest) {
+        // Candidate positions ordered from nearest (inside parent) to the project root
+        const candidates = [];
+        let base = parentDest;
+        for (;;) {
+            candidates.push(base ? `${base}/node_modules/${name}` : `node_modules/${name}`);
+            if (!base)
+                break;
+            const idx = base.lastIndexOf("/node_modules/");
+            base = idx === -1 ? "" : base.slice(0, idx);
+        }
+        let chosen = null;
+        for (const candidate of candidates) {
+            const occupant = this.placed.get(candidate);
+            if (occupant !== undefined) {
+                if (occupant === realDir) {
+                    this.reserve(candidates, candidate);
+                    return { dest: candidate, isNew: false };
+                }
+                break;
+            }
+            if (this.reserved.has(candidate))
+                break;
+            chosen = candidate;
+        }
+        if (!chosen) {
+            throw new structures_1.ProjectError(`Cannot place '${name}' for '${parentDest || "project"}' without shadowing another version`);
+        }
+        this.placed.set(chosen, realDir);
+        this.reserve(candidates, chosen);
+        return { dest: chosen, isNew: true };
+    }
+    reserve(candidates, resolved) {
+        for (const candidate of candidates) {
+            if (candidate === resolved)
+                break;
+            this.reserved.add(candidate);
+        }
+    }
+}
+exports.ProjectCollector = ProjectCollector;
+//# sourceMappingURL=ProjectCollector.js.map
