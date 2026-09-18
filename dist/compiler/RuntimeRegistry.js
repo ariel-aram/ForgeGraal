@@ -45,10 +45,7 @@ function writeManifest(path, entries) {
  */
 class RuntimeRegistry {
     static list(root = process.cwd()) {
-        return [
-            ...readManifest(projectManifestPath(root)),
-            ...readManifest(globalManifestPath()),
-        ];
+        return [...readManifest(projectManifestPath(root)), ...readManifest(globalManifestPath())];
     }
     static find(target, root = process.cwd()) {
         return RuntimeRegistry.list(root)
@@ -66,9 +63,7 @@ class RuntimeRegistry {
         if (!/^https:\/\//i.test(entry.url)) {
             throw new structures_1.ForgeGraalError("Runtime URLs must use https://");
         }
-        const path = opts.global
-            ? globalManifestPath()
-            : projectManifestPath(opts.root ?? process.cwd());
+        const path = opts.global ? globalManifestPath() : projectManifestPath(opts.root ?? process.cwd());
         const entries = readManifest(path).filter((e) => !(e.target === target && e.version === entry.version));
         entries.push({
             ...entry,
@@ -79,9 +74,7 @@ class RuntimeRegistry {
         writeManifest(path, entries);
     }
     static remove(target, version, opts = {}) {
-        const path = opts.global
-            ? globalManifestPath()
-            : projectManifestPath(opts.root ?? process.cwd());
+        const path = opts.global ? globalManifestPath() : projectManifestPath(opts.root ?? process.cwd());
         const entries = readManifest(path);
         const next = entries.filter((e) => !(e.target === target && e.version === version));
         if (next.length === entries.length)
@@ -180,8 +173,7 @@ class RuntimeRegistry {
         let cdOffset = archive.readUInt32LE(eocd + 16);
         const candidates = [];
         for (let i = 0; i < entryCount; i++) {
-            if (cdOffset + 46 > archive.length ||
-                archive.readUInt32LE(cdOffset) !== 0x02014b50)
+            if (cdOffset + 46 > archive.length || archive.readUInt32LE(cdOffset) !== 0x02014b50)
                 break;
             const method = archive.readUInt16LE(cdOffset + 10);
             const compSize = archive.readUInt32LE(cdOffset + 20);
@@ -197,11 +189,7 @@ class RuntimeRegistry {
             const lfExtraLen = archive.readUInt16LE(localOffset + 28);
             const dataStart = localOffset + 30 + lfNameLen + lfExtraLen;
             const raw = archive.subarray(dataStart, dataStart + compSize);
-            const data = method === 0
-                ? Buffer.from(raw)
-                : method === 8
-                    ? (0, node_zlib_1.inflateRawSync)(raw)
-                    : null;
+            const data = method === 0 ? Buffer.from(raw) : method === 8 ? (0, node_zlib_1.inflateRawSync)(raw) : null;
             if (data)
                 candidates.push({ name, data });
         }

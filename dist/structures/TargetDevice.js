@@ -221,9 +221,7 @@ function parseTargetDevice(value) {
     if (typeof value !== "string")
         return null;
     const normalized = value.trim().toLowerCase();
-    return exports.ALL_TARGETS.includes(normalized)
-        ? normalized
-        : null;
+    return exports.ALL_TARGETS.includes(normalized) ? normalized : null;
 }
 function getTargetMetadata(value) {
     const target = parseTargetDevice(value);

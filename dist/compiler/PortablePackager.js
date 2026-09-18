@@ -51,8 +51,7 @@ class PortablePackager {
             if (!(0, node_fs_1.statSync)(out).isDirectory()) {
                 throw new structures_1.ProjectError(`Portable output '${out}' exists and is not a directory`);
             }
-            if ((0, node_fs_1.readdirSync)(out).length > 0 &&
-                !(0, node_fs_1.existsSync)((0, node_path_1.join)(out, exports.BUNDLE_MARKER))) {
+            if ((0, node_fs_1.readdirSync)(out).length > 0 && !(0, node_fs_1.existsSync)((0, node_path_1.join)(out, exports.BUNDLE_MARKER))) {
                 throw new structures_1.ProjectError(`Refusing to write into non-empty directory '${out}' that is not a ForgeGraal bundle`);
             }
         }
@@ -82,9 +81,7 @@ class PortablePackager {
         }
         else {
             warnings.push(`No Node.js runtime bundled for ${meta.name}; the launcher uses the node found on PATH. ` +
-                (meta.officialNodeFile
-                    ? "Build without --offline or pass --node-binary to bundle one."
-                    : meta.runtimeHint));
+                (meta.officialNodeFile ? "Build without --offline or pass --node-binary to bundle one." : meta.runtimeHint));
         }
         return {
             outputPath: out,

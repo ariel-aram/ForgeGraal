@@ -44,31 +44,18 @@ test("NPM, PNPM and Yarn projects may build every target", () => {
 
 test("Unknown package managers cannot bypass the Bun policy", () => {
 	assert.throws(
-		() =>
-			PolicyEnforcer.assertTargetAllowed(
-				TargetDevice.LinuxModernX64,
-				"bunx" as never,
-			),
-		InvalidPackageManagerError,
+		() => PolicyEnforcer.assertTargetAllowed(TargetDevice.LinuxModernX64, "bunx" as never),
+		InvalidPackageManagerError
 	);
-	assert.throws(
-		() => PolicyEnforcer.resolvePackageManager("foo"),
-		InvalidPackageManagerError,
-	);
+	assert.throws(() => PolicyEnforcer.resolvePackageManager("foo"), InvalidPackageManagerError);
 	assert.equal(PolicyEnforcer.resolvePackageManager(" PNPM "), "pnpm");
 });
 
 test("Target parsing is case and whitespace insensitive", () => {
-	assert.equal(
-		parseTargetDevice(" WIN-LEGACY-X86 "),
-		TargetDevice.WinLegacyX86,
-	);
+	assert.equal(parseTargetDevice(" WIN-LEGACY-X86 "), TargetDevice.WinLegacyX86);
 	assert.equal(parseTargetDevice("win-legacy"), null);
 	assert.equal(parseTargetDevice(undefined), null);
-	assert.throws(
-		() => PolicyEnforcer.assertTargetAllowed("nope", "npm"),
-		InvalidTargetError,
-	);
+	assert.throws(() => PolicyEnforcer.assertTargetAllowed("nope", "npm"), InvalidTargetError);
 });
 
 test("Package manager detection prefers the project's declaration and lockfiles", () => {
@@ -77,10 +64,7 @@ test("Package manager detection prefers the project's declaration and lockfiles"
 	writeFileSync(join(dir, "bun.lock"), "");
 	assert.equal(PolicyEnforcer.detectPackageManager(dir), "bun");
 
-	writeFileSync(
-		join(dir, "package.json"),
-		JSON.stringify({ name: "x", packageManager: "yarn@4.1.0" }),
-	);
+	writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x", packageManager: "yarn@4.1.0" }));
 	assert.equal(PolicyEnforcer.detectPackageManager(dir), "yarn");
 });
 
@@ -89,15 +73,8 @@ test("Target metadata is internally consistent", () => {
 		const meta = TARGET_METADATA_MAP[target];
 		assert.equal(meta.id, target);
 		assert.equal(meta.bits === 64, ["x64", "arm64"].includes(meta.arch));
-		assert.equal(
-			meta.binaryFormat.startsWith("elf") || meta.binaryFormat === "macho",
-			meta.nodePlatform !== "win32",
-		);
-		if (meta.binaryFormat === "elf32" || meta.binaryFormat === "pe32")
-			assert.equal(meta.bits, 32);
-		assert.equal(
-			meta.is32BitOrLegacy,
-			meta.bits === 32 || meta.os === "windows-legacy",
-		);
+		assert.equal(meta.binaryFormat.startsWith("elf") || meta.binaryFormat === "macho", meta.nodePlatform !== "win32");
+		if (meta.binaryFormat === "elf32" || meta.binaryFormat === "pe32") assert.equal(meta.bits, 32);
+		assert.equal(meta.is32BitOrLegacy, meta.bits === 32 || meta.os === "windows-legacy");
 	}
 });

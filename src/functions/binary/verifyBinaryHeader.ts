@@ -5,8 +5,7 @@ import { requireTarget, resolveFileArg, toError } from "../../util/functions";
 export default new NativeFunction({
 	name: "$verifyBinaryHeader",
 	version: "1.0.0",
-	description:
-		"Returns whether a file is a valid ELF, PE or Mach-O executable, optionally for a specific target",
+	description: "Returns whether a file is a valid ELF, PE or Mach-O executable, optionally for a specific target",
 	unwrap: true,
 	brackets: true,
 	output: ArgType.Boolean,
@@ -30,9 +29,7 @@ export default new NativeFunction({
 			const info = BinaryInspector.inspect(resolveFileArg(ctx, path));
 			if (!info) return this.success(false);
 			if (!target) return this.success(true);
-			return this.success(
-				BinaryInspector.matchesTarget(info, requireTarget(target).id),
-			);
+			return this.success(BinaryInspector.matchesTarget(info, requireTarget(target).id));
 		} catch (err) {
 			return this.error(toError(err));
 		}

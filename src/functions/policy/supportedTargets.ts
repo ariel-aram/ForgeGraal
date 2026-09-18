@@ -5,16 +5,14 @@ import { packageManagerArg, toError } from "../../util/functions";
 export default new NativeFunction({
 	name: "$supportedTargets",
 	version: "1.0.0",
-	description:
-		"Returns the targets ForgeGraal builds for a package manager (32-bit and legacy Windows only on Bun)",
+	description: "Returns the targets ForgeGraal builds for a package manager (32-bit and legacy Windows only on Bun)",
 	unwrap: true,
 	brackets: false,
 	output: ArgType.String,
 	args: [
 		{
 			name: "packageManager",
-			description:
-				"Package manager (bun, pnpm, npm, yarn), detected from the project when empty",
+			description: "Package manager (bun, pnpm, npm, yarn), detected from the project when empty",
 			rest: false,
 			type: ArgType.String,
 		},
@@ -27,11 +25,7 @@ export default new NativeFunction({
 	],
 	execute(ctx, [pm, separator]) {
 		try {
-			return this.success(
-				PolicyEnforcer.getAllowedTargets(packageManagerArg(ctx, pm)).join(
-					separator ?? ",",
-				),
-			);
+			return this.success(PolicyEnforcer.getAllowedTargets(packageManagerArg(ctx, pm)).join(separator ?? ","));
 		} catch (err) {
 			return this.error(toError(err));
 		}

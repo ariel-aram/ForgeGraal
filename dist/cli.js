@@ -69,12 +69,8 @@ async function main() {
             console.log(`Targets available for ${pm}:`);
             for (const target of PolicyEnforcer_1.PolicyEnforcer.getAllowedTargets(pm)) {
                 const meta = TargetDevice_1.TARGET_METADATA_MAP[target];
-                const tag = meta.is32BitOrLegacy
-                    ? "[32-bit/legacy]"
-                    : "[modern 64-bit]";
-                const runtime = meta.officialNodeFile
-                    ? "sea"
-                    : "portable / --node-binary";
+                const tag = meta.is32BitOrLegacy ? "[32-bit/legacy]" : "[modern 64-bit]";
+                const runtime = meta.officialNodeFile ? "sea" : "portable / --node-binary";
                 console.log(`  ${target.padEnd(20)} ${tag.padEnd(16)} ${meta.name.padEnd(32)} ${runtime}`);
             }
             if (pm === "bun") {
@@ -137,9 +133,7 @@ async function main() {
                 const target = rest[0] ? (0, TargetDevice_1.parseTargetDevice)(rest[0]) : null;
                 if (rest[0] && !target)
                     fail(`Unknown target '${rest[0]}'`);
-                const entries = target
-                    ? RuntimeRegistry_1.RuntimeRegistry.find(target)
-                    : RuntimeRegistry_1.RuntimeRegistry.list();
+                const entries = target ? RuntimeRegistry_1.RuntimeRegistry.find(target) : RuntimeRegistry_1.RuntimeRegistry.list();
                 if (!entries.length) {
                     console.log("No community runtimes registered. Add one with 'forgegraal runtimes add'.");
                     return;

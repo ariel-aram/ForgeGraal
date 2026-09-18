@@ -24,8 +24,7 @@ export const FORGE_EXTENSIONS_MAP: Record<string, ExtensionInfo> = {
 		nativeAddons: ["canvas", "@napi-rs/canvas"],
 		requiresNetwork: false,
 		legacySafe: true, // Polyfilled by ForgeGraal WasmLayer
-		notes:
-			"Pure-JS / Wasm canvas stub prevents ERR_DLOPEN_FAILED on legacy Windows and iSH.",
+		notes: "Pure-JS / Wasm canvas stub prevents ERR_DLOPEN_FAILED on legacy Windows and iSH.",
 	},
 	"forge.music": {
 		id: "forge.music",
@@ -35,8 +34,7 @@ export const FORGE_EXTENSIONS_MAP: Record<string, ExtensionInfo> = {
 		nativeAddons: ["@snazzah/davey", "sodium-native", "@discordjs/opus"],
 		requiresNetwork: true,
 		legacySafe: true, // Polyfilled by ForgeGraal WasmLayer
-		notes:
-			"Voice encryption routed to Node crypto; ffmpeg/opus fallbacks applied.",
+		notes: "Voice encryption routed to Node crypto; ffmpeg/opus fallbacks applied.",
 	},
 	"forge.minecraft": {
 		id: "forge.minecraft",
@@ -46,8 +44,7 @@ export const FORGE_EXTENSIONS_MAP: Record<string, ExtensionInfo> = {
 		nativeAddons: [],
 		requiresNetwork: true,
 		legacySafe: true,
-		notes:
-			"Pure JS socket and protocol handling; runs natively on all targets.",
+		notes: "Pure JS socket and protocol handling; runs natively on all targets.",
 	},
 	"forge.linked": {
 		id: "forge.linked",
@@ -57,8 +54,7 @@ export const FORGE_EXTENSIONS_MAP: Record<string, ExtensionInfo> = {
 		nativeAddons: [],
 		requiresNetwork: true,
 		legacySafe: true,
-		notes:
-			"Offloads heavy audio processing to remote Lavalink servers; optimal for legacy OS.",
+		notes: "Offloads heavy audio processing to remote Lavalink servers; optimal for legacy OS.",
 	},
 	"forge.topgg": {
 		id: "forge.topgg",
@@ -68,8 +64,7 @@ export const FORGE_EXTENSIONS_MAP: Record<string, ExtensionInfo> = {
 		nativeAddons: [],
 		requiresNetwork: true,
 		legacySafe: true,
-		notes:
-			"Uses HTTP client and express/native HTTP server; fully safe across all platforms.",
+		notes: "Uses HTTP client and express/native HTTP server; fully safe across all platforms.",
 	},
 	"forge.giveaways": {
 		id: "forge.giveaways",
@@ -79,8 +74,7 @@ export const FORGE_EXTENSIONS_MAP: Record<string, ExtensionInfo> = {
 		nativeAddons: [],
 		requiresNetwork: false,
 		legacySafe: true,
-		notes:
-			"Integrates with ForgeDB / QuorielDB; database compatibility rules apply.",
+		notes: "Integrates with ForgeDB / QuorielDB; database compatibility rules apply.",
 	},
 	"forge.api": {
 		id: "forge.api",
@@ -96,8 +90,7 @@ export const FORGE_EXTENSIONS_MAP: Record<string, ExtensionInfo> = {
 		id: "forge.webserver",
 		name: "WebServer",
 		package: "@tryforge/forge.webserver",
-		description:
-			"Lightweight web server extension for dashboards and endpoints",
+		description: "Lightweight web server extension for dashboards and endpoints",
 		nativeAddons: [],
 		requiresNetwork: true,
 		legacySafe: true,
@@ -111,10 +104,7 @@ export class ExtensionRegistry {
 	}
 
 	public static getExtension(id: string): ExtensionInfo | null {
-		const normalized = id
-			.toLowerCase()
-			.replace("@tryforge/", "")
-			.replace("tryforge/", "");
+		const normalized = id.toLowerCase().replace("@tryforge/", "").replace("tryforge/", "");
 		return FORGE_EXTENSIONS_MAP[normalized] ?? null;
 	}
 

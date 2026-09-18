@@ -1,8 +1,5 @@
 import { ArgType, NativeFunction } from "@tryforge/forgescript";
-import {
-	FORGEDB_DRIVERS,
-	ForgeDBIntegration,
-} from "../../integrations/ForgeDBIntegration";
+import { FORGEDB_DRIVERS, ForgeDBIntegration } from "../../integrations/ForgeDBIntegration";
 import { getRoot, requireTarget, toError } from "../../util/functions";
 
 export default new NativeFunction({
@@ -16,8 +13,7 @@ export default new NativeFunction({
 	args: [
 		{
 			name: "target",
-			description:
-				"Target identifier (e.g. ios-ish-x86, win-legacy-x86, linux-modern-x64)",
+			description: "Target identifier (e.g. ios-ish-x86, win-legacy-x86, linux-modern-x64)",
 			rest: false,
 			type: ArgType.String,
 			required: true,
@@ -33,12 +29,8 @@ export default new NativeFunction({
 		try {
 			const meta = requireTarget(target);
 			const parsed = ForgeDBIntegration.parseDriver(driver || "sqlite");
-			if (!parsed)
-				return this.customError(`Unknown ForgeDB driver '${driver}'`);
-			return this.success(
-				ForgeDBIntegration.checkDriver(parsed, meta.id, getRoot(ctx))
-					.compatible,
-			);
+			if (!parsed) return this.customError(`Unknown ForgeDB driver '${driver}'`);
+			return this.success(ForgeDBIntegration.checkDriver(parsed, meta.id, getRoot(ctx)).compatible);
 		} catch (err) {
 			return this.error(toError(err));
 		}

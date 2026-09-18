@@ -5,17 +5,8 @@ import { BinaryPackager, type BuildStrategy } from "./compiler/BinaryPackager";
 import { PolicyEnforcer } from "./compiler/PolicyEnforcer";
 import { RuntimeRegistry } from "./compiler/RuntimeRegistry";
 import { ExtensionRegistry } from "./integrations/ExtensionRegistry";
-import {
-	FORGEDB_DRIVERS,
-	type ForgeDBDriver,
-	ForgeDBIntegration,
-} from "./integrations/ForgeDBIntegration";
-import {
-	ALL_TARGETS,
-	getTargetMetadata,
-	parseTargetDevice,
-	TARGET_METADATA_MAP,
-} from "./structures/TargetDevice";
+import { FORGEDB_DRIVERS, type ForgeDBDriver, ForgeDBIntegration } from "./integrations/ForgeDBIntegration";
+import { ALL_TARGETS, getTargetMetadata, parseTargetDevice, TARGET_METADATA_MAP } from "./structures/TargetDevice";
 
 const VERSION: string = require("../package.json").version;
 
@@ -82,19 +73,13 @@ async function main(): Promise<void> {
 			console.log(`Targets available for ${pm}:`);
 			for (const target of PolicyEnforcer.getAllowedTargets(pm)) {
 				const meta = TARGET_METADATA_MAP[target];
-				const tag = meta.is32BitOrLegacy
-					? "[32-bit/legacy]"
-					: "[modern 64-bit]";
-				const runtime = meta.officialNodeFile
-					? "sea"
-					: "portable / --node-binary";
-				console.log(
-					`  ${target.padEnd(20)} ${tag.padEnd(16)} ${meta.name.padEnd(32)} ${runtime}`,
-				);
+				const tag = meta.is32BitOrLegacy ? "[32-bit/legacy]" : "[modern 64-bit]";
+				const runtime = meta.officialNodeFile ? "sea" : "portable / --node-binary";
+				console.log(`  ${target.padEnd(20)} ${tag.padEnd(16)} ${meta.name.padEnd(32)} ${runtime}`);
 			}
 			if (pm === "bun") {
 				console.log(
-					"\nBun projects: modern 64-bit targets are built with 'bun build --compile'; ForgeGraal covers 32-bit and legacy Windows.",
+					"\nBun projects: modern 64-bit targets are built with 'bun build --compile'; ForgeGraal covers 32-bit and legacy Windows."
 				);
 			}
 			return;
@@ -105,9 +90,7 @@ async function main(): Promise<void> {
 			for (const ext of ExtensionRegistry.listExtensions()) {
 				console.log(`\n  ${ext.name.padEnd(16)} [${ext.package}]`);
 				console.log(`    Description: ${ext.description}`);
-				console.log(
-					`    Legacy safe: ${ext.legacySafe ? "yes (polyfilled/pure-js)" : "no"}`,
-				);
+				console.log(`    Legacy safe: ${ext.legacySafe ? "yes (polyfilled/pure-js)" : "no"}`);
 				console.log(`    Notes      : ${ext.notes}`);
 			}
 			return;
@@ -115,10 +98,7 @@ async function main(): Promise<void> {
 
 		case "info": {
 			const meta = getTargetMetadata(arg);
-			if (!meta)
-				fail(
-					`Unknown target '${arg ?? ""}'. Supported: ${ALL_TARGETS.join(", ")}`,
-				);
+			if (!meta) fail(`Unknown target '${arg ?? ""}'. Supported: ${ALL_TARGETS.join(", ")}`);
 			console.log(`${meta.name}`);
 			console.log(`  ID             : ${meta.id}`);
 			console.log(`  Architecture   : ${meta.arch} (${meta.bits}-bit)`);
@@ -131,20 +111,11 @@ async function main(): Promise<void> {
 			if (values.db) {
 				const driver = ForgeDBIntegration.parseDriver(values.db);
 				if (!driver)
-					fail(
-						`Unknown ForgeDB driver '${values.db}'. Supported: ${Object.keys(FORGEDB_DRIVERS).join(", ")}`,
-					);
-				const res = ForgeDBIntegration.checkDriver(
-					driver as ForgeDBDriver,
-					meta.id,
-				);
-				console.log(
-					`  ForgeDB ${driver.padEnd(7)}: ${res.compatible ? "compatible" : "incompatible"} (${res.reason})`,
-				);
+					fail(`Unknown ForgeDB driver '${values.db}'. Supported: ${Object.keys(FORGEDB_DRIVERS).join(", ")}`);
+				const res = ForgeDBIntegration.checkDriver(driver as ForgeDBDriver, meta.id);
+				console.log(`  ForgeDB ${driver.padEnd(7)}: ${res.compatible ? "compatible" : "incompatible"} (${res.reason})`);
 				if (!res.compatible) {
-					const alt = ForgeDBIntegration.suggestAlternative(
-						driver as ForgeDBDriver,
-					);
+					const alt = ForgeDBIntegration.suggestAlternative(driver as ForgeDBDriver);
 					if (alt) console.log(`  Suggested driver: ${alt}`);
 				}
 			}
@@ -156,12 +127,8 @@ async function main(): Promise<void> {
 			const info = BinaryInspector.inspect(arg);
 			if (!info) fail(`'${arg}' is not an ELF, PE or Mach-O binary`);
 			console.log(JSON.stringify(info, null, 2));
-			const fits = ALL_TARGETS.filter((t) =>
-				BinaryInspector.matchesTarget(info, t),
-			);
-			console.log(
-				`Runs on: ${fits.length ? fits.join(", ") : "no known target"}`,
-			);
+			const fits = ALL_TARGETS.filter((t) => BinaryInspector.matchesTarget(info, t));
+			console.log(`Runs on: ${fits.length ? fits.join(", ") : "no known target"}`);
 			return;
 		}
 
@@ -172,22 +139,14 @@ async function main(): Promise<void> {
 			if (!sub || sub === "list") {
 				const target = rest[0] ? parseTargetDevice(rest[0]) : null;
 				if (rest[0] && !target) fail(`Unknown target '${rest[0]}'`);
-				const entries = target
-					? RuntimeRegistry.find(target)
-					: RuntimeRegistry.list();
+				const entries = target ? RuntimeRegistry.find(target) : RuntimeRegistry.list();
 				if (!entries.length) {
-					console.log(
-						"No community runtimes registered. Add one with 'forgegraal runtimes add'.",
-					);
+					console.log("No community runtimes registered. Add one with 'forgegraal runtimes add'.");
 					return;
 				}
 				for (const e of entries) {
-					console.log(
-						`${e.target.padEnd(20)} ${e.version.padEnd(12)} ${e.url}`,
-					);
-					console.log(
-						`  sha256: ${e.sha256}${e.notes ? `\n  notes : ${e.notes}` : ""}`,
-					);
+					console.log(`${e.target.padEnd(20)} ${e.version.padEnd(12)} ${e.url}`);
+					console.log(`  sha256: ${e.sha256}${e.notes ? `\n  notes : ${e.notes}` : ""}`);
 				}
 				return;
 			}
@@ -195,16 +154,12 @@ async function main(): Promise<void> {
 			if (sub === "add") {
 				const [targetInput, version, url] = rest;
 				if (!targetInput || !version || !url) {
-					fail(
-						"Usage: forgegraal runtimes add <target> <version> <url> --sha256 <hex> [--notes <text>] [--global]",
-					);
+					fail("Usage: forgegraal runtimes add <target> <version> <url> --sha256 <hex> [--notes <text>] [--global]");
 				}
 				const target = parseTargetDevice(targetInput);
 				if (!target) fail(`Unknown target '${targetInput}'`);
 				if (!values.sha256) {
-					fail(
-						"--sha256 <hex> is required: ForgeGraal never downloads a community runtime without a pinned checksum",
-					);
+					fail("--sha256 <hex> is required: ForgeGraal never downloads a community runtime without a pinned checksum");
 				}
 				try {
 					RuntimeRegistry.add(
@@ -215,23 +170,20 @@ async function main(): Promise<void> {
 							sha256: values.sha256,
 							notes: values.notes,
 						},
-						{ global: values.global },
+						{ global: values.global }
 					);
 				} catch (err) {
 					fail(err instanceof Error ? err.message : String(err));
 				}
 				console.log(
-					`Registered Node.js ${version} for ${target}${values.global ? " (global)" : " (project: .forgegraal/runtimes.json)"}.`,
+					`Registered Node.js ${version} for ${target}${values.global ? " (global)" : " (project: .forgegraal/runtimes.json)"}.`
 				);
 				return;
 			}
 
 			if (sub === "remove") {
 				const [target, version] = rest;
-				if (!target || !version)
-					fail(
-						"Usage: forgegraal runtimes remove <target> <version> [--global]",
-					);
+				if (!target || !version) fail("Usage: forgegraal runtimes remove <target> <version> [--global]");
 				const removed = RuntimeRegistry.remove(target, version, {
 					global: values.global,
 				});
@@ -246,8 +198,7 @@ async function main(): Promise<void> {
 		case "compile":
 		case "build": {
 			if (!arg) fail("Please provide the bot entrypoint (built .js file)");
-			if (!values.target)
-				fail("Please specify the target with --target <name>");
+			if (!values.target) fail("Please specify the target with --target <name>");
 
 			const result = await BinaryPackager.compile({
 				entrypoint: arg,
@@ -264,20 +215,13 @@ async function main(): Promise<void> {
 				onLog: (msg) => console.log(`[ForgeGraal] ${msg}`),
 			});
 
-			for (const warning of result.warnings)
-				console.warn(`[ForgeGraal] warning: ${warning}`);
-			console.log(
-				`[ForgeGraal] Built ${result.metadata.name} in ${result.durationMs}ms`,
-			);
+			for (const warning of result.warnings) console.warn(`[ForgeGraal] warning: ${warning}`);
+			console.log(`[ForgeGraal] Built ${result.metadata.name} in ${result.durationMs}ms`);
 			console.log(`  Strategy : ${result.strategy}`);
 			console.log(`  Output   : ${result.outputPath}`);
 			console.log(`  Run      : ${result.launcherPath}`);
-			console.log(
-				`  Runtime  : ${result.runtimeVersion ? `Node.js ${result.runtimeVersion}` : "system Node.js"}`,
-			);
-			console.log(
-				`  Size     : ${(result.sizeBytes / 1048576).toFixed(2)} MiB`,
-			);
+			console.log(`  Runtime  : ${result.runtimeVersion ? `Node.js ${result.runtimeVersion}` : "system Node.js"}`);
+			console.log(`  Size     : ${(result.sizeBytes / 1048576).toFixed(2)} MiB`);
 			return;
 		}
 
@@ -310,8 +254,6 @@ function parse() {
 }
 
 main().catch((err: unknown) => {
-	console.error(
-		`\n[ForgeGraal] ${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`,
-	);
+	console.error(`\n[ForgeGraal] ${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`);
 	process.exit(1);
 });

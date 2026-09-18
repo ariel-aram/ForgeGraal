@@ -1,17 +1,6 @@
-import {
-	chmodSync,
-	copyFileSync,
-	existsSync,
-	mkdirSync,
-	readdirSync,
-	statSync,
-	writeFileSync,
-} from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import {
-	PORTABLE_ARCHIVE_NAME,
-	PORTABLE_LAUNCHER_NAME,
-} from "../runtime/launcher";
+import { PORTABLE_ARCHIVE_NAME, PORTABLE_LAUNCHER_NAME } from "../runtime/launcher";
 import { getTargetMetadata, ProjectError, RuntimeError } from "../structures";
 
 export interface PortableBuildOptions {
@@ -80,17 +69,10 @@ export class PortablePackager {
 		const out = options.outputPath;
 		if (existsSync(out)) {
 			if (!statSync(out).isDirectory()) {
-				throw new ProjectError(
-					`Portable output '${out}' exists and is not a directory`,
-				);
+				throw new ProjectError(`Portable output '${out}' exists and is not a directory`);
 			}
-			if (
-				readdirSync(out).length > 0 &&
-				!existsSync(join(out, BUNDLE_MARKER))
-			) {
-				throw new ProjectError(
-					`Refusing to write into non-empty directory '${out}' that is not a ForgeGraal bundle`,
-				);
+			if (readdirSync(out).length > 0 && !existsSync(join(out, BUNDLE_MARKER))) {
+				throw new ProjectError(`Refusing to write into non-empty directory '${out}' that is not a ForgeGraal bundle`);
 			}
 		}
 		mkdirSync(out, { recursive: true });
@@ -108,15 +90,11 @@ export class PortablePackager {
 			writeFileSync(launcherPath, PortablePackager.windowsLauncher());
 		} else {
 			launcherPath = join(out, options.name);
-			writeFileSync(
-				launcherPath,
-				PortablePackager.unixLauncher(meta.runtimeHint),
-			);
+			writeFileSync(launcherPath, PortablePackager.unixLauncher(meta.runtimeHint));
 			chmodSync(launcherPath, 0o755);
 		}
 
-		let sizeBytes =
-			options.archive.length + Buffer.byteLength(options.launcherSource);
+		let sizeBytes = options.archive.length + Buffer.byteLength(options.launcherSource);
 		if (options.runtimeBinary) {
 			const runtimeDest = join(out, isWindows ? "node.exe" : "node");
 			copyFileSync(options.runtimeBinary, runtimeDest);
@@ -125,9 +103,7 @@ export class PortablePackager {
 		} else {
 			warnings.push(
 				`No Node.js runtime bundled for ${meta.name}; the launcher uses the node found on PATH. ` +
-					(meta.officialNodeFile
-						? "Build without --offline or pass --node-binary to bundle one."
-						: meta.runtimeHint),
+					(meta.officialNodeFile ? "Build without --offline or pass --node-binary to bundle one." : meta.runtimeHint)
 			);
 		}
 

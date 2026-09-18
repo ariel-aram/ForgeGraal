@@ -15,9 +15,7 @@ export const FORGEDB_DRIVERS = {
 export type ForgeDBDriver = keyof typeof FORGEDB_DRIVERS;
 
 /** Pure JavaScript ForgeDB drivers, in suggestion order. They run on every target. */
-export const PURE_JS_FORGEDB_DRIVERS: readonly ForgeDBDriver[] = Object.entries(
-	FORGEDB_DRIVERS,
-)
+export const PURE_JS_FORGEDB_DRIVERS: readonly ForgeDBDriver[] = Object.entries(FORGEDB_DRIVERS)
 	.filter(([, spec]) => !spec.native)
 	.map(([driver]) => driver as ForgeDBDriver);
 
@@ -41,9 +39,7 @@ export class ForgeDBIntegration {
 	 * Returns the best pure JavaScript driver to switch to when `driver` is native, or `null`
 	 * when `driver` is already pure JavaScript (no swap needed).
 	 */
-	public static suggestAlternative(
-		driver: ForgeDBDriver,
-	): ForgeDBDriver | null {
+	public static suggestAlternative(driver: ForgeDBDriver): ForgeDBDriver | null {
 		if (!FORGEDB_DRIVERS[driver].native) return null;
 		return PURE_JS_FORGEDB_DRIVERS[0] ?? null;
 	}
@@ -52,27 +48,21 @@ export class ForgeDBIntegration {
 		let dir = fromDir;
 		for (;;) {
 			const candidate = join(dir, "node_modules", name);
-			if (existsSync(join(candidate, "package.json")))
-				return realpathSync(candidate);
+			if (existsSync(join(candidate, "package.json"))) return realpathSync(candidate);
 			const parent = dirname(dir);
 			if (parent === dir) return null;
 			dir = parent;
 		}
 	}
 
-	private static findAddons(
-		dir: string,
-		depth = 0,
-		out: string[] = [],
-	): string[] {
+	private static findAddons(dir: string, depth = 0, out: string[] = []): string[] {
 		if (depth > 8) return out;
 		for (const name of readdirSync(dir)) {
 			if (name === "node_modules" || name.startsWith(".")) continue;
 			const abs = join(dir, name);
 			const stats = statSync(abs, { throwIfNoEntry: false });
 			if (!stats) continue;
-			if (stats.isDirectory())
-				ForgeDBIntegration.findAddons(abs, depth + 1, out);
+			if (stats.isDirectory()) ForgeDBIntegration.findAddons(abs, depth + 1, out);
 			else if (name.endsWith(".node")) out.push(abs);
 		}
 		return out;
@@ -86,7 +76,7 @@ export class ForgeDBIntegration {
 	public static checkDriver(
 		driver: ForgeDBDriver,
 		target: unknown,
-		projectRoot: string = process.cwd(),
+		projectRoot: string = process.cwd()
 	): DriverCompatibility {
 		const spec = FORGEDB_DRIVERS[driver];
 		const base = { driver, package: spec.package, native: spec.native };

@@ -22,13 +22,7 @@ export enum TargetDevice {
 }
 
 export type TargetArch = "x86" | "x64" | "armv7" | "arm64";
-export type TargetOs =
-	| "ios-ish"
-	| "windows-legacy"
-	| "windows"
-	| "linux"
-	| "darwin"
-	| "freebsd";
+export type TargetOs = "ios-ish" | "windows-legacy" | "windows" | "linux" | "darwin" | "freebsd";
 export type BinaryFormat = "elf32" | "elf64" | "pe32" | "pe32plus" | "macho";
 
 export interface TargetMetadata {
@@ -58,14 +52,11 @@ const UNOFFICIAL_WIN_HINT =
 const XP_WIN_HINT =
 	"Windows XP (NT 5.1/5.2) requires a backported runtime (e.g. One-Core-API patched Node or community XP builds). Supply with --node-binary.";
 
-export const TARGET_METADATA_MAP: Readonly<
-	Record<TargetDevice, Readonly<TargetMetadata>>
-> = {
+export const TARGET_METADATA_MAP: Readonly<Record<TargetDevice, Readonly<TargetMetadata>>> = {
 	[TargetDevice.WinXpX86]: {
 		id: TargetDevice.WinXpX86,
 		name: "Windows XP / Server 2003 (32-bit x86)",
-		description:
-			"Win32 console executable for NT 5.1 / 5.2 compatible with Windows XP",
+		description: "Win32 console executable for NT 5.1 / 5.2 compatible with Windows XP",
 		arch: "x86",
 		bits: 32,
 		os: "windows-legacy",
@@ -79,8 +70,7 @@ export const TARGET_METADATA_MAP: Readonly<
 	[TargetDevice.IosIshX86]: {
 		id: TargetDevice.IosIshX86,
 		name: "iOS iSH (32-bit x86)",
-		description:
-			"Alpine Linux (musl, i686) userland running inside the iSH emulator on iOS",
+		description: "Alpine Linux (musl, i686) userland running inside the iSH emulator on iOS",
 		arch: "x86",
 		bits: 32,
 		os: "ios-ish",
@@ -89,14 +79,12 @@ export const TARGET_METADATA_MAP: Readonly<
 		nodePlatform: "linux",
 		nodeArch: "ia32",
 		officialNodeFile: null,
-		runtimeHint:
-			"Inside iSH run `apk add nodejs`, or pass the Alpine x86 node binary with --node-binary.",
+		runtimeHint: "Inside iSH run `apk add nodejs`, or pass the Alpine x86 node binary with --node-binary.",
 	},
 	[TargetDevice.WinLegacyX86]: {
 		id: TargetDevice.WinLegacyX86,
 		name: "Windows 7 / Vista (32-bit x86)",
-		description:
-			"Win32 console executable for NT 6.0 / 6.1 without Windows 8+ API requirements",
+		description: "Win32 console executable for NT 6.0 / 6.1 without Windows 8+ API requirements",
 		arch: "x86",
 		bits: 32,
 		os: "windows-legacy",
@@ -110,8 +98,7 @@ export const TARGET_METADATA_MAP: Readonly<
 	[TargetDevice.WinLegacyX64]: {
 		id: TargetDevice.WinLegacyX64,
 		name: "Windows 7 / Vista (64-bit x64)",
-		description:
-			"Win64 console executable for NT 6.0 / 6.1 without Windows 8+ API requirements",
+		description: "Win64 console executable for NT 6.0 / 6.1 without Windows 8+ API requirements",
 		arch: "x64",
 		bits: 64,
 		os: "windows-legacy",
@@ -134,8 +121,7 @@ export const TARGET_METADATA_MAP: Readonly<
 		nodePlatform: "linux",
 		nodeArch: "ia32",
 		officialNodeFile: null,
-		runtimeHint:
-			"No official 32-bit Linux Node.js exists; install it from your distribution or pass --node-binary.",
+		runtimeHint: "No official 32-bit Linux Node.js exists; install it from your distribution or pass --node-binary.",
 	},
 	[TargetDevice.WinX86]: {
 		id: TargetDevice.WinX86,
@@ -154,8 +140,7 @@ export const TARGET_METADATA_MAP: Readonly<
 	[TargetDevice.LinuxArmV7]: {
 		id: TargetDevice.LinuxArmV7,
 		name: "Linux ARMv7 (32-bit)",
-		description:
-			"32-bit ARM single-board computers (e.g. Raspberry Pi OS 32-bit)",
+		description: "32-bit ARM single-board computers (e.g. Raspberry Pi OS 32-bit)",
 		arch: "armv7",
 		bits: 32,
 		os: "linux",
@@ -178,8 +163,7 @@ export const TARGET_METADATA_MAP: Readonly<
 		nodePlatform: "freebsd",
 		nodeArch: "ia32",
 		officialNodeFile: null,
-		runtimeHint:
-			"No official FreeBSD Node.js exists; install `pkg install node` or pass --node-binary.",
+		runtimeHint: "No official FreeBSD Node.js exists; install `pkg install node` or pass --node-binary.",
 	},
 	[TargetDevice.WinModernX64]: {
 		id: TargetDevice.WinModernX64,
@@ -261,9 +245,7 @@ export const ALL_TARGETS: readonly TargetDevice[] = Object.values(TargetDevice);
 export function parseTargetDevice(value: unknown): TargetDevice | null {
 	if (typeof value !== "string") return null;
 	const normalized = value.trim().toLowerCase();
-	return (ALL_TARGETS as readonly string[]).includes(normalized)
-		? (normalized as TargetDevice)
-		: null;
+	return (ALL_TARGETS as readonly string[]).includes(normalized) ? (normalized as TargetDevice) : null;
 }
 
 export function getTargetMetadata(value: unknown): TargetMetadata | null {

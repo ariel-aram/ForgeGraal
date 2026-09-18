@@ -7,6 +7,6 @@ declare module "postject" {
 			machoSegmentName?: string;
 			overwrite?: boolean;
 			sentinelFuse?: string;
-		},
+		}
 	): Promise<void>;
 }

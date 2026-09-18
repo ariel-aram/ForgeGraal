@@ -1,20 +1,8 @@
 import { createHash } from "node:crypto";
-import {
-	chmodSync,
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	renameSync,
-	writeFileSync,
-} from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { gunzipSync, inflateRawSync } from "node:zlib";
-import {
-	ForgeGraalError,
-	parseTargetDevice,
-	RuntimeError,
-	type TargetDevice,
-} from "../structures";
+import { ForgeGraalError, parseTargetDevice, RuntimeError, type TargetDevice } from "../structures";
 import { NodeRuntime } from "./NodeRuntime";
 import { compareVersions } from "./ProjectCollector";
 
@@ -55,11 +43,7 @@ function readManifest(path: string): CommunityRuntimeEntry[] {
 
 function writeManifest(path: string, entries: CommunityRuntimeEntry[]) {
 	mkdirSync(dirname(path), { recursive: true });
-	writeFileSync(
-		path,
-		`${JSON.stringify({ runtimes: entries }, null, "\t")}\n`,
-		"utf-8",
-	);
+	writeFileSync(path, `${JSON.stringify({ runtimes: entries }, null, "\t")}\n`, "utf-8");
 }
 
 /**
@@ -75,16 +59,10 @@ function writeManifest(path: string, entries: CommunityRuntimeEntry[]) {
  */
 export class RuntimeRegistry {
 	public static list(root: string = process.cwd()): CommunityRuntimeEntry[] {
-		return [
-			...readManifest(projectManifestPath(root)),
-			...readManifest(globalManifestPath()),
-		];
+		return [...readManifest(projectManifestPath(root)), ...readManifest(globalManifestPath())];
 	}
 
-	public static find(
-		target: TargetDevice,
-		root: string = process.cwd(),
-	): CommunityRuntimeEntry[] {
+	public static find(target: TargetDevice, root: string = process.cwd()): CommunityRuntimeEntry[] {
 		return RuntimeRegistry.list(root)
 			.filter((e) => e.target === target)
 			.sort((a, b) => compareVersions(b.version, a.version));
@@ -92,26 +70,22 @@ export class RuntimeRegistry {
 
 	public static add(
 		entry: Omit<CommunityRuntimeEntry, "addedAt">,
-		opts: { global?: boolean; root?: string } = {},
+		opts: { global?: boolean; root?: string } = {}
 	): void {
 		const target = parseTargetDevice(entry.target);
 		if (!target) throw new ForgeGraalError(`Unknown target '${entry.target}'`);
 		if (!SHA256_RE.test(entry.sha256)) {
 			throw new ForgeGraalError(
 				"--sha256 must be a 64 character hex SHA-256 digest of the exact file at --url; " +
-					"ForgeGraal never downloads a community runtime without one",
+					"ForgeGraal never downloads a community runtime without one"
 			);
 		}
 		if (!/^https:\/\//i.test(entry.url)) {
 			throw new ForgeGraalError("Runtime URLs must use https://");
 		}
 
-		const path = opts.global
-			? globalManifestPath()
-			: projectManifestPath(opts.root ?? process.cwd());
-		const entries = readManifest(path).filter(
-			(e) => !(e.target === target && e.version === entry.version),
-		);
+		const path = opts.global ? globalManifestPath() : projectManifestPath(opts.root ?? process.cwd());
+		const entries = readManifest(path).filter((e) => !(e.target === target && e.version === entry.version));
 		entries.push({
 			...entry,
 			target,
@@ -121,18 +95,10 @@ export class RuntimeRegistry {
 		writeManifest(path, entries);
 	}
 
-	public static remove(
-		target: string,
-		version: string,
-		opts: { global?: boolean; root?: string } = {},
-	): boolean {
-		const path = opts.global
-			? globalManifestPath()
-			: projectManifestPath(opts.root ?? process.cwd());
+	public static remove(target: string, version: string, opts: { global?: boolean; root?: string } = {}): boolean {
+		const path = opts.global ? globalManifestPath() : projectManifestPath(opts.root ?? process.cwd());
 		const entries = readManifest(path);
-		const next = entries.filter(
-			(e) => !(e.target === target && e.version === version),
-		);
+		const next = entries.filter((e) => !(e.target === target && e.version === version));
 		if (next.length === entries.length) return false;
 		writeManifest(path, next);
 		return true;
@@ -145,27 +111,19 @@ export class RuntimeRegistry {
 	 */
 	public static async ensure(entry: CommunityRuntimeEntry): Promise<string> {
 		const isWindows = entry.target.startsWith("win-");
-		const dir = join(
-			NodeRuntime.cacheDir(),
-			"community",
-			entry.target,
-			entry.version,
-		);
+		const dir = join(NodeRuntime.cacheDir(), "community", entry.target, entry.version);
 		const binary = join(dir, isWindows ? "node.exe" : "node");
 		if (existsSync(binary)) return binary;
 
 		const res = await fetch(entry.url);
-		if (!res.ok)
-			throw new RuntimeError(
-				`Download failed (${res.status}) for ${entry.url}`,
-			);
+		if (!res.ok) throw new RuntimeError(`Download failed (${res.status}) for ${entry.url}`);
 		const download = Buffer.from(await res.arrayBuffer());
 
 		const actual = createHash("sha256").update(download).digest("hex");
 		if (actual !== entry.sha256.toLowerCase()) {
 			throw new RuntimeError(
 				`Checksum mismatch for ${entry.url}: expected ${entry.sha256}, got ${actual}. ` +
-					"Refusing to use this binary; verify the URL and re-register it with the correct --sha256.",
+					"Refusing to use this binary; verify the URL and re-register it with the correct --sha256."
 			);
 		}
 
@@ -180,8 +138,7 @@ export class RuntimeRegistry {
 
 	private static extract(download: Buffer, url: string): Buffer {
 		const lower = url.toLowerCase();
-		if (lower.endsWith(".tar.gz") || lower.endsWith(".tgz"))
-			return RuntimeRegistry.extractFromTarGz(download);
+		if (lower.endsWith(".tar.gz") || lower.endsWith(".tgz")) return RuntimeRegistry.extractFromTarGz(download);
 		if (lower.endsWith(".zip")) return RuntimeRegistry.extractFromZip(download);
 		return download;
 	}
@@ -197,13 +154,11 @@ export class RuntimeRegistry {
 			const header = tar.subarray(offset, offset + 512);
 			if (header.every((b) => b === 0)) break;
 
-			const field = (start: number, len: number) =>
-				header.toString("utf-8", start, start + len).replace(/\0.*$/s, "");
+			const field = (start: number, len: number) => header.toString("utf-8", start, start + len).replace(/\0.*$/s, "");
 			const size = Number.parseInt(field(124, 12).trim() || "0", 8);
 			const type = field(156, 1);
 			const prefix = field(345, 155);
-			let name =
-				longName ?? (prefix ? `${prefix}/${field(0, 100)}` : field(0, 100));
+			let name = longName ?? (prefix ? `${prefix}/${field(0, 100)}` : field(0, 100));
 			longName = null;
 
 			const dataStart = offset + 512;
@@ -226,10 +181,7 @@ export class RuntimeRegistry {
 		}
 
 		const best = candidates.sort((a, b) => a.name.length - b.name.length)[0];
-		if (!best)
-			throw new RuntimeError(
-				"No 'node' executable found in the downloaded .tar.gz archive",
-			);
+		if (!best) throw new RuntimeError("No 'node' executable found in the downloaded .tar.gz archive");
 		return best.data;
 	}
 
@@ -249,22 +201,14 @@ export class RuntimeRegistry {
 		const candidates: Array<{ name: string; data: Buffer }> = [];
 
 		for (let i = 0; i < entryCount; i++) {
-			if (
-				cdOffset + 46 > archive.length ||
-				archive.readUInt32LE(cdOffset) !== 0x02014b50
-			)
-				break;
+			if (cdOffset + 46 > archive.length || archive.readUInt32LE(cdOffset) !== 0x02014b50) break;
 			const method = archive.readUInt16LE(cdOffset + 10);
 			const compSize = archive.readUInt32LE(cdOffset + 20);
 			const nameLen = archive.readUInt16LE(cdOffset + 28);
 			const extraLen = archive.readUInt16LE(cdOffset + 30);
 			const commentLen = archive.readUInt16LE(cdOffset + 32);
 			const localOffset = archive.readUInt32LE(cdOffset + 42);
-			const name = archive.toString(
-				"utf-8",
-				cdOffset + 46,
-				cdOffset + 46 + nameLen,
-			);
+			const name = archive.toString("utf-8", cdOffset + 46, cdOffset + 46 + nameLen);
 			cdOffset += 46 + nameLen + extraLen + commentLen;
 
 			if (!/(^|[/\\])node(\.exe)?$/i.test(name)) continue;
@@ -273,20 +217,12 @@ export class RuntimeRegistry {
 			const lfExtraLen = archive.readUInt16LE(localOffset + 28);
 			const dataStart = localOffset + 30 + lfNameLen + lfExtraLen;
 			const raw = archive.subarray(dataStart, dataStart + compSize);
-			const data =
-				method === 0
-					? Buffer.from(raw)
-					: method === 8
-						? inflateRawSync(raw)
-						: null;
+			const data = method === 0 ? Buffer.from(raw) : method === 8 ? inflateRawSync(raw) : null;
 			if (data) candidates.push({ name, data });
 		}
 
 		const best = candidates.sort((a, b) => a.name.length - b.name.length)[0];
-		if (!best)
-			throw new RuntimeError(
-				"No 'node'/'node.exe' executable found in the downloaded .zip archive",
-			);
+		if (!best) throw new RuntimeError("No 'node'/'node.exe' executable found in the downloaded .zip archive");
 		return best.data;
 	}
 }

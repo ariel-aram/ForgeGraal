@@ -1,8 +1,5 @@
 import { ArgType, NativeFunction } from "@tryforge/forgescript";
-import {
-	FORGEDB_DRIVERS,
-	ForgeDBIntegration,
-} from "../../integrations/ForgeDBIntegration";
+import { FORGEDB_DRIVERS, ForgeDBIntegration } from "../../integrations/ForgeDBIntegration";
 import { toError } from "../../util/functions";
 
 export default new NativeFunction({
@@ -25,8 +22,7 @@ export default new NativeFunction({
 	execute(_ctx, [driver]) {
 		try {
 			const parsed = ForgeDBIntegration.parseDriver(driver);
-			if (!parsed)
-				return this.customError(`Unknown ForgeDB driver '${driver}'`);
+			if (!parsed) return this.customError(`Unknown ForgeDB driver '${driver}'`);
 			return this.success(ForgeDBIntegration.suggestAlternative(parsed) ?? "");
 		} catch (err) {
 			return this.error(toError(err));

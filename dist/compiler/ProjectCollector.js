@@ -106,8 +106,7 @@ class ProjectCollector {
         const entryReal = (0, node_fs_1.realpathSync)(entryAbs);
         if (!isInside(entryReal, root))
             throw new structures_1.PathOutsideRootError(entryAbs, root);
-        if ((0, node_fs_1.existsSync)((0, node_path_1.join)(root, ".pnp.cjs")) ||
-            (0, node_fs_1.existsSync)((0, node_path_1.join)(root, ".pnp.js"))) {
+        if ((0, node_fs_1.existsSync)((0, node_path_1.join)(root, ".pnp.cjs")) || (0, node_fs_1.existsSync)((0, node_path_1.join)(root, ".pnp.js"))) {
             throw new structures_1.ProjectError("Yarn Plug'n'Play projects have no node_modules to bundle. Set `nodeLinker: node-modules` in .yarnrc.yml and reinstall.");
         }
         const pkg = readJson((0, node_path_1.join)(root, "package.json")) ?? {};
@@ -119,8 +118,7 @@ class ProjectCollector {
         const rawName = typeof pkg.name === "string" ? pkg.name : (0, node_path_1.basename)(root);
         return {
             root,
-            name: rawName.replace(/^@[^/]+\//, "").replace(/[^a-zA-Z0-9._-]/g, "-") ||
-                "bot",
+            name: rawName.replace(/^@[^/]+\//, "").replace(/[^a-zA-Z0-9._-]/g, "-") || "bot",
             entry: toPosix((0, node_path_1.relative)(root, entryReal)),
             entries: collector.entries,
             nativeAddons: collector.nativeAddons,
@@ -148,9 +146,7 @@ class ProjectCollector {
             return true;
         if (name.endsWith(".forgegraal"))
             return true;
-        if (isProjectFile &&
-            !this.options.includeEnv &&
-            /^\.env(\..*)?$/.test(name))
+        if (isProjectFile && !this.options.includeEnv && /^\.env(\..*)?$/.test(name))
             return true;
         return this.excluded.some((p) => isInside(abs, p));
     }
@@ -270,8 +266,7 @@ class ProjectCollector {
             for (const [name, isRequired] of names) {
                 const depReal = this.resolvePackageDir(name, realDir);
                 if (!depReal) {
-                    if (isRequired &&
-                        !(pkg.bundleDependencies || pkg.bundledDependencies)) {
+                    if (isRequired && !(pkg.bundleDependencies || pkg.bundledDependencies)) {
                         throw new structures_1.ProjectError(`Dependency '${name}' required by '${isRoot ? "project" : dest}' is not installed. Run your package manager's install first.`);
                     }
                     continue;

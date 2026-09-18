@@ -5,8 +5,7 @@ import { getRoot } from "../../util/functions";
 export default new NativeFunction({
 	name: "$packageManager",
 	version: "1.0.0",
-	description:
-		"Returns the package manager the bot project uses (bun, pnpm, npm, yarn)",
+	description: "Returns the package manager the bot project uses (bun, pnpm, npm, yarn)",
 	unwrap: false,
 	output: ArgType.String,
 	execute(ctx) {

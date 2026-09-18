@@ -4,16 +4,14 @@ import { requireTarget, toError } from "../../util/functions";
 export default new NativeFunction({
 	name: "$canPackageOnBun",
 	version: "1.0.0",
-	description:
-		"Returns whether ForgeGraal builds a target for Bun projects (32-bit and legacy Windows only)",
+	description: "Returns whether ForgeGraal builds a target for Bun projects (32-bit and legacy Windows only)",
 	unwrap: true,
 	brackets: true,
 	output: ArgType.Boolean,
 	args: [
 		{
 			name: "target",
-			description:
-				"Target identifier (e.g. ios-ish-x86, win-legacy-x86, linux-modern-x64)",
+			description: "Target identifier (e.g. ios-ish-x86, win-legacy-x86, linux-modern-x64)",
 			rest: false,
 			type: ArgType.String,
 			required: true,

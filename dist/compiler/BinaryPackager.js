@@ -51,9 +51,7 @@ class BinaryPackager {
         }
         BinaryPackager.checkNativeAddons(project.nativeAddons, target, options, warnings);
         const runtime = await BinaryPackager.selectRuntime(target, meta, project.minNode, options, root, log);
-        if (runtime.version &&
-            project.minNode &&
-            (0, ProjectCollector_1.compareVersions)(runtime.version, project.minNode) < 0) {
+        if (runtime.version && project.minNode && (0, ProjectCollector_1.compareVersions)(runtime.version, project.minNode) < 0) {
             throw new structures_1.RuntimeError(`The bundled dependencies require Node.js >= ${project.minNode}, but the target runtime is ${runtime.version}.`);
         }
         let chosen;
@@ -92,8 +90,7 @@ class BinaryPackager {
         let launcherPath;
         let sizeBytes;
         if (chosen === "sea") {
-            outputPath = (0, node_path_1.resolve)(options.output ??
-                (0, node_path_1.join)(defaultOutDir, `${project.name}-${target}${(0, structures_1.executableExtension)(target)}`));
+            outputPath = (0, node_path_1.resolve)(options.output ?? (0, node_path_1.join)(defaultOutDir, `${project.name}-${target}${(0, structures_1.executableExtension)(target)}`));
             if ((0, node_fs_1.existsSync)(outputPath) && (0, node_fs_1.statSync)(outputPath).isDirectory()) {
                 throw new structures_1.RuntimeError(`SEA output '${outputPath}' is a directory; pass a file path`);
             }
@@ -173,14 +170,10 @@ class BinaryPackager {
                 entry.mismatched.push(`${addon.path} (${addon.info.format} ${addon.info.arch})`);
             }
         }
-        const mismatched = [...byPackage.values()]
-            .filter((p) => !p.usable)
-            .flatMap((p) => p.mismatched);
+        const mismatched = [...byPackage.values()].filter((p) => !p.usable).flatMap((p) => p.mismatched);
         if (!mismatched.length)
             return;
-        const mismatchedPackageNames = new Set([...byPackage.entries()]
-            .filter(([, p]) => !p.usable)
-            .map(([key]) => key.split("/").pop() ?? key));
+        const mismatchedPackageNames = new Set([...byPackage.entries()].filter(([, p]) => !p.usable).map(([key]) => key.split("/").pop() ?? key));
         const nativeForgeDbPackages = Object.values(ForgeDBIntegration_1.FORGEDB_DRIVERS)
             .filter((d) => d.native)
             .map((d) => d.package);
@@ -190,8 +183,7 @@ class BinaryPackager {
                 "a native one for the target."
             : undefined;
         if (options.allowNativeMismatch) {
-            warnings.push(`Native addons that cannot run on ${target} were bundled: ${mismatched.join(", ")}` +
-                (hint ? ` ${hint}` : ""));
+            warnings.push(`Native addons that cannot run on ${target} were bundled: ${mismatched.join(", ")}${hint ? ` ${hint}` : ""}`);
             return;
         }
         throw new structures_1.NativeAddonMismatchError(target, mismatched, hint);
@@ -249,10 +241,7 @@ class BinaryPackager {
             reason = `Node.js ${version} is older than ${NodeRuntime_1.MIN_SEA_NODE_VERSION}, which SEA assets require.`;
         }
         else if (fuse !== "ready") {
-            reason =
-                fuse === "absent"
-                    ? "the runtime was built without SEA support."
-                    : "the runtime is already a SEA.";
+            reason = fuse === "absent" ? "the runtime was built without SEA support." : "the runtime is already a SEA.";
         }
         return { binary, version, seaReady: reason === null, reason };
     }

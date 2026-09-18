@@ -18,9 +18,7 @@ class PolicyEnforcer {
         if (typeof value !== "string")
             return null;
         const normalized = value.trim().toLowerCase();
-        return exports.PACKAGE_MANAGERS.includes(normalized)
-            ? normalized
-            : null;
+        return exports.PACKAGE_MANAGERS.includes(normalized) ? normalized : null;
     }
     /**
      * Parses a user supplied package manager, falling back to detection when empty.

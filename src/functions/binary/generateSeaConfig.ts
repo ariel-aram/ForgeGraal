@@ -4,8 +4,7 @@ import { SeaPackager } from "../../compiler/SeaPackager";
 export default new NativeFunction({
 	name: "$generateSeaConfig",
 	version: "1.0.0",
-	description:
-		"Returns a Node.js Single Executable Application configuration as JSON",
+	description: "Returns a Node.js Single Executable Application configuration as JSON",
 	unwrap: true,
 	brackets: true,
 	output: ArgType.Json,
@@ -25,8 +24,6 @@ export default new NativeFunction({
 		},
 	],
 	execute(_ctx, [main, output]) {
-		return this.successJSON(
-			SeaPackager.createConfig(main, output || "sea-prep.blob"),
-		);
+		return this.successJSON(SeaPackager.createConfig(main, output || "sea-prep.blob"));
 	},
 });

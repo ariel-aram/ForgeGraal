@@ -11,8 +11,7 @@ export default new NativeFunction({
 	args: [
 		{
 			name: "target",
-			description:
-				"Target identifier (e.g. ios-ish-x86, win-legacy-x86, linux-modern-x64)",
+			description: "Target identifier (e.g. ios-ish-x86, win-legacy-x86, linux-modern-x64)",
 			rest: false,
 			type: ArgType.String,
 			required: true,

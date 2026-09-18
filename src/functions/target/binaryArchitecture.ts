@@ -4,16 +4,14 @@ import { requireTarget, toError } from "../../util/functions";
 export default new NativeFunction({
 	name: "$binaryArchitecture",
 	version: "1.0.0",
-	description:
-		"Returns the CPU architecture of a target (x86, x64, armv7, arm64)",
+	description: "Returns the CPU architecture of a target (x86, x64, armv7, arm64)",
 	unwrap: true,
 	brackets: true,
 	output: ArgType.String,
 	args: [
 		{
 			name: "target",
-			description:
-				"Target identifier (e.g. ios-ish-x86, win-legacy-x86, linux-modern-x64)",
+			description: "Target identifier (e.g. ios-ish-x86, win-legacy-x86, linux-modern-x64)",
 			rest: false,
 			type: ArgType.String,
 			required: true,

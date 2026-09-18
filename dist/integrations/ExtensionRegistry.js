@@ -93,10 +93,7 @@ class ExtensionRegistry {
         return Object.values(exports.FORGE_EXTENSIONS_MAP);
     }
     static getExtension(id) {
-        const normalized = id
-            .toLowerCase()
-            .replace("@tryforge/", "")
-            .replace("tryforge/", "");
+        const normalized = id.toLowerCase().replace("@tryforge/", "").replace("tryforge/", "");
         return exports.FORGE_EXTENSIONS_MAP[normalized] ?? null;
     }
     static isLegacySafe(id) {

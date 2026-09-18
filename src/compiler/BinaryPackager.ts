@@ -1,14 +1,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import {
-	FORGEDB_DRIVERS,
-	PURE_JS_FORGEDB_DRIVERS,
-} from "../integrations/ForgeDBIntegration";
-import {
-	createLauncherSource,
-	IMPORT_HELPER_PATH,
-	IMPORT_HELPER_SOURCE,
-} from "../runtime/launcher";
+import { FORGEDB_DRIVERS, PURE_JS_FORGEDB_DRIVERS } from "../integrations/ForgeDBIntegration";
+import { createLauncherSource, IMPORT_HELPER_PATH, IMPORT_HELPER_SOURCE } from "../runtime/launcher";
 import {
 	executableExtension,
 	is32BitOrLegacy,
@@ -86,16 +79,11 @@ export class BinaryPackager {
 		const log = options.onLog ?? (() => {});
 		const strategy = options.strategy ?? "auto";
 		if (!["auto", "sea", "portable"].includes(strategy)) {
-			throw new RuntimeError(
-				`Unknown strategy '${strategy}' (expected auto, sea or portable)`,
-			);
+			throw new RuntimeError(`Unknown strategy '${strategy}' (expected auto, sea or portable)`);
 		}
 
 		const root = ProjectCollector.findProjectRoot(resolve(options.entrypoint));
-		const pm = PolicyEnforcer.resolvePackageManager(
-			options.packageManager,
-			root,
-		);
+		const pm = PolicyEnforcer.resolvePackageManager(options.packageManager, root);
 		const target = PolicyEnforcer.assertTargetAllowed(options.target, pm);
 		const meta = TARGET_METADATA_MAP[target];
 		const warnings: string[] = [];
@@ -114,45 +102,24 @@ export class BinaryPackager {
 
 		if (pm === "bun" && project.usesBunApis.length) {
 			warnings.push(
-				`Bun-only APIs detected (${project.usesBunApis.slice(0, 5).join(", ")}). Executables run on Node.js, where these APIs do not exist.`,
+				`Bun-only APIs detected (${project.usesBunApis.slice(0, 5).join(", ")}). Executables run on Node.js, where these APIs do not exist.`
 			);
 		}
 		if (!options.includeEnv) {
-			warnings.push(
-				".env files were not bundled; provide secrets through the environment at runtime.",
-			);
+			warnings.push(".env files were not bundled; provide secrets through the environment at runtime.");
 		}
-		BinaryPackager.checkNativeAddons(
-			project.nativeAddons,
-			target,
-			options,
-			warnings,
-		);
+		BinaryPackager.checkNativeAddons(project.nativeAddons, target, options, warnings);
 
-		const runtime = await BinaryPackager.selectRuntime(
-			target,
-			meta,
-			project.minNode,
-			options,
-			root,
-			log,
-		);
-		if (
-			runtime.version &&
-			project.minNode &&
-			compareVersions(runtime.version, project.minNode) < 0
-		) {
+		const runtime = await BinaryPackager.selectRuntime(target, meta, project.minNode, options, root, log);
+		if (runtime.version && project.minNode && compareVersions(runtime.version, project.minNode) < 0) {
 			throw new RuntimeError(
-				`The bundled dependencies require Node.js >= ${project.minNode}, but the target runtime is ${runtime.version}.`,
+				`The bundled dependencies require Node.js >= ${project.minNode}, but the target runtime is ${runtime.version}.`
 			);
 		}
 
 		let chosen: "sea" | "portable";
 		if (strategy === "sea") {
-			if (!runtime.seaReady)
-				throw new RuntimeError(
-					`Cannot build a SEA for ${meta.name}: ${runtime.reason}`,
-				);
+			if (!runtime.seaReady) throw new RuntimeError(`Cannot build a SEA for ${meta.name}: ${runtime.reason}`);
 			chosen = "sea";
 		} else if (strategy === "portable") {
 			chosen = "portable";
@@ -180,7 +147,7 @@ export class BinaryPackager {
 			mode: chosen,
 		});
 		log(
-			`Packed ${archive.files} files from ${project.packages} packages (${(archive.buffer.length / 1048576).toFixed(1)} MiB compressed)`,
+			`Packed ${archive.files} files from ${project.packages} packages (${(archive.buffer.length / 1048576).toFixed(1)} MiB compressed)`
 		);
 
 		let outputPath: string;
@@ -189,34 +156,17 @@ export class BinaryPackager {
 
 		if (chosen === "sea") {
 			outputPath = resolve(
-				options.output ??
-					join(
-						defaultOutDir,
-						`${project.name}-${target}${executableExtension(target)}`,
-					),
+				options.output ?? join(defaultOutDir, `${project.name}-${target}${executableExtension(target)}`)
 			);
 			if (existsSync(outputPath) && statSync(outputPath).isDirectory()) {
-				throw new RuntimeError(
-					`SEA output '${outputPath}' is a directory; pass a file path`,
-				);
+				throw new RuntimeError(`SEA output '${outputPath}' is a directory; pass a file path`);
 			}
 			const { binary, version } = runtime;
 			if (!binary || !version) {
-				throw new RuntimeError(
-					"SEA builds need a runtime with a known version",
-				);
+				throw new RuntimeError("SEA builds need a runtime with a known version");
 			}
-			const generator = await BinaryPackager.selectGenerator(
-				target,
-				binary,
-				version,
-				options,
-				warnings,
-				log,
-			);
-			log(
-				`Injecting SEA blob into Node.js ${runtime.version ?? "(unknown version)"}`,
-			);
+			const generator = await BinaryPackager.selectGenerator(target, binary, version, options, warnings, log);
+			log(`Injecting SEA blob into Node.js ${runtime.version ?? "(unknown version)"}`);
 			const res = await SeaPackager.build({
 				target,
 				runtimeBinary: binary,
@@ -229,9 +179,7 @@ export class BinaryPackager {
 			launcherPath = outputPath;
 			sizeBytes = res.sizeBytes;
 		} else {
-			outputPath = resolve(
-				options.output ?? join(defaultOutDir, `${project.name}-${target}`),
-			);
+			outputPath = resolve(options.output ?? join(defaultOutDir, `${project.name}-${target}`));
 			const res = PortablePackager.build({
 				target,
 				name: project.name,
@@ -268,14 +216,11 @@ export class BinaryPackager {
 		addons: ReturnType<typeof ProjectCollector.collect>["nativeAddons"],
 		target: TargetDevice,
 		options: BuildOptions,
-		warnings: string[],
+		warnings: string[]
 	) {
 		// Prebuilt packages often ship addons for several platforms: a package is fine
 		// as soon as one of its addons fits the target
-		const byPackage = new Map<
-			string,
-			{ usable: boolean; mismatched: string[] }
-		>();
+		const byPackage = new Map<string, { usable: boolean; mismatched: string[] }>();
 		for (const addon of addons) {
 			const idx = addon.path.lastIndexOf("node_modules/");
 			const rest = idx === -1 ? addon.path : addon.path.slice(idx + 13);
@@ -286,8 +231,7 @@ export class BinaryPackager {
 							.split("/")
 							.slice(0, rest.startsWith("@") ? 2 : 1)
 							.join("/");
-			const key =
-				idx === -1 ? pkgName : addon.path.slice(0, idx + 13) + pkgName;
+			const key = idx === -1 ? pkgName : addon.path.slice(0, idx + 13) + pkgName;
 			const entry = byPackage.get(key) ?? { usable: false, mismatched: [] };
 			byPackage.set(key, entry);
 
@@ -296,28 +240,20 @@ export class BinaryPackager {
 			} else if (BinaryInspector.matchesTarget(addon.info, target)) {
 				entry.usable = true;
 			} else {
-				entry.mismatched.push(
-					`${addon.path} (${addon.info.format} ${addon.info.arch})`,
-				);
+				entry.mismatched.push(`${addon.path} (${addon.info.format} ${addon.info.arch})`);
 			}
 		}
 
-		const mismatched = [...byPackage.values()]
-			.filter((p) => !p.usable)
-			.flatMap((p) => p.mismatched);
+		const mismatched = [...byPackage.values()].filter((p) => !p.usable).flatMap((p) => p.mismatched);
 		if (!mismatched.length) return;
 
 		const mismatchedPackageNames = new Set(
-			[...byPackage.entries()]
-				.filter(([, p]) => !p.usable)
-				.map(([key]) => key.split("/").pop() ?? key),
+			[...byPackage.entries()].filter(([, p]) => !p.usable).map(([key]) => key.split("/").pop() ?? key)
 		);
 		const nativeForgeDbPackages = Object.values(FORGEDB_DRIVERS)
 			.filter((d) => d.native)
 			.map((d) => d.package);
-		const hint = nativeForgeDbPackages.some((p) =>
-			mismatchedPackageNames.has(p),
-		)
+		const hint = nativeForgeDbPackages.some((p) => mismatchedPackageNames.has(p))
 			? `ForgeDB: this native database driver has no matching build for ${target}. ` +
 				`Switch to a pure JavaScript driver (${PURE_JS_FORGEDB_DRIVERS.join(", ")}) instead of reinstalling ` +
 				"a native one for the target."
@@ -325,8 +261,7 @@ export class BinaryPackager {
 
 		if (options.allowNativeMismatch) {
 			warnings.push(
-				`Native addons that cannot run on ${target} were bundled: ${mismatched.join(", ")}` +
-					(hint ? ` ${hint}` : ""),
+				`Native addons that cannot run on ${target} were bundled: ${mismatched.join(", ")}${hint ? ` ${hint}` : ""}`
 			);
 			return;
 		}
@@ -339,7 +274,7 @@ export class BinaryPackager {
 		minNode: string | null,
 		options: BuildOptions,
 		root: string,
-		log: (message: string) => void,
+		log: (message: string) => void
 	): Promise<RuntimeSelection> {
 		let binary: string | null = null;
 
@@ -349,37 +284,29 @@ export class BinaryPackager {
 				throw new RuntimeError(`Node.js binary not found: ${binary}`);
 			}
 			if (meta.os === "windows-legacy") {
-				log(
-					"Make sure the supplied runtime supports Windows 7 / Vista; official Node.js >= 14 does not.",
-				);
+				log("Make sure the supplied runtime supports Windows 7 / Vista; official Node.js >= 14 does not.");
 			}
 			const info = BinaryInspector.inspect(binary);
 			if (!info || !BinaryInspector.matchesTarget(info, target)) {
 				throw new RuntimeError(
-					`'${binary}' (${info ? `${info.format} ${info.arch}` : "unknown format"}) cannot run on ${meta.name} (${meta.binaryFormat} ${meta.arch}).`,
+					`'${binary}' (${info ? `${info.format} ${info.arch}` : "unknown format"}) cannot run on ${meta.name} (${meta.binaryFormat} ${meta.arch}).`
 				);
 			}
 		} else if (meta.officialNodeFile && !options.offline) {
-			const version = await NodeRuntime.resolveOfficialVersion(
-				meta.officialNodeFile,
-				options.nodeVersion,
-				minNode,
-			);
+			const version = await NodeRuntime.resolveOfficialVersion(meta.officialNodeFile, options.nodeVersion, minNode);
 			log(`Downloading official Node.js ${version} (${meta.officialNodeFile})`);
 			binary = await NodeRuntime.ensureOfficial(version, meta.officialNodeFile);
 		} else if (!options.offline) {
 			const [entry] = RuntimeRegistry.find(target, root);
 			if (entry) {
-				log(
-					`Using registered community runtime for ${target}: Node.js ${entry.version} (${entry.url})`,
-				);
+				log(`Using registered community runtime for ${target}: Node.js ${entry.version} (${entry.url})`);
 				binary = await RuntimeRegistry.ensure(entry);
 				const info = BinaryInspector.inspect(binary);
 				if (!info || !BinaryInspector.matchesTarget(info, target)) {
 					throw new RuntimeError(
 						`Registered runtime for '${target}' (${entry.url}) does not match the target after download ` +
 							`(${info ? `${info.format} ${info.arch}` : "unrecognized format"}). ` +
-							"Remove it with 'forgegraal runtimes remove' and register a correct one.",
+							"Remove it with 'forgegraal runtimes remove' and register a correct one."
 					);
 				}
 			}
@@ -404,10 +331,7 @@ export class BinaryPackager {
 		else if (compareVersions(version, MIN_SEA_NODE_VERSION) < 0) {
 			reason = `Node.js ${version} is older than ${MIN_SEA_NODE_VERSION}, which SEA assets require.`;
 		} else if (fuse !== "ready") {
-			reason =
-				fuse === "absent"
-					? "the runtime was built without SEA support."
-					: "the runtime is already a SEA.";
+			reason = fuse === "absent" ? "the runtime was built without SEA support." : "the runtime is already a SEA.";
 		}
 
 		return { binary, version, seaReady: reason === null, reason };
@@ -422,7 +346,7 @@ export class BinaryPackager {
 		version: string,
 		options: BuildOptions,
 		warnings: string[],
-		log: (message: string) => void,
+		log: (message: string) => void
 	): Promise<string> {
 		if (NodeRuntime.canRunOnHost(target)) return binary;
 
@@ -434,20 +358,16 @@ export class BinaryPackager {
 				log(`Downloading host Node.js ${version} to generate the SEA blob`);
 				return await NodeRuntime.ensureOfficial(version, hostKey);
 			} catch (err) {
-				warnings.push(
-					`Could not get a host Node.js ${version} (${err instanceof Error ? err.message : String(err)}).`,
-				);
+				warnings.push(`Could not get a host Node.js ${version} (${err instanceof Error ? err.message : String(err)}).`);
 			}
 		}
 
 		if (compareVersions(process.versions.node, MIN_SEA_NODE_VERSION) < 0) {
-			throw new RuntimeError(
-				`Generating a SEA blob needs Node.js >= ${MIN_SEA_NODE_VERSION} on the build host.`,
-			);
+			throw new RuntimeError(`Generating a SEA blob needs Node.js >= ${MIN_SEA_NODE_VERSION} on the build host.`);
 		}
 		if (process.versions.node.split(".")[0] !== version.split(".")[0]) {
 			warnings.push(
-				`SEA blob generated with Node.js ${process.versions.node} for a ${version} runtime; blob formats can differ between major versions. Test the executable on the target.`,
+				`SEA blob generated with Node.js ${process.versions.node} for a ${version} runtime; blob formats can differ between major versions. Test the executable on the target.`
 			);
 		}
 		return process.execPath;

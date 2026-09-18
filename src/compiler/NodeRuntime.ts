@@ -1,13 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import {
-	chmodSync,
-	existsSync,
-	mkdirSync,
-	readFileSync,
-	renameSync,
-	writeFileSync,
-} from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { gunzipSync } from "node:zlib";
@@ -31,20 +24,14 @@ export class NodeRuntime {
 		if (process.platform === "win32" && process.env.LOCALAPPDATA) {
 			return join(process.env.LOCALAPPDATA, "forgegraal", "cache");
 		}
-		return join(
-			process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"),
-			"forgegraal",
-		);
+		return join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "forgegraal");
 	}
 
 	/** index.json key of an official runtime that runs on this host. */
 	public static hostFileKey(): string | null {
-		const arch = { x64: "x64", arm64: "arm64", arm: "armv7l", ia32: "x86" }[
-			process.arch as string
-		];
+		const arch = { x64: "x64", arm64: "arm64", arm: "armv7l", ia32: "x86" }[process.arch as string];
 		if (!arch) return null;
-		if (process.platform === "linux")
-			return arch === "x86" ? null : `linux-${arch}`;
+		if (process.platform === "linux") return arch === "x86" ? null : `linux-${arch}`;
 		if (process.platform === "darwin") return `osx-${arch}-tar`;
 		if (process.platform === "win32") return `win-${arch}-exe`;
 		return null;
@@ -53,10 +40,7 @@ export class NodeRuntime {
 	public static canRunOnHost(target: unknown): boolean {
 		const meta = getTargetMetadata(target);
 		return (
-			meta !== null &&
-			meta.nodePlatform === process.platform &&
-			meta.nodeArch === process.arch &&
-			meta.os !== "ios-ish"
+			meta !== null && meta.nodePlatform === process.platform && meta.nodeArch === process.arch && meta.os !== "ios-ish"
 		);
 	}
 
@@ -65,9 +49,7 @@ export class NodeRuntime {
 	 */
 	public static readVersion(binaryPath: string): string | null {
 		const content = readFileSync(binaryPath).toString("latin1");
-		const match = /nodejs\.org\/download\/release\/v(\d+\.\d+\.\d+)\//.exec(
-			content,
-		);
+		const match = /nodejs\.org\/download\/release\/v(\d+\.\d+\.\d+)\//.exec(content);
 		if (match) return match[1];
 		try {
 			return execFileSync(binaryPath, ["--version"], {
@@ -90,8 +72,7 @@ export class NodeRuntime {
 
 	private static async fetchBuffer(url: string): Promise<Buffer> {
 		const res = await fetch(url);
-		if (!res.ok)
-			throw new RuntimeError(`Download failed (${res.status}) for ${url}`);
+		if (!res.ok) throw new RuntimeError(`Download failed (${res.status}) for ${url}`);
 		return Buffer.from(await res.arrayBuffer());
 	}
 
@@ -102,35 +83,27 @@ export class NodeRuntime {
 	public static async resolveOfficialVersion(
 		fileKey: string,
 		requested?: string | null,
-		minNode?: string | null,
+		minNode?: string | null
 	): Promise<string> {
 		const index = JSON.parse(
-			(await NodeRuntime.fetchBuffer(`${DIST_URL}/index.json`)).toString(
-				"utf-8",
-			),
+			(await NodeRuntime.fetchBuffer(`${DIST_URL}/index.json`)).toString("utf-8")
 		) as DistRelease[];
 
 		const wanted = requested?.replace(/^v/, "");
-		const floor = [MIN_SEA_NODE_VERSION, minNode ?? "0.0.0"].sort(
-			compareVersions,
-		)[1];
+		const floor = [MIN_SEA_NODE_VERSION, minNode ?? "0.0.0"].sort(compareVersions)[1];
 
 		const match = index
 			.map((r) => ({ ...r, version: r.version.replace(/^v/, "") }))
 			.filter((r) => r.files.includes(fileKey))
 			.filter((r) => compareVersions(r.version, floor) >= 0)
-			.filter((r) =>
-				wanted
-					? r.version === wanted || r.version.startsWith(`${wanted}.`)
-					: r.lts !== false,
-			)
+			.filter((r) => (wanted ? r.version === wanted || r.version.startsWith(`${wanted}.`) : r.lts !== false))
 			.sort((a, b) => compareVersions(b.version, a.version))[0];
 
 		if (!match) {
 			throw new RuntimeError(
 				`No official Node.js release provides '${fileKey}'` +
 					(wanted ? ` for version '${wanted}'` : "") +
-					` (>= ${floor}). Pass --node-binary instead.`,
+					` (>= ${floor}). Pass --node-binary instead.`
 			);
 		}
 		return match.version;
@@ -139,10 +112,7 @@ export class NodeRuntime {
 	/**
 	 * Downloads (once) and verifies an official Node.js runtime, returning the binary path.
 	 */
-	public static async ensureOfficial(
-		version: string,
-		fileKey: string,
-	): Promise<string> {
+	public static async ensureOfficial(version: string, fileKey: string): Promise<string> {
 		const isWindows = fileKey.startsWith("win-");
 		const dir = join(NodeRuntime.cacheDir(), "node", `v${version}`, fileKey);
 		const binary = join(dir, isWindows ? "node.exe" : "node");
@@ -160,27 +130,20 @@ export class NodeRuntime {
 		}
 
 		const base = `${DIST_URL}/v${version}`;
-		const sums = (
-			await NodeRuntime.fetchBuffer(`${base}/SHASUMS256.txt`)
-		).toString("utf-8");
+		const sums = (await NodeRuntime.fetchBuffer(`${base}/SHASUMS256.txt`)).toString("utf-8");
 		const expected = sums
 			.split("\n")
 			.map((line) => line.trim().split(/\s+/))
 			.find(([, file]) => file === remotePath)?.[0];
-		if (!expected)
-			throw new RuntimeError(`No checksum published for ${remotePath}`);
+		if (!expected) throw new RuntimeError(`No checksum published for ${remotePath}`);
 
 		const download = await NodeRuntime.fetchBuffer(`${base}/${remotePath}`);
 		const actual = createHash("sha256").update(download).digest("hex");
 		if (actual !== expected) {
-			throw new RuntimeError(
-				`Checksum mismatch for ${remotePath}: expected ${expected}, got ${actual}`,
-			);
+			throw new RuntimeError(`Checksum mismatch for ${remotePath}: expected ${expected}, got ${actual}`);
 		}
 
-		const content = innerPath
-			? NodeRuntime.extractFromTarGz(download, innerPath)
-			: download;
+		const content = innerPath ? NodeRuntime.extractFromTarGz(download, innerPath) : download;
 		mkdirSync(dir, { recursive: true });
 		const tmp = `${binary}.${process.pid}.tmp`;
 		writeFileSync(tmp, content);
@@ -198,13 +161,11 @@ export class NodeRuntime {
 			const header = tar.subarray(offset, offset + 512);
 			if (header.every((b) => b === 0)) break;
 
-			const field = (start: number, len: number) =>
-				header.toString("utf-8", start, start + len).replace(/\0.*$/s, "");
+			const field = (start: number, len: number) => header.toString("utf-8", start, start + len).replace(/\0.*$/s, "");
 			const size = Number.parseInt(field(124, 12).trim() || "0", 8);
 			const type = field(156, 1);
 			const prefix = field(345, 155);
-			let name =
-				longName ?? (prefix ? `${prefix}/${field(0, 100)}` : field(0, 100));
+			let name = longName ?? (prefix ? `${prefix}/${field(0, 100)}` : field(0, 100));
 			longName = null;
 
 			const dataStart = offset + 512;
@@ -221,8 +182,7 @@ export class NodeRuntime {
 				continue;
 			}
 			name = name.replace(/^\.\//, "");
-			if (name === wanted && (type === "0" || type === ""))
-				return Buffer.from(data);
+			if (name === wanted && (type === "0" || type === "")) return Buffer.from(data);
 		}
 		throw new RuntimeError(`'${wanted}' not found in downloaded archive`);
 	}

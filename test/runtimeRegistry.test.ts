@@ -14,10 +14,7 @@ import {
 	TargetDevice,
 } from "../dist/index.js";
 
-function withFetch<T>(
-	handler: (url: string) => Promise<Response> | Response,
-	fn: () => T,
-): T {
+function withFetch<T>(handler: (url: string) => Promise<Response> | Response, fn: () => T): T {
 	const original = globalThis.fetch;
 	// @ts-expect-error test-only stub
 	globalThis.fetch = (url: string) => handler(String(url));
@@ -32,8 +29,7 @@ function response(body: Buffer, ok = true): Response {
 	return {
 		ok,
 		status: ok ? 200 : 404,
-		arrayBuffer: async () =>
-			body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength),
+		arrayBuffer: async () => body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength),
 	} as Response;
 }
 
@@ -58,12 +54,9 @@ function tarGz(path: string, content: Buffer): Buffer {
 	let checksum = 0;
 	header.fill(0x20, 148, 156);
 	for (const b of header) checksum += b;
-	header.write(checksum.toString(8).padStart(6, "0") + "\0 ", 148, "utf-8");
+	header.write(`${checksum.toString(8).padStart(6, "0")}\0 `, 148, "utf-8");
 
-	const padded = Buffer.concat([
-		content,
-		Buffer.alloc((512 - (content.length % 512)) % 512),
-	]);
+	const padded = Buffer.concat([content, Buffer.alloc((512 - (content.length % 512)) % 512)]);
 	return gzipSync(Buffer.concat([header, padded, Buffer.alloc(1024)]));
 }
 
@@ -105,9 +98,9 @@ test("RuntimeRegistry.add rejects unpinned or non-https entries", () => {
 					url: "https://x/node.exe",
 					sha256: "not-a-hash",
 				},
-				{ root },
+				{ root }
 			),
-		ForgeGraalError,
+		ForgeGraalError
 	);
 	assert.throws(
 		() =>
@@ -118,9 +111,9 @@ test("RuntimeRegistry.add rejects unpinned or non-https entries", () => {
 					url: "http://x/node.exe",
 					sha256: "a".repeat(64),
 				},
-				{ root },
+				{ root }
 			),
-		ForgeGraalError,
+		ForgeGraalError
 	);
 	assert.equal(RuntimeRegistry.list(root).length, 0);
 });
@@ -134,7 +127,7 @@ test("RuntimeRegistry add/find/remove round-trip via the project manifest", () =
 			url: "https://example.invalid/node.exe",
 			sha256: "a".repeat(64),
 		},
-		{ root },
+		{ root }
 	);
 	RuntimeRegistry.add(
 		{
@@ -143,26 +136,16 @@ test("RuntimeRegistry add/find/remove round-trip via the project manifest", () =
 			url: "https://example.invalid/older.exe",
 			sha256: "b".repeat(64),
 		},
-		{ root },
+		{ root }
 	);
 
 	const found = RuntimeRegistry.find(TargetDevice.WinLegacyX86, root);
 	assert.equal(found.length, 2);
-	assert.equal(
-		found[0].version,
-		"20.18.1",
-		"newest version must be tried first",
-	);
+	assert.equal(found[0].version, "20.18.1", "newest version must be tried first");
 
-	assert.equal(
-		RuntimeRegistry.remove(TargetDevice.WinLegacyX86, "20.10.0", { root }),
-		true,
-	);
+	assert.equal(RuntimeRegistry.remove(TargetDevice.WinLegacyX86, "20.10.0", { root }), true);
 	assert.equal(RuntimeRegistry.find(TargetDevice.WinLegacyX86, root).length, 1);
-	assert.equal(
-		RuntimeRegistry.remove(TargetDevice.WinLegacyX86, "20.10.0", { root }),
-		false,
-	);
+	assert.equal(RuntimeRegistry.remove(TargetDevice.WinLegacyX86, "20.10.0", { root }), false);
 });
 
 test("RuntimeRegistry.ensure verifies the SHA-256 of the downloaded file", async () => {
@@ -181,7 +164,7 @@ test("RuntimeRegistry.ensure verifies the SHA-256 of the downloaded file", async
 			});
 			const info = BinaryInspector.inspect(path);
 			assert.equal(info?.format, "pe32");
-		},
+		}
 	);
 
 	await assert.rejects(
@@ -194,9 +177,9 @@ test("RuntimeRegistry.ensure verifies the SHA-256 of the downloaded file", async
 					url: "https://example.invalid/wrong.exe",
 					sha256: "0".repeat(64),
 					addedAt: new Date().toISOString(),
-				}),
+				})
 		),
-		RuntimeError,
+		RuntimeError
 	);
 });
 
@@ -215,7 +198,7 @@ test("RuntimeRegistry.ensure extracts node/node.exe from .tar.gz and .zip archiv
 				addedAt: new Date().toISOString(),
 			});
 			assert.equal(BinaryInspector.inspect(path)?.format, "pe32");
-		},
+		}
 	);
 
 	const archive = zip("node.exe", content);
@@ -230,16 +213,13 @@ test("RuntimeRegistry.ensure extracts node/node.exe from .tar.gz and .zip archiv
 				addedAt: new Date().toISOString(),
 			});
 			assert.equal(BinaryInspector.inspect(path)?.format, "pe32");
-		},
+		}
 	);
 });
 
 test("BinaryPackager uses a registered community runtime for targets with no official build", async () => {
 	const root = mkdtempSync(join(tmpdir(), "forgegraal-registry-project-"));
-	writeFileSync(
-		join(root, "package.json"),
-		JSON.stringify({ name: "legacy-bot" }),
-	);
+	writeFileSync(join(root, "package.json"), JSON.stringify({ name: "legacy-bot" }));
 	writeFileSync(join(root, "index.js"), "console.log('hi')");
 
 	const content = fakePe32();
@@ -250,7 +230,7 @@ test("BinaryPackager uses a registered community runtime for targets with no off
 			url: "https://example.invalid/win7-node.exe",
 			sha256: createHash("sha256").update(content).digest("hex"),
 		},
-		{ root },
+		{ root }
 	);
 
 	await withFetch(
@@ -263,14 +243,8 @@ test("BinaryPackager uses a registered community runtime for targets with no off
 				offline: false,
 			});
 			assert.equal(result.strategy, "portable");
-			assert.equal(
-				result.runtimeVersion,
-				null,
-				"the fake binary has no readable version",
-			);
-			assert.ok(
-				!result.warnings.some((w) => w.includes("No Node.js runtime bundled")),
-			);
-		},
+			assert.equal(result.runtimeVersion, null, "the fake binary has no readable version");
+			assert.ok(!result.warnings.some((w) => w.includes("No Node.js runtime bundled")));
+		}
 	);
 });

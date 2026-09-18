@@ -1,22 +1,5 @@
-import {
-	existsSync,
-	lstatSync,
-	readdirSync,
-	readFileSync,
-	realpathSync,
-	type Stats,
-	statSync,
-} from "node:fs";
-import {
-	basename,
-	dirname,
-	extname,
-	isAbsolute,
-	join,
-	relative,
-	resolve,
-	sep,
-} from "node:path";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, type Stats, statSync } from "node:fs";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { PathOutsideRootError, ProjectError } from "../structures";
 import type { ArchiveEntry } from "./Archive";
 import { type BinaryInfo, BinaryInspector } from "./BinaryInspector";
@@ -104,7 +87,7 @@ function parseMinVersion(range: unknown): string | null {
 	if (typeof range !== "string") return null;
 	// Use the smallest version referenced by the range: good enough for ">=x", "^x", "x || y"
 	const versions = [...range.matchAll(/(\d+)(?:\.(\d+))?(?:\.(\d+))?/g)].map(
-		(m) => `${m[1]}.${m[2] ?? 0}.${m[3] ?? 0}`,
+		(m) => `${m[1]}.${m[2] ?? 0}.${m[3] ?? 0}`
 	);
 	return versions.sort(compareVersions)[0] ?? null;
 }
@@ -145,21 +128,17 @@ export class ProjectCollector {
 		if (!SUPPORTED_ENTRY_EXTENSIONS.has(ext)) {
 			throw new ProjectError(
 				`Entrypoint '${basename(entryAbs)}' must be JavaScript (.js, .cjs, .mjs). ` +
-					"Compile TypeScript first (e.g. `tsc`, or `bun build --target=node --outdir dist`) and pass the built file.",
+					"Compile TypeScript first (e.g. `tsc`, or `bun build --target=node --outdir dist`) and pass the built file."
 			);
 		}
 
 		const root = realpathSync(ProjectCollector.findProjectRoot(entryAbs));
 		const entryReal = realpathSync(entryAbs);
-		if (!isInside(entryReal, root))
-			throw new PathOutsideRootError(entryAbs, root);
+		if (!isInside(entryReal, root)) throw new PathOutsideRootError(entryAbs, root);
 
-		if (
-			existsSync(join(root, ".pnp.cjs")) ||
-			existsSync(join(root, ".pnp.js"))
-		) {
+		if (existsSync(join(root, ".pnp.cjs")) || existsSync(join(root, ".pnp.js"))) {
 			throw new ProjectError(
-				"Yarn Plug'n'Play projects have no node_modules to bundle. Set `nodeLinker: node-modules` in .yarnrc.yml and reinstall.",
+				"Yarn Plug'n'Play projects have no node_modules to bundle. Set `nodeLinker: node-modules` in .yarnrc.yml and reinstall."
 			);
 		}
 
@@ -174,9 +153,7 @@ export class ProjectCollector {
 		const rawName = typeof pkg.name === "string" ? pkg.name : basename(root);
 		return {
 			root,
-			name:
-				rawName.replace(/^@[^/]+\//, "").replace(/[^a-zA-Z0-9._-]/g, "-") ||
-				"bot",
+			name: rawName.replace(/^@[^/]+\//, "").replace(/[^a-zA-Z0-9._-]/g, "-") || "bot",
 			entry: toPosix(relative(root, entryReal)),
 			entries: collector.entries,
 			nativeAddons: collector.nativeAddons,
@@ -200,31 +177,17 @@ export class ProjectCollector {
 	private constructor(
 		private readonly root: string,
 		private readonly options: CollectOptions,
-		private readonly excluded: readonly string[],
+		private readonly excluded: readonly string[]
 	) {}
 
-	private isExcluded(
-		abs: string,
-		name: string,
-		isProjectFile: boolean,
-	): boolean {
+	private isExcluded(abs: string, name: string, isProjectFile: boolean): boolean {
 		if (ALWAYS_EXCLUDED_NAMES.has(name)) return true;
 		if (name.endsWith(".forgegraal")) return true;
-		if (
-			isProjectFile &&
-			!this.options.includeEnv &&
-			/^\.env(\..*)?$/.test(name)
-		)
-			return true;
+		if (isProjectFile && !this.options.includeEnv && /^\.env(\..*)?$/.test(name)) return true;
 		return this.excluded.some((p) => isInside(abs, p));
 	}
 
-	private addFile(
-		abs: string,
-		dest: string,
-		stats: Stats,
-		isProjectFile: boolean,
-	) {
+	private addFile(abs: string, dest: string, stats: Stats, isProjectFile: boolean) {
 		this.entries.push({ path: dest, source: abs, mode: stats.mode });
 
 		if (dest.endsWith(".node")) {
@@ -248,12 +211,7 @@ export class ProjectCollector {
 	/**
 	 * Copies a directory tree, following symlinks while guarding against cycles.
 	 */
-	private walk(
-		dir: string,
-		destPrefix: string,
-		isProjectFile: boolean,
-		skipNodeModules: boolean,
-	) {
+	private walk(dir: string, destPrefix: string, isProjectFile: boolean, skipNodeModules: boolean) {
 		const real = realpathSync(dir);
 		const visitKey = `${real}\0${destPrefix}`;
 		if (this.visitedDirs.has(visitKey)) return;
@@ -301,8 +259,7 @@ export class ProjectCollector {
 		let dir = fromDir;
 		for (;;) {
 			const candidate = join(dir, "node_modules", name);
-			if (existsSync(join(candidate, "package.json")))
-				return realpathSync(candidate);
+			if (existsSync(join(candidate, "package.json"))) return realpathSync(candidate);
 			// Also check pnpm / yarn virtual store resolution
 			const pnpmCandidate = join(dir, "node_modules", ".pnpm");
 			if (existsSync(pnpmCandidate)) {
@@ -311,12 +268,7 @@ export class ProjectCollector {
 					const entries = readdirSync(pnpmCandidate);
 					for (const entry of entries) {
 						if (entry.startsWith(name.replace("/", "+"))) {
-							const targetPkg = join(
-								pnpmCandidate,
-								entry,
-								"node_modules",
-								name,
-							);
+							const targetPkg = join(pnpmCandidate, entry, "node_modules", name);
 							if (existsSync(join(targetPkg, "package.json"))) {
 								return realpathSync(targetPkg);
 							}
@@ -330,10 +282,7 @@ export class ProjectCollector {
 		}
 	}
 
-	private addDependencies(
-		rootPkg: Record<string, unknown>,
-		includeDev: boolean,
-	) {
+	private addDependencies(rootPkg: Record<string, unknown>, includeDev: boolean) {
 		const queue: Array<{
 			realDir: string;
 			dest: string;
@@ -344,10 +293,7 @@ export class ProjectCollector {
 		// Breadth-first so parents claim shallow positions before their children resolve
 		for (let item = queue.shift(); item; item = queue.shift()) {
 			const { realDir, dest, pkg, isRoot } = item;
-			const required = { ...(pkg.dependencies as object) } as Record<
-				string,
-				string
-			>;
+			const required = { ...(pkg.dependencies as object) } as Record<string, string>;
 			const optional = {
 				...(isRoot && includeDev ? (pkg.devDependencies as object) : {}),
 				...(pkg.peerDependencies as object),
@@ -364,12 +310,9 @@ export class ProjectCollector {
 			for (const [name, isRequired] of names) {
 				const depReal = this.resolvePackageDir(name, realDir);
 				if (!depReal) {
-					if (
-						isRequired &&
-						!(pkg.bundleDependencies || pkg.bundledDependencies)
-					) {
+					if (isRequired && !(pkg.bundleDependencies || pkg.bundledDependencies)) {
 						throw new ProjectError(
-							`Dependency '${name}' required by '${isRoot ? "project" : dest}' is not installed. Run your package manager's install first.`,
+							`Dependency '${name}' required by '${isRoot ? "project" : dest}' is not installed. Run your package manager's install first.`
 						);
 					}
 					continue;
@@ -391,18 +334,12 @@ export class ProjectCollector {
 		}
 	}
 
-	private place(
-		name: string,
-		realDir: string,
-		parentDest: string,
-	): { dest: string; isNew: boolean } {
+	private place(name: string, realDir: string, parentDest: string): { dest: string; isNew: boolean } {
 		// Candidate positions ordered from nearest (inside parent) to the project root
 		const candidates: string[] = [];
 		let base = parentDest;
 		for (;;) {
-			candidates.push(
-				base ? `${base}/node_modules/${name}` : `node_modules/${name}`,
-			);
+			candidates.push(base ? `${base}/node_modules/${name}` : `node_modules/${name}`);
 			if (!base) break;
 			const idx = base.lastIndexOf("/node_modules/");
 			base = idx === -1 ? "" : base.slice(0, idx);
@@ -424,7 +361,7 @@ export class ProjectCollector {
 
 		if (!chosen) {
 			throw new ProjectError(
-				`Cannot place '${name}' for '${parentDest || "project"}' without shadowing another version`,
+				`Cannot place '${name}' for '${parentDest || "project"}' without shadowing another version`
 			);
 		}
 

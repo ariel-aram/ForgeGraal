@@ -1,1 +1,1 @@
-{"version":3,"file":"is64BitTarget.d.ts","sourceRoot":"","sources":["../../../src/functions/target/is64BitTarget.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,OAAO,EAAE,cAAc,EAAE,MAAM,uBAAuB,CAAC;;;;;;;;AAGhE,wBAyBG"}
+{"version":3,"file":"is64BitTarget.d.ts","sourceRoot":"","sources":["../../../src/functions/target/is64BitTarget.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,OAAO,EAAE,cAAc,EAAE,MAAM,uBAAuB,CAAC;;;;;;;;AAGhE,wBAwBG"}

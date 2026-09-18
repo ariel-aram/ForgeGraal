@@ -42,9 +42,7 @@ class Archive {
                 throw new structures_1.ForgeGraalError(`Duplicate archive path '${entry.path}' (paths must be unique case-insensitively for Windows targets)`);
             }
             seen.add(key);
-            const data = typeof entry.source === "string"
-                ? (0, node_fs_1.readFileSync)(entry.source)
-                : entry.source;
+            const data = typeof entry.source === "string" ? (0, node_fs_1.readFileSync)(entry.source) : entry.source;
             manifest.push({
                 path: entry.path,
                 size: data.length,
@@ -56,12 +54,9 @@ class Archive {
         const manifestBuf = Buffer.from(JSON.stringify({ version: 1, files: manifest }), "utf-8");
         const lengthBuf = Buffer.alloc(4);
         lengthBuf.writeUInt32LE(manifestBuf.length, 0);
-        const buffer = (0, node_zlib_1.gzipSync)(Buffer.concat([
-            Buffer.from(exports.ARCHIVE_MAGIC, "latin1"),
-            lengthBuf,
-            manifestBuf,
-            ...chunks,
-        ]), { level: 9 });
+        const buffer = (0, node_zlib_1.gzipSync)(Buffer.concat([Buffer.from(exports.ARCHIVE_MAGIC, "latin1"), lengthBuf, manifestBuf, ...chunks]), {
+            level: 9,
+        });
         return {
             buffer,
             sha256: (0, node_crypto_1.createHash)("sha256").update(buffer).digest("hex"),

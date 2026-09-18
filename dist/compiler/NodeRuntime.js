@@ -37,10 +37,7 @@ class NodeRuntime {
     }
     static canRunOnHost(target) {
         const meta = (0, structures_1.getTargetMetadata)(target);
-        return (meta !== null &&
-            meta.nodePlatform === process.platform &&
-            meta.nodeArch === process.arch &&
-            meta.os !== "ios-ish");
+        return (meta !== null && meta.nodePlatform === process.platform && meta.nodeArch === process.arch && meta.os !== "ios-ish");
     }
     /**
      * Reads the Node.js version embedded in a runtime binary without executing it.
@@ -87,9 +84,7 @@ class NodeRuntime {
             .map((r) => ({ ...r, version: r.version.replace(/^v/, "") }))
             .filter((r) => r.files.includes(fileKey))
             .filter((r) => (0, ProjectCollector_1.compareVersions)(r.version, floor) >= 0)
-            .filter((r) => wanted
-            ? r.version === wanted || r.version.startsWith(`${wanted}.`)
-            : r.lts !== false)
+            .filter((r) => (wanted ? r.version === wanted || r.version.startsWith(`${wanted}.`) : r.lts !== false))
             .sort((a, b) => (0, ProjectCollector_1.compareVersions)(b.version, a.version))[0];
         if (!match) {
             throw new structures_1.RuntimeError(`No official Node.js release provides '${fileKey}'` +
@@ -131,9 +126,7 @@ class NodeRuntime {
         if (actual !== expected) {
             throw new structures_1.RuntimeError(`Checksum mismatch for ${remotePath}: expected ${expected}, got ${actual}`);
         }
-        const content = innerPath
-            ? NodeRuntime.extractFromTarGz(download, innerPath)
-            : download;
+        const content = innerPath ? NodeRuntime.extractFromTarGz(download, innerPath) : download;
         (0, node_fs_1.mkdirSync)(dir, { recursive: true });
         const tmp = `${binary}.${process.pid}.tmp`;
         (0, node_fs_1.writeFileSync)(tmp, content);

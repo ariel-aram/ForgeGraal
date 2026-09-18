@@ -1,9 +1,5 @@
 import { closeSync, openSync, readSync } from "node:fs";
-import {
-	type BinaryFormat,
-	getTargetMetadata,
-	type TargetArch,
-} from "../structures";
+import { type BinaryFormat, getTargetMetadata, type TargetArch } from "../structures";
 
 export interface BinaryInfo {
 	format: BinaryFormat;
@@ -54,13 +50,8 @@ export class BinaryInspector {
 	 * Identifies ELF, PE and Mach-O executables (and native `.node` addons) from their headers.
 	 */
 	public static inspect(input: string | Buffer): BinaryInfo | null {
-		const buf =
-			typeof input === "string" ? BinaryInspector.readHeader(input) : input;
-		return (
-			BinaryInspector.inspectElf(buf) ??
-			BinaryInspector.inspectPe(buf) ??
-			BinaryInspector.inspectMachO(buf)
-		);
+		const buf = typeof input === "string" ? BinaryInspector.readHeader(input) : input;
+		return BinaryInspector.inspectElf(buf) ?? BinaryInspector.inspectPe(buf) ?? BinaryInspector.inspectMachO(buf);
 	}
 
 	/**
@@ -77,11 +68,7 @@ export class BinaryInspector {
 		if (info.format.startsWith("elf")) {
 			if ((meta.os === "freebsd") !== (info.elfAbi === "freebsd")) return false;
 			// iSH ships Alpine (musl); glibc-linked binaries cannot load there
-			if (
-				meta.os === "ios-ish" &&
-				info.interpreter &&
-				!info.interpreter.includes("musl")
-			) {
+			if (meta.os === "ios-ish" && info.interpreter && !info.interpreter.includes("musl")) {
 				return false;
 			}
 		}
@@ -104,27 +91,17 @@ export class BinaryInspector {
 		};
 
 		// Walk program headers looking for PT_INTERP (only when inside the read window)
-		const phoff = is64
-			? Number(le ? buf.readBigUInt64LE(32) : buf.readBigUInt64BE(32))
-			: u32(28);
+		const phoff = is64 ? Number(le ? buf.readBigUInt64LE(32) : buf.readBigUInt64BE(32)) : u32(28);
 		const phentsize = u16(is64 ? 54 : 42);
 		const phnum = u16(is64 ? 56 : 44);
 		for (let i = 0; i < phnum; i++) {
 			const at = phoff + i * phentsize;
 			if (at + phentsize > buf.length) break;
 			if (u32(at) !== 3) continue;
-			const offset = is64
-				? Number(le ? buf.readBigUInt64LE(at + 8) : buf.readBigUInt64BE(at + 8))
-				: u32(at + 4);
-			const size = is64
-				? Number(
-						le ? buf.readBigUInt64LE(at + 32) : buf.readBigUInt64BE(at + 32),
-					)
-				: u32(at + 16);
+			const offset = is64 ? Number(le ? buf.readBigUInt64LE(at + 8) : buf.readBigUInt64BE(at + 8)) : u32(at + 4);
+			const size = is64 ? Number(le ? buf.readBigUInt64LE(at + 32) : buf.readBigUInt64BE(at + 32)) : u32(at + 16);
 			if (offset + size <= buf.length) {
-				info.interpreter = buf
-					.toString("latin1", offset, offset + size)
-					.replace(/\0+$/, "");
+				info.interpreter = buf.toString("latin1", offset, offset + size).replace(/\0+$/, "");
 			}
 			break;
 		}
@@ -134,10 +111,7 @@ export class BinaryInspector {
 	private static inspectPe(buf: Buffer): BinaryInfo | null {
 		if (buf.length < 64 || buf[0] !== 0x4d || buf[1] !== 0x5a) return null;
 		const peOffset = buf.readUInt32LE(0x3c);
-		if (
-			peOffset + 26 > buf.length ||
-			buf.readUInt32BE(peOffset) !== 0x50450000
-		) {
+		if (peOffset + 26 > buf.length || buf.readUInt32BE(peOffset) !== 0x50450000) {
 			return null;
 		}
 		const machine = buf.readUInt16LE(peOffset + 4);

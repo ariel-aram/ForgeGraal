@@ -1,8 +1,5 @@
 import { ArgType, NativeFunction } from "@tryforge/forgescript";
-import {
-	BinaryPackager,
-	type BuildStrategy,
-} from "../../compiler/BinaryPackager";
+import { BinaryPackager, type BuildStrategy } from "../../compiler/BinaryPackager";
 import { getGraal, resolveFileArg, toError } from "../../util/functions";
 
 export default new NativeFunction({
@@ -16,24 +13,21 @@ export default new NativeFunction({
 	args: [
 		{
 			name: "entrypoint",
-			description:
-				"Built JavaScript entrypoint of the bot, relative to the bot root",
+			description: "Built JavaScript entrypoint of the bot, relative to the bot root",
 			rest: false,
 			type: ArgType.String,
 			required: true,
 		},
 		{
 			name: "target",
-			description:
-				"Target identifier (e.g. ios-ish-x86, win-legacy-x86, linux-modern-x64)",
+			description: "Target identifier (e.g. ios-ish-x86, win-legacy-x86, linux-modern-x64)",
 			rest: false,
 			type: ArgType.String,
 			required: true,
 		},
 		{
 			name: "output",
-			description:
-				"Output file (sea) or directory (portable), relative to the bot root",
+			description: "Output file (sea) or directory (portable), relative to the bot root",
 			rest: false,
 			type: ArgType.String,
 		},
@@ -45,17 +39,14 @@ export default new NativeFunction({
 		},
 		{
 			name: "packageManager",
-			description:
-				"Package manager (bun, pnpm, npm, yarn), detected from the project when empty",
+			description: "Package manager (bun, pnpm, npm, yarn), detected from the project when empty",
 			rest: false,
 			type: ArgType.String,
 		},
 	],
 	async execute(ctx, [entrypoint, target, output, strategy, pm]) {
 		if (!getGraal(ctx)?.options.allowCompile) {
-			return this.customError(
-				"$compileBinary is disabled; enable it with new ForgeGraal({ allowCompile: true })",
-			);
+			return this.customError("$compileBinary is disabled; enable it with new ForgeGraal({ allowCompile: true })");
 		}
 		try {
 			const result = await BinaryPackager.compile({

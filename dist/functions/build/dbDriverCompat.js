@@ -31,8 +31,7 @@ exports.default = new forgescript_1.NativeFunction({
             const parsed = ForgeDBIntegration_1.ForgeDBIntegration.parseDriver(driver || "sqlite");
             if (!parsed)
                 return this.customError(`Unknown ForgeDB driver '${driver}'`);
-            return this.success(ForgeDBIntegration_1.ForgeDBIntegration.checkDriver(parsed, meta.id, (0, functions_1.getRoot)(ctx))
-                .compatible);
+            return this.success(ForgeDBIntegration_1.ForgeDBIntegration.checkDriver(parsed, meta.id, (0, functions_1.getRoot)(ctx)).compatible);
         }
         catch (err) {
             return this.error((0, functions_1.toError)(err));

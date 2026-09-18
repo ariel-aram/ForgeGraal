@@ -61,15 +61,12 @@ export class Archive {
 			const key = entry.path.toLowerCase();
 			if (seen.has(key)) {
 				throw new ForgeGraalError(
-					`Duplicate archive path '${entry.path}' (paths must be unique case-insensitively for Windows targets)`,
+					`Duplicate archive path '${entry.path}' (paths must be unique case-insensitively for Windows targets)`
 				);
 			}
 			seen.add(key);
 
-			const data =
-				typeof entry.source === "string"
-					? readFileSync(entry.source)
-					: entry.source;
+			const data = typeof entry.source === "string" ? readFileSync(entry.source) : entry.source;
 			manifest.push({
 				path: entry.path,
 				size: data.length,
@@ -79,22 +76,13 @@ export class Archive {
 			uncompressedBytes += data.length;
 		}
 
-		const manifestBuf = Buffer.from(
-			JSON.stringify({ version: 1, files: manifest }),
-			"utf-8",
-		);
+		const manifestBuf = Buffer.from(JSON.stringify({ version: 1, files: manifest }), "utf-8");
 		const lengthBuf = Buffer.alloc(4);
 		lengthBuf.writeUInt32LE(manifestBuf.length, 0);
 
-		const buffer = gzipSync(
-			Buffer.concat([
-				Buffer.from(ARCHIVE_MAGIC, "latin1"),
-				lengthBuf,
-				manifestBuf,
-				...chunks,
-			]),
-			{ level: 9 },
-		);
+		const buffer = gzipSync(Buffer.concat([Buffer.from(ARCHIVE_MAGIC, "latin1"), lengthBuf, manifestBuf, ...chunks]), {
+			level: 9,
+		});
 
 		return {
 			buffer,
@@ -104,18 +92,14 @@ export class Archive {
 		};
 	}
 
-	public static unpack(
-		buffer: Buffer,
-	): Array<ArchiveManifestFile & { data: Buffer }> {
+	public static unpack(buffer: Buffer): Array<ArchiveManifestFile & { data: Buffer }> {
 		const raw = gunzipSync(buffer);
 		if (raw.toString("latin1", 0, ARCHIVE_MAGIC.length) !== ARCHIVE_MAGIC) {
 			throw new ForgeGraalError("Invalid ForgeGraal archive header");
 		}
 		const manifestLength = raw.readUInt32LE(ARCHIVE_MAGIC.length);
 		let offset = ARCHIVE_MAGIC.length + 4;
-		const manifest = JSON.parse(
-			raw.toString("utf-8", offset, offset + manifestLength),
-		) as {
+		const manifest = JSON.parse(raw.toString("utf-8", offset, offset + manifestLength)) as {
 			files: ArchiveManifestFile[];
 		};
 		offset += manifestLength;
@@ -123,8 +107,7 @@ export class Archive {
 		return manifest.files.map((file) => {
 			assertSafeArchivePath(file.path);
 			const data = raw.subarray(offset, offset + file.size);
-			if (data.length !== file.size)
-				throw new ForgeGraalError("Truncated ForgeGraal archive");
+			if (data.length !== file.size) throw new ForgeGraalError("Truncated ForgeGraal archive");
 			offset += file.size;
 			return { ...file, data };
 		});

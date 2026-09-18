@@ -39,11 +39,7 @@ export class SeaPackager {
 	 * Snapshots and code cache are disabled because they are only valid for the exact
 	 * platform and binary that generated them, which breaks cross compilation.
 	 */
-	public static createConfig(
-		main: string,
-		blob: string,
-		assets: Record<string, string> = {},
-	) {
+	public static createConfig(main: string, blob: string, assets: Record<string, string> = {}) {
 		return {
 			main,
 			output: blob,
@@ -61,14 +57,10 @@ export class SeaPackager {
 		const runtime = readFileSync(options.runtimeBinary);
 		const fuse = NodeRuntime.seaFuseState(runtime);
 		if (fuse === "absent") {
-			throw new RuntimeError(
-				`'${options.runtimeBinary}' was built without Single Executable Application support.`,
-			);
+			throw new RuntimeError(`'${options.runtimeBinary}' was built without Single Executable Application support.`);
 		}
 		if (fuse === "injected") {
-			throw new RuntimeError(
-				`'${options.runtimeBinary}' is already a Single Executable Application.`,
-			);
+			throw new RuntimeError(`'${options.runtimeBinary}' is already a Single Executable Application.`);
 		}
 
 		const warnings: string[] = [];
@@ -88,19 +80,15 @@ export class SeaPackager {
 				JSON.stringify(
 					SeaPackager.createConfig(mainPath, blobPath, {
 						[SEA_ASSET_NAME]: archivePath,
-					}),
-				),
+					})
+				)
 			);
 
-			execFileSync(
-				options.generatorBinary,
-				["--experimental-sea-config", configPath],
-				{
-					cwd: work,
-					stdio: ["ignore", "pipe", "pipe"],
-					timeout: 10 * 60_000,
-				},
-			);
+			execFileSync(options.generatorBinary, ["--experimental-sea-config", configPath], {
+				cwd: work,
+				stdio: ["ignore", "pipe", "pipe"],
+				timeout: 10 * 60_000,
+			});
 
 			mkdirSync(dirname(options.outputPath), { recursive: true });
 			copyFileSync(options.runtimeBinary, partial);
@@ -123,13 +111,13 @@ export class SeaPackager {
 					execFileSync("codesign", ["--sign", "-", partial]);
 				} else {
 					warnings.push(
-						"macOS refuses unsigned modified binaries: run `codesign --sign - <binary>` on a Mac before distributing.",
+						"macOS refuses unsigned modified binaries: run `codesign --sign - <binary>` on a Mac before distributing."
 					);
 				}
 			}
 			if (meta.nodePlatform === "win32") {
 				warnings.push(
-					"The embedded node.exe Authenticode signature is invalidated by injection; re-sign the executable if you distribute it.",
+					"The embedded node.exe Authenticode signature is invalidated by injection; re-sign the executable if you distribute it."
 				);
 			}
 
@@ -142,9 +130,7 @@ export class SeaPackager {
 		} catch (err) {
 			rmSync(partial, { force: true });
 			if (err && typeof err === "object" && "stderr" in err && err.stderr) {
-				throw new RuntimeError(
-					`SEA blob generation failed: ${String(err.stderr).trim()}`,
-				);
+				throw new RuntimeError(`SEA blob generation failed: ${String(err.stderr).trim()}`);
 			}
 			throw err;
 		} finally {

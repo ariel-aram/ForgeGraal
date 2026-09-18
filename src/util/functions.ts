@@ -1,16 +1,8 @@
 import type { Context } from "@tryforge/forgescript";
-import {
-	type PackageManager,
-	PolicyEnforcer,
-} from "../compiler/PolicyEnforcer";
+import { type PackageManager, PolicyEnforcer } from "../compiler/PolicyEnforcer";
 import { resolveInside } from "../compiler/ProjectCollector";
 import type { ForgeGraal } from "../index";
-import {
-	ALL_TARGETS,
-	getTargetMetadata,
-	InvalidTargetError,
-	type TargetMetadata,
-} from "../structures";
+import { ALL_TARGETS, getTargetMetadata, InvalidTargetError, type TargetMetadata } from "../structures";
 
 export function getGraal(ctx: Context): ForgeGraal | null {
 	return ctx.client.getExtension("forgegraal") as ForgeGraal | null;
@@ -31,10 +23,7 @@ export function requireTarget(input: string): TargetMetadata {
 	return meta;
 }
 
-export function packageManagerArg(
-	ctx: Context,
-	input: string | null,
-): PackageManager {
+export function packageManagerArg(ctx: Context, input: string | null): PackageManager {
 	return PolicyEnforcer.resolvePackageManager(input, getRoot(ctx));
 }
 
