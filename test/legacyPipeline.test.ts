@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import * as esbuild from "esbuild";
+
 import {
 	BinaryPackager,
 	createLauncherSource,
@@ -10,7 +15,60 @@ import {
 	LegacyTranspiler,
 	MIN_MODERN_API_NODE_MAJOR,
 	MIN_TRANSPILABLE_NODE_MAJOR,
+	TargetDevice,
 } from "../dist/index.js";
+
+async function withFetch<T>(handler: (url: string) => Response, fn: () => Promise<T>): Promise<T> {
+	const original = globalThis.fetch;
+	// @ts-expect-error test-only stub
+	globalThis.fetch = (url: string) => handler(String(url));
+	try {
+		return await fn();
+	} finally {
+		globalThis.fetch = original;
+	}
+}
+
+async function withIsolatedCache<T>(fn: () => Promise<T>): Promise<T> {
+	const previous = process.env.FORGEGRAAL_CACHE;
+	process.env.FORGEGRAAL_CACHE = mkdtempSync(join(tmpdir(), "forgegraal-lp-cache-"));
+	try {
+		return await fn();
+	} finally {
+		if (previous === undefined) delete process.env.FORGEGRAAL_CACHE;
+		else process.env.FORGEGRAAL_CACHE = previous;
+	}
+}
+
+function response(body: Buffer): Response {
+	return {
+		ok: true,
+		status: 200,
+		arrayBuffer: async () => body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength),
+	} as Response;
+}
+
+function fakeOfficialNodeExe(machine: number, version: string): Buffer {
+	const header = Buffer.alloc(256);
+	header.write("MZ", 0, "latin1");
+	header.writeUInt32LE(0x80, 0x3c);
+	header.writeUInt32BE(0x50450000, 0x80);
+	header.writeUInt16LE(machine, 0x84);
+	header.writeUInt16LE(0x10b, 0x98);
+	const marker = Buffer.from(`https://nodejs.org/download/release/v${version}/`, "latin1");
+	return Buffer.concat([header, marker, Buffer.alloc(16)]);
+}
+
+function serveFakeDist(fileKey: string, content: Buffer) {
+	const remotePath = `${fileKey.replace(/-exe$/, "")}/node.exe`;
+	const sha256 = createHash("sha256").update(content).digest("hex");
+	const shasums = `${sha256}  ${remotePath}\n`;
+	return (url: string) => {
+		if (url.endsWith("SHASUMS256.txt")) return response(Buffer.from(shasums, "utf-8"));
+		if (url.endsWith(remotePath)) return response(content);
+		throw new Error(`unexpected fetch: ${url}`);
+	};
+}
 
 function entry(path: string, contents: string) {
 	return { path, source: Buffer.from(contents, "utf-8"), mode: 0o644 };
@@ -236,4 +294,92 @@ test("a modern build carries none of the legacy machinery", () => {
 	assert.ok(!source.includes("esbuild-wasm"));
 	assert.ok(!source.includes("installForgeGraalLegacyPolyfills"));
 	assert.ok(source.includes("loadEntry()"), "the entry is still loaded, just without waiting");
+});
+
+test("the legacy polyfills provide global fetch, which is what a bot actually calls", () => {
+	const source = createLegacyPolyfillSource({
+		target: "win-legacy-x64",
+		jsTarget: "node12.22",
+		assetDir: LEGACY_ASSET_DIR,
+		runtimeCodegen: true,
+	});
+
+	// Found on a real Windows machine: a bot died with "fetch is not defined" because this layer
+	// polyfilled everything undici needs and then omitted the global the bot calls. Node itself
+	// does not implement fetch -- from v18 it exposes undici's -- so the fix is to wire the same
+	// implementation to the same global.
+	assert.match(source, /typeof g\.fetch === "undefined"/, "fetch must be installed when missing");
+	assert.match(source, /appRequire\("undici"\)/, "fetch must come from undici, as it does in Node");
+	for (const name of ["fetch", "Headers", "Request", "Response"]) {
+		assert.ok(source.includes(`def("${name}", undici.`), `${name} must be taken from undici`);
+	}
+	// Ordering matters: undici's fetch is built on these, so requiring it earlier would fail.
+	assert.ok(
+		source.indexOf('def("ReadableStream"') < source.indexOf('appRequire("undici")'),
+		"fetch must be wired after the streams it depends on"
+	);
+	// With no undici in the bundle it must still explain itself rather than leave a bare
+	// ReferenceError at the call site.
+	assert.match(source, /fetch\(\) is not available on/);
+});
+
+test("a native addon that matches the target's architecture but cannot load is still flagged", async () => {
+	// The case that reached a real Windows machine unannounced: @lmdb/lmdb-win32-x64 is a valid
+	// win32 x64 PE, so the architecture check passed and the build said nothing. It still failed
+	// to load, because it is built for a newer Node ABI and a newer Windows.
+	const root = mkdtempSync(join(tmpdir(), "forgegraal-lmdb-"));
+	mkdirSync(join(root, "node_modules/lmdb"), { recursive: true });
+	writeFileSync(join(root, "package.json"), JSON.stringify({ name: "lmdb-bot", dependencies: { lmdb: "^3" } }));
+	writeFileSync(
+		join(root, "node_modules/lmdb/package.json"),
+		JSON.stringify({ name: "lmdb", version: "3.0.0", main: "index.js" })
+	);
+	writeFileSync(join(root, "node_modules/lmdb/index.js"), "module.exports = {};");
+
+	// A PE32+ header for x86-64: architecturally correct for win-legacy-x64.
+	const pe = Buffer.alloc(512);
+	pe.write("MZ", 0, "latin1");
+	pe.writeUInt32LE(0x80, 0x3c);
+	pe.writeUInt32BE(0x50450000, 0x80);
+	pe.writeUInt16LE(0x8664, 0x84);
+	pe.writeUInt16LE(0x20b, 0x98);
+	writeFileSync(join(root, "node_modules/lmdb/node.napi.node"), pe);
+	writeFileSync(join(root, "index.js"), 'require("lmdb");');
+
+	const content = fakeOfficialNodeExe(0x8664, "12.22.12");
+	await withIsolatedCache(() =>
+		withFetch(serveFakeDist("win-x64-exe", content), async () => {
+			const result = await BinaryPackager.compile({
+				entrypoint: join(root, "index.js"),
+				target: TargetDevice.WinLegacyX64,
+				packageManager: "npm",
+				offline: false,
+			});
+			assert.ok(
+				result.warnings.some((w: string) => w.includes("lmdb") && w.includes("procedure could not be found")),
+				`the build must warn before deployment, not leave it to the target machine:\n${result.warnings.join("\n")}`
+			);
+		})
+	);
+});
+
+test("a modern target does not get the legacy native-addon warning", async () => {
+	const root = mkdtempSync(join(tmpdir(), "forgegraal-lmdb-modern-"));
+	mkdirSync(join(root, "node_modules/lmdb"), { recursive: true });
+	writeFileSync(join(root, "package.json"), JSON.stringify({ name: "lmdb-bot" }));
+	writeFileSync(join(root, "node_modules/lmdb/package.json"), JSON.stringify({ name: "lmdb", main: "index.js" }));
+	writeFileSync(join(root, "node_modules/lmdb/index.js"), "module.exports = {};");
+	writeFileSync(join(root, "index.js"), 'require("lmdb");');
+
+	const result = await BinaryPackager.compile({
+		entrypoint: join(root, "index.js"),
+		target: TargetDevice.LinuxModernX64,
+		packageManager: "npm",
+		offline: true,
+		strategy: "portable",
+	});
+	assert.ok(
+		!result.warnings.some((w: string) => w.includes("procedure could not be found")),
+		"the warning is about old Windows, so a modern target must not get it"
+	);
 });

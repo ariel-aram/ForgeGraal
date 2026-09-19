@@ -363,6 +363,40 @@ export function createLegacyPolyfillSource(config: LegacyPolyfillConfig): string
 		SegmenterShim.supportedLocalesOf = function () { return []; };
 		Intl.Segmenter = SegmenterShim;
 	}
+
+	// ---- fetch (global since Node 18) ----------------------------------------------------
+	// Node does not implement fetch itself: from v18 it exposes undici's. This runtime is older
+	// than that, but undici is in the bundle whenever discord.js is, so the same implementation
+	// is wired to the same global. It has to happen after the polyfills above, because undici's
+	// fetch is built on ReadableStream, AbortController and Blob.
+	//
+	// Found the hard way: a bot calling global fetch() died with "fetch is not defined" on a real
+	// Windows machine, because every earlier version of this file polyfilled what undici needed
+	// and then forgot the thing the bot actually calls.
+	if (typeof g.fetch === "undefined") {
+		try {
+			var appRequire = Module.createRequire(path.join(appDir, "package.json"));
+			var undici = appRequire("undici");
+			def("fetch", undici.fetch);
+			def("Headers", undici.Headers);
+			def("Request", undici.Request);
+			def("Response", undici.Response);
+			def("FormData", undici.FormData);
+			def("WebSocket", undici.WebSocket);
+		} catch (e) {
+			// No undici in the bundle. Rather than leave a confusing ReferenceError at the call
+			// site, fetch exists and explains itself.
+			g.fetch = function () {
+				return Promise.reject(
+					new Error(
+						"fetch() is not available on " + TARGET + ": this runtime predates Node 18, which is " +
+						"where Node began providing it, and 'undici' (the implementation Node uses) is not in " +
+						"this bundle. Add undici as a dependency, or use node:https directly."
+					)
+				);
+			};
+		}
+	}
 ${config.runtimeCodegen ? runtimeCodegenSource(config) : "\n\tg.__forgegraalLegacyReady = null;\n"}
 })();
 `;

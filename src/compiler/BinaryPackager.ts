@@ -2,6 +2,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { extname, join, resolve } from "node:path";
 import { FORGEDB_DRIVERS, PURE_JS_FORGEDB_DRIVERS } from "../integrations/ForgeDBIntegration";
 import { createLauncherSource, IMPORT_HELPER_PATH, IMPORT_HELPER_SOURCE } from "../runtime/launcher";
+import { UNSUBSTITUTABLE_NATIVE } from "../runtime/nativeShim";
 import {
 	executableExtension,
 	is32BitOrLegacy,
@@ -388,15 +389,41 @@ export class BinaryPackager {
 			}
 		}
 
+		const nativeForgeDbPackages = Object.values(FORGEDB_DRIVERS)
+			.filter((d) => d.native)
+			.map((d) => d.package);
+
+		// Matching the target's architecture is necessary but not sufficient. A prebuilt addon for
+		// win32-x64 is a perfectly valid PE for win-legacy-x64 and still fails to load there,
+		// because it was compiled against a newer Node ABI and a newer Windows -- the machine
+		// reports "The specified procedure could not be found". That happened on a real Windows
+		// install with lmdb, and the build had said nothing, because nothing was mismatched.
+		//
+		// For legacy targets, warn about the packages the runtime shim deliberately will not
+		// substitute: if one of those is bundled, it is the most likely thing to stop the bot, and
+		// finding that out at build time beats finding out on the target machine.
+		if (TARGET_METADATA_MAP[target].is32BitOrLegacy) {
+			const bundled = new Set([...byPackage.keys()].map((key) => key.split("node_modules/").pop() ?? key));
+			const risky = UNSUBSTITUTABLE_NATIVE.filter((name) => bundled.has(name));
+			if (risky.length) {
+				warnings.push(
+					`${risky.join(", ")} ship native addons that ForgeGraal will not replace with a stub, because a ` +
+						`stub would lose data or weaken security rather than fail. Their prebuilt binaries match ` +
+						`${target}'s architecture but are built for a newer Node.js ABI and a newer Windows, so they ` +
+						`commonly fail to load on this target with "The specified procedure could not be found". ` +
+						(nativeForgeDbPackages.some((pkg) => risky.includes(pkg as (typeof UNSUBSTITUTABLE_NATIVE)[number]))
+							? `Use a pure JavaScript ForgeDB driver (${PURE_JS_FORGEDB_DRIVERS.join(", ")}) instead.`
+							: "Rebuild them for this target, or drop the feature that needs them.")
+				);
+			}
+		}
+
 		const mismatched = [...byPackage.values()].filter((p) => !p.usable).flatMap((p) => p.mismatched);
 		if (!mismatched.length) return;
 
 		const mismatchedPackageNames = new Set(
 			[...byPackage.entries()].filter(([, p]) => !p.usable).map(([key]) => key.split("/").pop() ?? key)
 		);
-		const nativeForgeDbPackages = Object.values(FORGEDB_DRIVERS)
-			.filter((d) => d.native)
-			.map((d) => d.package);
 		const hint = nativeForgeDbPackages.some((p) => mismatchedPackageNames.has(p))
 			? `ForgeDB: this native database driver has no matching build for ${target}. ` +
 				`Switch to a pure JavaScript driver (${PURE_JS_FORGEDB_DRIVERS.join(", ")}) instead of reinstalling ` +
