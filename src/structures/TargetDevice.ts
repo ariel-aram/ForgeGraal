@@ -15,7 +15,9 @@ export enum TargetDevice {
 	LinuxArmV7 = "linux-armv7",
 	FreeBsdX86 = "freebsd-x86",
 
-	// Modern 64-bit platforms (NPM, PNPM, Yarn only; Bun already ships `bun build --compile`)
+	// Modern 64-bit platforms. NPM, PNPM, Yarn and Bun projects can all be packaged for any of
+	// these (see PolicyEnforcer.getAllowedTargets, and $canPackageOnBun for the separate,
+	// advisory-only question of whether Bun's own `bun build --compile` could do the job itself).
 	WinModernX64 = "win-modern-x64",
 	LinuxModernX64 = "linux-modern-x64",
 	LinuxModernArm64 = "linux-modern-arm64",

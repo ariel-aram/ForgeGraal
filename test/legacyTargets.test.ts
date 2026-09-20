@@ -33,7 +33,10 @@ async function buildPortable(target: TargetDevice) {
 }
 
 test("every legacy and 32-bit target gets the native shim and the SIMD opt-out", async () => {
-	for (const target of [TargetDevice.WinXpX86, TargetDevice.IosIshX86, TargetDevice.LinuxX86]) {
+	// Not WinXpX86: it now defaults to the ForgeGraal native host, which produces no boot.cjs at
+	// all (see quickJsPackager.test.ts). WinX86 is equally 32-bit and still on the Node.js path
+	// these flags apply to. IosIshX86 and LinuxX86 stay here too, for the same reason.
+	for (const target of [TargetDevice.WinX86, TargetDevice.IosIshX86, TargetDevice.LinuxX86]) {
 		const { boot } = await buildPortable(target);
 		assert.match(boot, /installForgeGraalNativeShim/, `${target}: native shim must be installed`);
 		assert.match(boot, /UNDICI_NO_WASM_SIMD/, `${target}: old CPUs need undici's SIMD parser disabled`);
@@ -41,14 +44,33 @@ test("every legacy and 32-bit target gets the native shim and the SIMD opt-out",
 	}
 });
 
-test("Windows XP counts as legacy Windows even though its id has no 'legacy' in it", async () => {
-	const { boot } = await buildPortable(TargetDevice.WinXpX86);
+test("Windows XP counts as legacy Windows even though its id has no 'legacy' in it", () => {
+	// Direct createLauncherSource rather than buildPortable: WinXpX86 now defaults to the
+	// ForgeGraal native host (no boot.cjs at all), but the classification this test checks --
+	// that XP's metadata carries os:"windows-legacy" despite the id containing no "legacy" --
+	// is a property of the target's metadata, not of which backend happens to package it.
+	const meta = TARGET_METADATA_MAP[TargetDevice.WinXpX86];
+	const boot = createLauncherSource({
+		name: "bot",
+		entry: "index.js",
+		hash: "0".repeat(64),
+		minNode: null,
+		target: TargetDevice.WinXpX86,
+		mode: "portable",
+		windowsLegacy: meta.os === "windows-legacy",
+		simdUnsafe: meta.is32BitOrLegacy,
+		nativeShim: meta.is32BitOrLegacy,
+		bunCompat: false,
+	});
 	assert.match(boot, /"windowsLegacy":true/);
 	assert.match(boot, /use-system-ca/, "the outdated-certificate-store warning must apply to XP too");
 });
 
 test("modern 64-bit targets carry none of the legacy workarounds", async () => {
-	const { boot } = await buildPortable(TargetDevice.LinuxModernX64);
+	// Not LinuxModernX64: that target now runs on the ForgeGraal native host and produces no
+	// boot.cjs at all (see quickJsPackager.test.ts). LinuxModernArm64 is equally modern and still
+	// on the Node.js portable path this test is checking.
+	const { boot } = await buildPortable(TargetDevice.LinuxModernArm64);
 	assert.doesNotMatch(boot, /installForgeGraalNativeShim/);
 	assert.match(boot, /"simdUnsafe":false/);
 	assert.match(boot, /"windowsLegacy":false/);

@@ -168,6 +168,9 @@ function serveFakeDist(fileKey: string, content: Buffer) {
 }
 
 test("BinaryPackager auto-provisions the pinned legacy Node.js for Windows 7/Vista, warning prominently", async () => {
+	// win-legacy-x86 now defaults to the ForgeGraal native host; an explicit strategy is the
+	// documented way to opt back into a Node.js build, and the pinned-Node auto-provisioning this
+	// test checks only runs once that opt-in is given.
 	const root = mkdtempSync(join(tmpdir(), "forgegraal-win7-"));
 	writeFileSync(join(root, "package.json"), JSON.stringify({ name: "win7-bot" }));
 	writeFileSync(join(root, "index.js"), "console.log('hi');");
@@ -179,6 +182,7 @@ test("BinaryPackager auto-provisions the pinned legacy Node.js for Windows 7/Vis
 				entrypoint: join(root, "index.js"),
 				target: TargetDevice.WinLegacyX86,
 				packageManager: "npm",
+				strategy: "portable",
 				offline: false,
 			});
 			assert.equal(result.strategy, "portable", "Node 12 predates SEA, so this must fall back to portable");
@@ -210,6 +214,7 @@ function projectNeedingNode(prefix: string, floor: string): string {
 test("a dependency's engines.node floor is overridden, with a warning, when its code is being lowered", async () => {
 	// The whole point of the legacy pipeline is to run code on a runtime older than the one its
 	// authors declared. Refusing the build here would reject the only runtime the target has.
+	// (strategy: "portable" opts win-legacy-x64 back into Node.js -- see the test above.)
 	const root = projectNeedingNode("forgegraal-win7-floor-", "20.0.0");
 	const content = fakeOfficialNodeExe(0x8664, "12.22.12"); // AMD64
 	await withIsolatedCache(() =>
@@ -218,6 +223,7 @@ test("a dependency's engines.node floor is overridden, with a warning, when its 
 				entrypoint: join(root, "index.js"),
 				target: TargetDevice.WinLegacyX64,
 				packageManager: "npm",
+				strategy: "portable",
 				offline: false,
 			});
 			assert.equal(result.runtimeVersion, "12.22.12");
@@ -276,6 +282,7 @@ test("BinaryPackager auto-provisions the older pinned Node.js for Windows Vista,
 				entrypoint: join(root, "index.js"),
 				target: TargetDevice.WinVistaX86,
 				packageManager: "npm",
+				strategy: "portable",
 				offline: false,
 			});
 			assert.equal(result.strategy, "portable");

@@ -24,7 +24,9 @@ __exportStar(require("./NodeRuntime"), exports);
 __exportStar(require("./PolicyEnforcer"), exports);
 __exportStar(require("./PortablePackager"), exports);
 __exportStar(require("./ProjectCollector"), exports);
+__exportStar(require("./QuickJsPackager"), exports);
 __exportStar(require("./QuickJsRuntime"), exports);
 __exportStar(require("./RuntimeRegistry"), exports);
 __exportStar(require("./SeaPackager"), exports);
+__exportStar(require("./YarnPnpCompat"), exports);
 //# sourceMappingURL=index.js.map

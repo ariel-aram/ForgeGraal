@@ -1,11 +1,10 @@
 #!/bin/sh
-# Builds the C runtime: quickjs-ng + mbedTLS + miniz + the ForgeGraal native layer.
+# Builds the ForgeGraal native host: quickjs-ng + mbedTLS + miniz + the ForgeGraal native layer.
 #
-# This is the backend that reaches the oldest machines. The Rust host in runtime/ is preferred
-# where it can run, but Rust's standard library for 32-bit Windows imports ProcessPrng (Windows
-# 10), WaitOnAddress (Windows 8) and the api-ms-win-core-synch API set (Windows 7), so it cannot
-# serve Windows XP or Vista at all. This build uses only Winsock 2 and CryptoAPI, both present
-# since the 1990s.
+# This is the only backend ForgeGraal ships -- one C binary, every target, no Node.js and no
+# second language required to reach it. It uses only Winsock 2 and CryptoAPI on Windows, both
+# present since the 1990s, so the same source serves the oldest machines and the newest ones
+# without a version split.
 #
 # Usage:
 #   quickjs/native/build.sh <target> [output-dir]
@@ -13,9 +12,25 @@
 # Targets:
 #   win-xp-x86   32-bit Windows, XP-compatible (applies winxp-compat.patch)
 #   win-x86      32-bit Windows, stock engine (Vista and later)
-#   native       the host platform
+#   win-x64      64-bit Windows, stock engine (Vista and later)
+#   linux-x86    32-bit x86 Linux, statically linked against musl (also what iSH's Alpine
+#                userland on iOS actually is, so the same binary serves both)
+#   linux-x64    64-bit x86 Linux, statically linked against musl. Deliberately not "native" with
+#                a dynamic glibc link: glibc and musl are not ABI-compatible, and a dynamic glibc
+#                binary will not even start on a musl system (Alpine, and anything built on it --
+#                which is a common Docker base for exactly the kind of small bot this packages).
+#                Static musl runs unmodified on both, which is the point of shipping one binary.
+#   linux-x64-glibc  64-bit x86 Linux, dynamically linked against glibc instead -- an explicit
+#                opt-in for glibc rather than the default (see ForgeGraal's --native-libc flag),
+#                using the x86_64-linux-gnu triple rather than plain cc so it stays a named,
+#                reproducible target independent of what the build host happens to be.
+#   native       the host platform, using whatever compiler and libc the host provides. For
+#                quick local iteration only -- not what any TargetDevice actually builds against.
 #
-# Needs: git, cmake, and for the Windows targets mingw-w64.
+# Needs: git, cmake, mingw-w64 for the Windows targets, x86_64-linux-gnu-gcc (gcc-x86-64-linux-gnu)
+# for linux-x64-glibc, and for linux-x86/linux-x64 an i686-linux-musl/x86_64-linux-musl
+# cross-compiler on PATH (Debian/Ubuntu ship neither; get one prebuilt from musl.cc, e.g.
+# x86_64-linux-musl-cross.tgz, and add its bin/ to PATH).
 
 set -eu
 
@@ -28,7 +43,7 @@ MBEDTLS_VERSION="${MBEDTLS_VERSION:-v3.6.2}"
 MINIZ_VERSION="${MINIZ_VERSION:-3.0.2}"
 
 if [ -z "$TARGET" ]; then
-	echo "usage: $0 <win-xp-x86|win-x86|native> [output-dir]" >&2
+	echo "usage: $0 <win-xp-x86|win-x86|win-x64|linux-x86|linux-x64|linux-x64-glibc|native> [output-dir]" >&2
 	exit 2
 fi
 
@@ -36,14 +51,27 @@ for tool in git cmake; do
 	command -v "$tool" >/dev/null 2>&1 || { echo "error: $tool is not installed" >&2; exit 1; }
 done
 
+WINDOWS=0
+STATIC=1
 case "$TARGET" in
-	win-xp-x86|win-x86) CC=i686-w64-mingw32-gcc; AR=i686-w64-mingw32-ar; CROSS=1 ;;
-	native)             CC="${CC:-cc}"; AR="${AR:-ar}"; CROSS=0 ;;
+	win-xp-x86|win-x86) CC=i686-w64-mingw32-gcc; AR=i686-w64-mingw32-ar; CROSS=1; WINDOWS=1 ;;
+	win-x64)            CC=x86_64-w64-mingw32-gcc; AR=x86_64-w64-mingw32-ar; CROSS=1; WINDOWS=1 ;;
+	linux-x86)          CC=i686-linux-musl-gcc; AR=i686-linux-musl-ar; CROSS=1 ;;
+	linux-x64)          CC=x86_64-linux-musl-gcc; AR=x86_64-linux-musl-ar; CROSS=1 ;;
+	linux-x64-glibc)    CC=x86_64-linux-gnu-gcc; AR=x86_64-linux-gnu-ar; CROSS=1; STATIC=0 ;;
+	native)             CC="${CC:-cc}"; AR="${AR:-ar}"; CROSS=0; STATIC=0 ;;
 	*) echo "error: unknown target '$TARGET'" >&2; exit 2 ;;
 esac
 
 if [ "$CROSS" = "1" ] && ! command -v "$CC" >/dev/null 2>&1; then
-	echo "error: $CC is not installed (apt install mingw-w64)" >&2
+	case "$TARGET" in
+		linux-x86|linux-x64)
+			echo "error: $CC is not installed (get a prebuilt ${CC%-gcc}-cross toolchain from musl.cc and add its bin/ to PATH)" >&2 ;;
+		linux-x64-glibc)
+			echo "error: $CC is not installed (apt install gcc-x86-64-linux-gnu)" >&2 ;;
+		*)
+			echo "error: $CC is not installed (apt install mingw-w64)" >&2 ;;
+	esac
 	exit 1
 fi
 
@@ -91,7 +119,7 @@ if [ ! -f "$MBEDTLS_BUILD/library/libmbedtls.a" ]; then
 	echo "[build] building mbedTLS"
 	if [ "$CROSS" = "1" ]; then
 		cmake -S mbedtls -B "$MBEDTLS_BUILD" \
-			-DCMAKE_SYSTEM_NAME=Windows \
+			-DCMAKE_SYSTEM_NAME="$([ "$WINDOWS" = "1" ] && echo Windows || echo Linux)" \
 			-DCMAKE_C_COMPILER="$CC" \
 			-DCMAKE_AR="$(command -v "$AR")" \
 			-DCMAKE_BUILD_TYPE=Release \
@@ -115,10 +143,10 @@ fi
 
 echo "[build] compiling the runtime for $TARGET"
 EXE="forgegraal-c"
-[ "$CROSS" = "1" ] && EXE="forgegraal-c.exe"
+[ "$WINDOWS" = "1" ] && EXE="forgegraal-c.exe"
 
 WIN_LIBS=""
-[ "$CROSS" = "1" ] && WIN_LIBS="-lws2_32 -ladvapi32 -lbcrypt"
+[ "$WINDOWS" = "1" ] && WIN_LIBS="-lws2_32 -ladvapi32 -lbcrypt"
 [ "$TARGET" = "win-xp-x86" ] && WIN_LIBS="-lws2_32 -ladvapi32"
 
 # -DMINIZ_NO_TIME keeps miniz off time() APIs that differ across the old Windows CRTs.
@@ -134,8 +162,8 @@ WIN_LIBS=""
 	quickjs-ng/dtoa.c quickjs-ng/quickjs-libc.c \
 	quickjs-ng/gen/repl.c quickjs-ng/gen/standalone.c \
 	-L "$MBEDTLS_BUILD/library" -lmbedtls -lmbedx509 -lmbedcrypto \
-	$WIN_LIBS -lm $([ "$CROSS" = "1" ] || echo "-ldl -lpthread -latomic") \
-	$([ "$CROSS" = "1" ] && echo "-static-libgcc -static")
+	$WIN_LIBS -lm $([ "$WINDOWS" = "1" ] || echo "-ldl -lpthread -latomic") \
+	$([ "$STATIC" = "1" ] && echo "-static-libgcc -static")
 
 echo "[build] built $OUT_DIR/$EXE"
 

@@ -128,7 +128,7 @@ compiles while its own modules are still being required.
 
 ---
 
-## quickjs-ng: the way past Node's ceiling (in progress)
+## quickjs-ng: the way past Node's ceiling
 
 Everything above works around a constraint that is really Node's, not the hardware's. Node decides
 which *language* an old machine may run: Windows 7 is stuck on Node 12, 32-bit Linux on an
@@ -183,77 +183,59 @@ that need it.
 Without a native host the socket-dependent modules stay unavailable and say so, which is why the
 bare-engine row above is 49/58 rather than a number propped up by stubs.
 
-### The native host (`runtime/`, Rust)
+### The native host (`quickjs/native/`, C)
 
 The engine plus a JavaScript compatibility layer still cannot reach Discord: `qjs:os` has no
 socket API, so `net`, `tls`, `http` and everything above them are unreachable no matter how much
-JavaScript is written. `runtime/` is the missing half — a Rust binary that embeds quickjs-ng and
-supplies exactly the capabilities that require native code:
+JavaScript is written. `quickjs/native/` is the missing half — a single C binary, `forgegraal-c`,
+that embeds quickjs-ng and supplies exactly the capabilities that require native code, using only
+Winsock 2 and CryptoAPI on Windows, both present since the 1990s:
 
-- **TCP and TLS** (tokio + rustls). Sockets stay on the Rust side and are handed to JavaScript as
+- **TCP and TLS** (mbedTLS). Sockets stay on the native side and are handed to JavaScript as
   integer ids, so a JavaScript bug cannot produce a use-after-free or a descriptor mix-up.
-  Certificates verify against rustls's compiled-in roots rather than the OS store, which is what
-  makes an old machine able to reach Discord at all — a Windows 7 certificate store is typically a
-  decade stale.
-- **Hashing, HMAC and secure randomness.** A hash written in JavaScript would be correct but slow;
-  randomness written in JavaScript would not be random, which is a security bug rather than a
-  performance one.
-- **Compression** (zlib/deflate/gzip), which the gateway needs.
-- **Timers, filesystem and process**, so the JavaScript layer has one host abstraction to target
-  instead of one per backend.
+  Certificates verify against a CA bundle compiled into the binary by `gen-ca-bundle.sh` rather
+  than the OS store, which is what makes an old machine able to reach Discord at all — a Windows 7
+  certificate store is typically a decade stale.
+- **Hashing, HMAC and secure randomness** (mbedTLS `md.h`, `ctr_drbg`/`entropy`). A hash written
+  in JavaScript would be correct but slow; randomness written in JavaScript would not be random,
+  which is a security bug rather than a performance one.
+- **Compression** (miniz deflate/inflate/gzip), which the gateway needs.
+- **Timers, filesystem and process**, so the JavaScript layer has one host abstraction to target.
 
-`quickjs/runtime/native-modules.js` gives those Node's shapes, so a library sees `tls.connect()`
-and `crypto.createHash()` rather than an integer id. Verified end to end, against live Discord:
-
-```
-$ ./runtime/target/release/forgegraal-runtime quickjs/runtime/native-selftest.js
-crypto.createHash sha256: ba7816bf…f20015ad   (matches the known vector)
-createHmac sha256       : f7bc83f4…2d1a3cd8   (matches the RFC vector)
-zlib deflate/inflate    : true (330 -> 38)
-tls.connect status      : HTTP/1.1 200 OK
-tls.connect body        : {"url":"wss://gateway.discord.gg"}
-```
+One binary, every target — this is the only native host ForgeGraal ships. There is no second
+backend to keep in sync (no Rust) and no target that needs different source: the same
+`forgegraal_native.c` that reaches Windows XP also reaches the newest 64-bit desktops. Some targets
+do need a different cross-compiler to produce that binary, though — see below.
 
 ```sh
-cd runtime && cargo build --release                        # host platform
-cargo build --release --target i686-pc-windows-gnu         # 32-bit Windows
-```
-
-Cross-compiling needs mingw-w64; the repo's `runtime/.cargo/config.toml` carries the linker and
-bindgen settings so it works without per-machine setup.
-
-**The platform cost.** Rust's standard library for 32-bit Windows imports `ProcessPrng`
-(Windows 10), `WaitOnAddress` and `GetSystemTimePreciseAsFileTime` (Windows 8), and the
-`api-ms-win-core-synch` API set (Windows 7). So this host cannot serve Windows XP or Vista, and its
-32-bit Windows build requires Windows 10. Rust buys memory safety on the code that parses bytes off
-a network and costs the oldest targets — which is why there is a second backend.
-
-### The C native host (`quickjs/native/`), for the oldest machines
-
-Same surface, different floor. It installs the identical `__forgegraal_native` object, so
-`native-modules.js` runs unchanged on either backend, and uses only Winsock 2 and CryptoAPI — both
-present since the 1990s. TLS is mbedTLS; compression is miniz; certificates verify against a bundle
-compiled into the binary by `gen-ca-bundle.sh`, since the certificate store on a machine this old
-would reject Discord outright.
-
-```sh
-quickjs/native/build.sh native        # host platform
+quickjs/native/build.sh native        # host platform, dynamic link -- local iteration only
 quickjs/native/build.sh win-x86       # 32-bit Windows, Vista and later
+quickjs/native/build.sh win-x64       # 64-bit Windows, Vista and later
 quickjs/native/build.sh win-xp-x86    # 32-bit Windows, XP-compatible
+quickjs/native/build.sh linux-x86     # 32-bit x86 Linux, static musl (also serves iSH)
+quickjs/native/build.sh linux-x64     # 64-bit x86 Linux, static musl -- the linux-modern-x64 default
+quickjs/native/build.sh linux-x64-glibc  # 64-bit x86 Linux, dynamic glibc -- explicit opt-in only
 ```
+
+`native` is a dynamic link against whatever libc the build host has, meant for quick local
+testing — it is not what any `TargetDevice` actually builds against. Every Linux `TargetDevice`
+uses a dedicated static-musl cross-compile (`linux-x86`/`linux-x64`) instead, precisely so the
+result runs on both glibc and musl systems (Alpine included) unmodified.
 
 The XP build applies two patches: `winxp-compat.patch` for the engine's four Vista-era threading
 calls, and `patch-mbedtls-xp.py`, which swaps mbedTLS's `BCryptGenRandom` (Vista, `bcrypt.dll`) for
 `CryptGenRandom` (Windows 95 OSR2, `advapi32`). Both draw from the OS CSPRNG; only the API vintage
 differs. The build then **verifies the result imports nothing newer than XP and fails if it does**.
 
-Result: a self-contained **2.7 MB** executable — JavaScript engine, TLS stack, compression and CA
-bundle included — importing only `KERNEL32`, `msvcrt`, `ADVAPI32` and `WS2_32`.
+Result: a self-contained **2.7 MB** Windows executable — JavaScript engine, TLS stack, compression
+and CA bundle included — importing only `KERNEL32`, `msvcrt`, `ADVAPI32` and `WS2_32`.
 
-Both backends run the same `quickjs/runtime/native-selftest.js` and produce the same output,
-against live Discord:
+`quickjs/runtime/native-modules.js` gives that native object Node's shapes, so a library sees
+`tls.connect()` and `crypto.createHash()` rather than an integer id. Verified end to end, against
+live Discord, on the `native` build:
 
 ```
+$ ./forgegraal-c quickjs/runtime/native-selftest.js
 crypto.createHash sha256: ba7816bf…f20015ad   (matches the known vector)
 createHmac sha256       : f7bc83f4…2d1a3cd8   (matches the RFC vector)
 zlib deflate/inflate    : true (330 -> 38)
@@ -261,11 +243,12 @@ tls.connect status      : HTTP/1.1 200 OK
 tls.connect body        : {"url":"wss://gateway.discord.gg"}
 ```
 
-`pnpm test` runs that comparison across whichever backends are built (`FORGEGRAAL_RUNTIME`,
-`FORGEGRAAL_C`) and skips it otherwise.
+`pnpm test` runs that same check when `FORGEGRAAL_C` points at a built binary, and skips it
+otherwise.
 
-**Still unverified:** neither Windows build has been run on real hardware. Linking clean and
-importing nothing too new is necessary, not sufficient.
+**Still unverified:** the Windows builds have not been run on real Windows hardware. Linking clean
+and importing nothing too new is necessary, not sufficient — the next step for those targets is a
+real machine, the same bar already met for the `native` build above.
 
 ### Windows XP
 
@@ -292,14 +275,66 @@ Confirmed: the patched build links clean and imports only `CreateEventA`, `Creat
 `KERNEL32.dll` and `msvcrt.dll` only. It has **not** been run on real XP hardware — linking clean is
 not the same as working, and that check is still outstanding.
 
+### Which targets actually use it
+
+`QuickJsPackager` (`src/compiler/QuickJsPackager.ts`) is what turns the engine plus the native
+host into a real build output, and `BinaryPackager` routes a target to it instead of Node.js
+whenever `QuickJsPackager.supports(target)` is true. It is the **default**, not an opt-in, for
+every target where Node.js itself is the actual problem:
+
+- `linux-modern-x64` — the original proof target: built, run, and verified end to end (a real
+  bot, nested `node_modules`, no Node.js anywhere in the output). Built via `quickjs/native/build.sh
+  linux-x64`, a static musl binary (same `x86_64-linux-musl-cross` toolchain approach as
+  `linux-x86`/iSH below) — deliberately **not** `build.sh native`'s dynamic glibc link, which fails
+  outright on a musl system. Confirmed on real Alpine Linux via Docker: the dynamic-glibc build
+  exits with a bare `exec: no such file or directory` (a missing ELF interpreter, since glibc and
+  musl are not ABI-compatible and Alpine's loader lives elsewhere), while the static musl build
+  runs and passes the live-Discord self-test unmodified. Alpine is a common enough Docker base for
+  small bots that this was worth fixing rather than leaving as a footnote. A dynamic glibc build
+  is still available as an explicit opt-in — `--native-libc glibc` (`nativeLibc: "glibc"` on
+  `BinaryPackager.compile()`) builds via `quickjs/native/build.sh linux-x64-glibc` instead. It is
+  not the default for the same reason the fix above exists: it will not run on a musl system.
+  Requesting `--native-libc glibc` on a target with no glibc build (everything except
+  linux-modern-x64, today) fails with a clear error rather than silently falling back to musl.
+- `ios-ish-x86` and `linux-x86` — one binary, `quickjs/native/build.sh linux-x86`, a statically
+  linked 32-bit x86 ELF against **musl**, serving both (iSH really is an Alpine/musl userland, so
+  this is not an approximation). Built with a prebuilt `i686-linux-musl-cross` toolchain from
+  musl.cc rather than `gcc-multilib`, which cannot install on this machine at all — the installed
+  `gcc-13` (`13.3.0`) and the only available `gcc-13-multilib` (`13.2.0`) are different point
+  releases with no compatible build, and fixing that means downgrading the system's default
+  compiler, not something worth doing for one build target. The musl.cc toolchain sidesteps the
+  system package manager entirely. **Run and verified for real**, not just linked clean: a static
+  PIE ELF32 binary that executes directly (this sandbox's kernel runs 32-bit binaries on x86-64
+  natively), passing the same live-Discord self-test as every other backend, and a full
+  bot-packaging round trip through the actual `BinaryPackager` output.
+- `win-xp-x86`, `win-vista-x86`, `win-vista-x64`, `win-legacy-x86`, `win-legacy-x64` — built and
+  linked clean via `quickjs/native/build.sh {win-xp-x86,win-x86,win-x64}` (one binary per
+  architecture/floor pair covers both the Vista and the "Legacy" Windows 7 target sharing it), and
+  checked structurally (right PE machine type, right bitness). **Not yet run on real Windows
+  hardware** — same caveat as the XP build above, now covering five targets instead of one.
+
+Still on Node.js, deliberately:
+
+- Every other target (`win-x86`, `win-modern-x64`, `linux-armv7`, `linux-modern-arm64`,
+  `darwin-x64`, `darwin-arm64`, `freebsd-x86`) is unaffected by this rollout and keeps building on
+  Node.js, with full `npm`/`pnpm`/`yarn`/`bun` support (`PolicyEnforcer.getAllowedTargets` never
+  restricted these by package manager; `linux-armv7`/`linux-modern-arm64` is what an Android device
+  actually is, and both were already covered before this rollout).
+- A native (`.node`) addon on a `QuickJsPackager` target is a hard build error, not a warning:
+  quickjs-ng has no dlopen/N-API surface at all, so no prebuilt addon can load there regardless of
+  architecture match.
+
 ---
 
 ## Bun projects
 
-ForgeGraal builds every target for Bun projects, including the modern 64-bit ones Bun's own
-`bun build --compile` already covers — use whichever fits: `bun build --compile` for a quick modern
-binary with no other cooperation needed, ForgeGraal for 32-bit/legacy targets, or when you also want
-one of the things below.
+ForgeGraal assists Bun's own binary system rather than replacing it — use whichever fits.
+`bun build --compile` is the quick path for a modern 64-bit desktop, with no other cooperation
+needed. But it produces a binary that needs Bun's own runtime on the device, and on Android
+(Termux), running that at all commonly means going through proot-distro first — friction that a
+plain Node.js build does not have. ForgeGraal builds every target for Bun projects, including
+`linux-armv7`, by transpiling the Bun-authored source at build time and shipping a build that runs
+on a plain Node.js on the device: no Bun and no proot-distro required there.
 
 - **TypeScript and JSX entrypoints are transpiled automatically.** Bun projects are commonly run straight
   from `.ts`/`.tsx` with no separate build step; ForgeGraal runs `bun build --target=node --format=cjs
@@ -318,6 +353,25 @@ one of the things below.
     algorithm that reproduces their output, and a different algorithm behind the same name is a silent
     correctness bug (hashes that don't verify, cache keys that never hit), not a compatibility shim.
     `Bun.spawn`, FFI, and anything else not listed above throw the same way, at the point of use.
+
+---
+
+## Yarn Plug'n'Play
+
+A PnP project (`nodeLinker: pnp`, Yarn Berry's default) has no `node_modules` at all — dependencies
+live as zip archives that `.pnp.cjs` resolves at `require()` time, in the project's own `.yarn/cache/`
+or, by default, a global cache outside the project entirely. `ProjectCollector` needs a real
+directory tree to walk, so it cannot see a PnP install as-is.
+
+Rather than reading `.pnp.cjs` or the zip cache directly, `YarnPnpCompat`
+(`src/compiler/YarnPnpCompat.ts`) asks Yarn itself to produce one: it copies the project into a
+throwaway temp directory and runs `YARN_NODE_LINKER=node-modules yarn install` there, using the
+project's own pinned `yarnPath` from `.yarnrc.yml` — the exact same `yarn.lock` resolves to a real
+`node_modules` tree instead of `.pnp.cjs`, ForgeGraal never touches the original project, and Yarn's
+own resolver is never reimplemented. Verified against a real Yarn Berry install: a genuine `.pnp.cjs`
+project builds, runs correctly, and leaves the original project's `.pnp.cjs`/lockfile untouched and
+`node_modules`-free afterward. Classic Yarn (1.x) and Berry with `nodeLinker: node-modules` already
+had no gap here — this only matters for PnP specifically.
 
 ---
 

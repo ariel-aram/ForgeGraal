@@ -1,10 +1,16 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { BUN_GLOBAL_SHIMMED, BUN_GLOBAL_UNSAFE, createBunCompatSource } from "../dist/index.js";
+import {
+	BinaryPackager,
+	BUN_GLOBAL_SHIMMED,
+	BUN_GLOBAL_UNSAFE,
+	createBunCompatSource,
+	TargetDevice,
+} from "../dist/index.js";
 
 const SHIM = createBunCompatSource({ target: "linux-modern-x64" });
 
@@ -217,4 +223,40 @@ console.log(JSON.stringify({ n: row.n, hasBun: typeof Bun }));`
 	} finally {
 		result.cleanup();
 	}
+});
+
+test("a Bun-authored bot packages for Android (linux-armv7) as a plain Node.js build, no Bun or proot-distro on the device", {
+	skip: !hasBun() && "bun is not installed",
+	timeout: 60_000,
+}, async () => {
+	// The point: `bun build --compile` needs Bun's own runtime on the target, which on
+	// Termux/Android needs proot-distro to run at all. ForgeGraal assists instead of
+	// replacing that -- it transpiles the Bun-authored source at build time and ships a
+	// build that runs on a plain Node.js on the device, no Bun and no proot-distro involved.
+	const root = mkdtempSync(join(tmpdir(), "forgegraal-bun-android-"));
+	mkdirSync(join(root, "node_modules/greet"), { recursive: true });
+	writeFileSync(join(root, "package.json"), JSON.stringify({ name: "bun-android-bot", dependencies: { greet: "1" } }));
+	writeFileSync(join(root, "node_modules/greet/package.json"), JSON.stringify({ name: "greet", version: "1.0.0" }));
+	// biome-ignore lint/suspicious/noTemplateCurlyInString: this is the actual JS source of the fixture package, not a mistaken interpolation.
+	writeFileSync(join(root, "node_modules/greet/index.js"), "module.exports = (name) => `hi ${name}`;");
+	writeFileSync(
+		join(root, "index.ts"),
+		`import greet from "greet";
+console.log(JSON.stringify({ greeting: greet("android"), hasBun: typeof Bun }));`
+	);
+
+	const result = await BinaryPackager.compile({
+		entrypoint: join(root, "index.ts"),
+		target: TargetDevice.LinuxArmV7,
+		packageManager: "bun",
+		strategy: "portable",
+		offline: true,
+	});
+
+	assert.equal(result.strategy, "portable");
+	assert.equal(result.metadata.os, "linux");
+	// Bundled architecture-specific, so only checked structurally here (this sandbox is x64);
+	// the launcher output itself is plain JS, and that is what this test actually runs.
+	const out = execFileSync(process.execPath, [join(result.outputPath, "boot.cjs")], { encoding: "utf-8" });
+	assert.deepEqual(JSON.parse(out), { greeting: "hi android", hasBun: "undefined" });
 });

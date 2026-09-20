@@ -26,31 +26,36 @@ Usage:
 Compile options:
   -t, --target <name>        Target device (see 'forgegraal targets')
   -o, --output <path>        Output file (sea) or directory (portable)
-  -s, --strategy <name>      auto (default), sea or portable
+  -s, --strategy <name>      auto (default), sea or portable — also opts a native-host target
+                              (see below) back onto Node.js, same as --node-binary
       --pm <name>            Package manager override (bun, pnpm, npm, yarn)
-      --node-binary <path>   Node.js runtime for the target (only needed for win-xp-x86 and linux-x86; every other legacy target provisions one automatically)
+      --node-binary <path>   Node.js runtime to use instead of the target's default. Also opts a
+                              native-host target (below) back onto Node.js
       --node-version <ver>   Official Node.js version to download (e.g. 22 or 22.11.0)
+      --native-libc <name>   musl (default) or glibc, for targets that build the ForgeGraal
+                              native host. musl runs unmodified on both glibc and musl systems
+                              (Alpine included); glibc is only wired up for linux-modern-x64
       --offline              Never download runtimes
       --include-dev          Bundle devDependencies too
       --include-env          Bundle .env files (they usually contain your bot token)
       --allow-native-mismatch  Bundle native addons built for another platform
   -h, --help                 Show this help
 
-Legacy targets that need a runtime handle it three different ways, automatically:
-  - iSH, FreeBSD          : the compiled executable installs Node.js itself on first run,
-                            using the device's own package manager (apk / pkg). Nothing to
-                            download or verify ahead of time.
-  - Windows 7             : Node.js 12.22.12 (community-reported as the version that actually
-                            launches on real Windows 7 hardware, not just Node's own doc-
-                            declared Tier 1) is downloaded and checksum-verified automatically.
-                            It predates syntax current discord.js depends on, so the build
-                            prints (and keeps printing at every build) a warning about that;
-                            see 'forgegraal info win-legacy-x86'.
-  - Windows Vista         : a separate, older pin (5.12.0) — Node.js 6.0.0 dropped Vista
-                            entirely, so the Windows 7 build above will not even launch
-                            there. 5.12.0 is pre-ES6, below what the legacy pipeline can
-                            rewrite for, so its code ships unchanged; see
-                            'forgegraal info win-vista-x86'.
+Most targets default to the ForgeGraal native host (quickjs-ng + quickjs/native/), not Node.js:
+every legacy Windows target (XP, Vista, "Legacy" 7), iSH, 32-bit Linux, and linux-modern-x64.
+No Node.js binary is involved anywhere in that output. A native (.node) addon is a hard build
+error there, not a warning — quickjs-ng has no dlopen/N-API surface at all. Pass --node-binary,
+--strategy sea/portable, or register a runtime with 'forgegraal runtimes add', to opt a
+specific build back onto Node.js instead.
+
+Targets still on Node.js (win-x86, win-modern-x64, linux-armv7, linux-modern-arm64, darwin-x64,
+darwin-arm64, freebsd-x86) handle the runtime automatically:
+  - iSH, FreeBSD          : (only reached via an explicit opt-out on iSH) the compiled
+                            executable installs Node.js itself on first run, using the
+                            device's own package manager (apk / pkg).
+  - Windows 7 / Vista     : (only reached via an explicit opt-out) Node.js 12.22.12 / 5.12.0
+                            respectively, downloaded and checksum-verified automatically; see
+                            'forgegraal info win-legacy-x86' / 'win-vista-x86'.
 
 Targeting a runtime older than Node.js 20 also rewrites the bot so it can run there at all:
 bundled code is lowered to that runtime's language level, ES modules are converted to
@@ -59,11 +64,6 @@ CommonJS, the missing platform APIs (Web Streams, AbortController, structuredClo
 code the bot generates at runtime can be lowered on the device. Things that cannot be done
 correctly are refused rather than faked: Intl.Segmenter throws on these targets instead of
 mis-splitting emoji. Your node_modules on disk is never modified.
-  - win-xp-x86, linux-x86 : no automatable source exists (checked: the last community
-                            32-bit Linux build is Node 12.16.3, already below ForgeScript's
-                            own floor). Supply a runtime with --node-binary each build, or
-                            register one once (checksum-pinned) with 'forgegraal runtimes
-                            add' for it to be picked up automatically after that.
 `;
 function fail(message) {
     console.error(`Error: ${message}`);
@@ -230,6 +230,10 @@ async function main() {
                 fail("Please provide the bot entrypoint (built .js file)");
             if (!values.target)
                 fail("Please specify the target with --target <name>");
+            const nativeLibc = values["native-libc"];
+            if (nativeLibc && nativeLibc !== "musl" && nativeLibc !== "glibc") {
+                fail(`--native-libc must be 'musl' or 'glibc', got '${nativeLibc}'`);
+            }
             const result = await BinaryPackager_1.BinaryPackager.compile({
                 entrypoint: arg,
                 target: values.target,
@@ -238,6 +242,7 @@ async function main() {
                 packageManager: values.pm,
                 nodeBinary: values["node-binary"],
                 nodeVersion: values["node-version"],
+                nativeLibc: nativeLibc,
                 offline: values.offline,
                 includeDev: values["include-dev"],
                 includeEnv: values["include-env"],
@@ -250,7 +255,11 @@ async function main() {
             console.log(`  Strategy : ${result.strategy}`);
             console.log(`  Output   : ${result.outputPath}`);
             console.log(`  Run      : ${result.launcherPath}`);
-            console.log(`  Runtime  : ${result.runtimeVersion ? `Node.js ${result.runtimeVersion}` : "system Node.js"}`);
+            console.log(`  Runtime  : ${result.strategy === "quickjs"
+                ? `ForgeGraal native host (no Node.js)`
+                : result.runtimeVersion
+                    ? `Node.js ${result.runtimeVersion}`
+                    : "system Node.js"}`);
             console.log(`  Size     : ${(result.sizeBytes / 1048576).toFixed(2)} MiB`);
             return;
         }
@@ -269,6 +278,7 @@ function parse() {
             db: { type: "string" },
             "node-binary": { type: "string" },
             "node-version": { type: "string" },
+            "native-libc": { type: "string" },
             offline: { type: "boolean" },
             "include-dev": { type: "boolean" },
             "include-env": { type: "boolean" },

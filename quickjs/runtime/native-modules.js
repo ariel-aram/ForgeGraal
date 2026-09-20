@@ -2,9 +2,10 @@
  * Node-shaped `crypto`, `zlib`, `net` and `tls`, built on the native host.
  *
  * These are the four modules `node-compat.js` cannot implement, because the engine alone has no
- * sockets, no compression and no secure randomness. `forgegraal-runtime` (Rust) supplies those as
- * `globalThis.__forgegraal_native`; this file is the thin part that gives them the shapes Node
- * libraries expect, so discord.js sees `tls.connect()` rather than an integer socket id.
+ * sockets, no compression and no secure randomness. `forgegraal-c` (`quickjs/native/`) supplies
+ * those as `globalThis.__forgegraal_native`; this file is the thin part that gives them the
+ * shapes Node libraries expect, so discord.js sees `tls.connect()` rather than an integer socket
+ * id.
  *
  * Nothing here invents behaviour. Where the native side has no answer -- ciphers, signing, the
  * Diffie-Hellman surface -- the export throws and names what is missing, rather than returning
@@ -14,14 +15,14 @@
 const native = globalThis.__forgegraal_native;
 
 /*
- * The two backends differ in one way that reaches this file: the Rust host's socket calls are
- * async and return promises, while the C host's are synchronous and return their value directly.
- * Wrapping every call means the code below is written once against promises and works on both.
+ * The native host's socket calls are synchronous and return their value directly. Wrapping every
+ * call through this means the code below is written once against promises, so a call site never
+ * has to know or care whether the value it got back was already resolved.
  */
 const settled = (value) => (value && typeof value.then === "function" ? value : Promise.resolve(value));
 if (!native) {
 	throw new Error(
-		"native-modules.js requires the ForgeGraal native host. Run it under `forgegraal-runtime`, " +
+		"native-modules.js requires the ForgeGraal native host. Run it under `forgegraal-c`, " +
 			"not a bare `qjs` -- a standalone engine has no sockets to expose."
 	);
 }

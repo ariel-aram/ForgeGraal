@@ -21,8 +21,10 @@ import { MIN_SEA_NODE_VERSION, NodeRuntime } from "./NodeRuntime";
 import { type PackageManager, PolicyEnforcer } from "./PolicyEnforcer";
 import { PortablePackager } from "./PortablePackager";
 import { compareVersions, ProjectCollector } from "./ProjectCollector";
+import { type NativeHostLibc, QuickJsPackager } from "./QuickJsPackager";
 import { RuntimeRegistry } from "./RuntimeRegistry";
 import { SeaPackager } from "./SeaPackager";
+import { YarnPnpCompat } from "./YarnPnpCompat";
 
 export type BuildStrategy = "auto" | "sea" | "portable";
 
@@ -65,12 +67,19 @@ export interface BuildOptions {
 	includeDev?: boolean;
 	includeEnv?: boolean;
 	allowNativeMismatch?: boolean;
+	/**
+	 * Which libc the ForgeGraal native host is built against, for targets that default to it
+	 * (see QuickJsPackager). Defaults to "musl": the one build that runs unmodified on both glibc
+	 * and musl systems. "glibc" is an explicit opt-in, only wired up where it has actually been
+	 * built and run — see NATIVE_HOST_GLIBC_BUILD_TARGET.
+	 */
+	nativeLibc?: NativeHostLibc;
 	onLog?: (message: string) => void;
 }
 
 export interface BuildResult {
 	success: true;
-	strategy: "sea" | "portable";
+	strategy: "sea" | "portable" | "quickjs";
 	outputPath: string;
 	/** Executable to start: the SEA binary or the portable launcher script. */
 	launcherPath: string;
@@ -138,6 +147,21 @@ export class BinaryPackager {
 			cleanupTranspiled = transpiled.cleanup;
 		}
 
+		// A Yarn Plug'n'Play project has no node_modules for ProjectCollector to walk. Rather than
+		// reading .pnp.cjs or the zip cache directly, Yarn itself is asked to produce a real
+		// node_modules tree from the same yarn.lock, in a throwaway copy of the project -- see
+		// YarnPnpCompat for why this is a materialization, not a reimplementation.
+		let cleanupPnp: (() => void) | null = null;
+		if (pm === "yarn" && YarnPnpCompat.isPnpProject(root)) {
+			const materialized = YarnPnpCompat.materialize(root, entrypoint, {
+				offline: options.offline,
+				excludePaths,
+				onLog: log,
+			});
+			entrypoint = materialized.entrypoint;
+			cleanupPnp = materialized.cleanup;
+		}
+
 		try {
 			log(`Collecting project files from ${root} (${pm})`);
 			// The transpiled file (if any) lives inside root and is walked and bundled like any
@@ -159,6 +183,59 @@ export class BinaryPackager {
 			if (!options.includeEnv) {
 				warnings.push(".env files were not bundled; provide secrets through the environment at runtime.");
 			}
+
+			// This target defaults to the ForgeGraal native host (quickjs-ng + quickjs/native/) rather
+			// than a bundled Node.js binary -- but it is a default, not a lock-in. Any of these is a
+			// deliberate statement that Node.js is wanted here instead, and wins over the new default
+			// the same way a registered runtime already won over the old pinned-Node fallback:
+			//   - an explicit --node-binary
+			//   - a runtime already registered with `forgegraal runtimes add` for this target
+			//   - an explicit --strategy sea/portable (asking for a Node-shaped output by name)
+			// Native addons are a hard stop on the native-host path, not the usual arch-match warning:
+			// quickjs-ng has no dlopen/N-API surface, so a `.node` file cannot load no matter how well
+			// it matches the target's architecture.
+			const explicitNodeOverride =
+				Boolean(options.nodeBinary) || strategy !== "auto" || RuntimeRegistry.find(target, root).length > 0;
+			if (QuickJsPackager.supports(target) && !explicitNodeOverride) {
+				if (project.nativeAddons.length) {
+					throw new RuntimeError(
+						`${project.nativeAddons.map((a) => a.path).join(", ")} ship native (.node) addons, but ${meta.name} ` +
+							"runs on the ForgeGraal native host (quickjs-ng), which has no dlopen/N-API surface at all -- no " +
+							"native addon can load here, matched architecture or not. Remove the dependency or replace it " +
+							"with a pure JavaScript alternative."
+					);
+				}
+				log(`Packaging for the ForgeGraal native host on ${meta.name} (no Node.js runtime bundled)`);
+				const nativeHostBinary = await QuickJsPackager.ensureNativeHost(target, options.nativeLibc ?? "musl", log);
+				const outputPath = resolve(options.output ?? join(defaultOutDir, `${project.name}-${target}`));
+				const res = QuickJsPackager.build({
+					target,
+					name: project.name,
+					entry: project.entry,
+					entries: project.entries,
+					outputPath,
+					nativeHostBinary,
+				});
+				warnings.push(...res.warnings);
+				return {
+					success: true,
+					strategy: "quickjs",
+					outputPath: res.outputPath,
+					launcherPath: res.launcherPath,
+					target,
+					packageManager: pm,
+					sizeBytes: res.sizeBytes,
+					is32BitOrLegacy: is32BitOrLegacy(target),
+					metadata: meta,
+					runtimeVersion: null,
+					archiveSha256: res.sha256,
+					files: project.entries.length,
+					packages: project.packages,
+					durationMs: Math.round(performance.now() - startTime),
+					warnings,
+				};
+			}
+
 			BinaryPackager.checkNativeAddons(project.nativeAddons, target, options, warnings);
 
 			const runtime = await BinaryPackager.selectRuntime(target, meta, project.minNode, options, root, log);
@@ -330,6 +407,7 @@ export class BinaryPackager {
 			};
 		} finally {
 			cleanupTranspiled?.();
+			cleanupPnp?.();
 		}
 	}
 

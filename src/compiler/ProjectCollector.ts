@@ -137,8 +137,14 @@ export class ProjectCollector {
 		if (!isInside(entryReal, root)) throw new PathOutsideRootError(entryAbs, root);
 
 		if (existsSync(join(root, ".pnp.cjs")) || existsSync(join(root, ".pnp.js"))) {
+			// BinaryPackager.compile() handles this itself (see YarnPnpCompat): it materializes a
+			// real node_modules tree in a throwaway copy before ever calling collect(), so this
+			// only fires when collect() is called directly on a PnP project without going through
+			// that step.
 			throw new ProjectError(
-				"Yarn Plug'n'Play projects have no node_modules to bundle. Set `nodeLinker: node-modules` in .yarnrc.yml and reinstall."
+				"Yarn Plug'n'Play projects have no node_modules for ProjectCollector to bundle directly. " +
+					"Build through BinaryPackager.compile() (or the CLI), which materializes one via YarnPnpCompat " +
+					"automatically, or set `nodeLinker: node-modules` in .yarnrc.yml yourself and reinstall."
 			);
 		}
 

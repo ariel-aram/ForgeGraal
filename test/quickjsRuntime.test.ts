@@ -222,61 +222,48 @@ test("modules needing a socket are real with a native layer and explicit without
 });
 
 /**
- * The native backends. Both `runtime/` (Rust) and `quickjs/native/` (C) install the same
- * `__forgegraal_native` surface, so `native-modules.js` runs unchanged on either; this checks
- * they really do agree rather than having drifted.
+ * The C native host under `quickjs/native/` installs the `__forgegraal_native` surface that
+ * `native-modules.js` builds Node-shaped crypto/zlib/net/tls on top of. This checks the built
+ * binary actually delivers what that layer expects, not just that it launches.
  *
- * Skipped unless a built backend is present, since neither is a build dependency:
- * FORGEGRAAL_RUNTIME / FORGEGRAAL_C point at one, or they are looked for where the build
- * scripts put them.
+ * Skipped unless a built backend is present, since it is not a build dependency: FORGEGRAAL_C
+ * points at one, or it is looked for where `quickjs/native/build.sh` put it.
  */
-function findBackends(): Array<{ name: string; bin: string }> {
-	const candidates = [
-		{
-			name: "rust",
-			bin: process.env.FORGEGRAAL_RUNTIME ?? join(process.cwd(), "runtime/target/release/forgegraal-runtime"),
-		},
-		{ name: "c", bin: process.env.FORGEGRAAL_C ?? "" },
-	];
-	return candidates.filter((entry) => entry.bin && existsSync(entry.bin));
+function findBackend(): string | null {
+	const bin = process.env.FORGEGRAAL_C ?? "";
+	return bin && existsSync(bin) ? bin : null;
 }
 
-const backends = findBackends();
+const backend = findBackend();
 
-test("the native backends agree on crypto, compression and TLS", {
-	skip: backends.length ? false : "no native backend built",
+test("the native backend delivers real crypto, compression and TLS", {
+	skip: backend ? false : "no native backend built",
 }, () => {
 	const selftest = join(process.cwd(), "quickjs/runtime/native-selftest.js");
-	for (const backend of backends) {
-		const run = spawnSync(backend.bin, [selftest], { encoding: "utf-8", timeout: 60_000 });
-		const output = run.stdout;
+	const run = spawnSync(backend as string, [selftest], { encoding: "utf-8", timeout: 60_000 });
+	const output = run.stdout;
 
-		// Known vectors, so a backend that quietly computes something else is caught rather
-		// than merely producing bytes.
-		assert.match(
-			output,
-			/sha256: ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad/,
-			`${backend.name}: sha256 must match the known vector\n${output}${run.stderr}`
-		);
-		assert.match(
-			output,
-			/createHmac sha256\s+: f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8/,
-			`${backend.name}: HMAC must match the RFC vector\n${output}`
-		);
-		assert.match(output, /zlib deflate\/inflate\s+: true/, `${backend.name}: zlib must round-trip\n${output}`);
-		// The whole point of the native layer: a Node-shaped tls.connect() reaching Discord.
-		assert.match(
-			output,
-			/tls\.connect status\s+: HTTP\/1\.1 200 OK/,
-			`${backend.name}: TLS must work\n${output}${run.stderr}`
-		);
-	}
+	// Known vectors, so the backend that quietly computes something else is caught rather
+	// than merely producing bytes.
+	assert.match(
+		output,
+		/sha256: ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad/,
+		`sha256 must match the known vector\n${output}${run.stderr}`
+	);
+	assert.match(
+		output,
+		/createHmac sha256\s+: f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd8/,
+		`HMAC must match the RFC vector\n${output}`
+	);
+	assert.match(output, /zlib deflate\/inflate\s+: true/, `zlib must round-trip\n${output}`);
+	// The whole point of the native layer: a Node-shaped tls.connect() reaching Discord.
+	assert.match(output, /tls\.connect status\s+: HTTP\/1\.1 200 OK/, `TLS must work\n${output}${run.stderr}`);
 });
 
-test("native-modules.js works against a synchronous or an asynchronous backend", () => {
+test("native-modules.js goes through a single promise/value adapter", () => {
 	const source = readFileSync(join(process.cwd(), "quickjs/runtime/native-modules.js"), "utf-8");
-	// The Rust host's socket calls return promises; the C host's return values directly. Every
-	// call is wrapped so the code above is written once, which is what keeps the two in step.
+	// The C host's socket calls return values directly rather than promises. Every call is
+	// wrapped through one adapter so the code above stays agnostic to that.
 	assert.ok(source.includes("const settled ="), "a promise/value adapter must exist");
 	assert.ok(
 		!/native\.(write|close|connect|read)\([^)]*\)\.(then|catch)\(/.test(source),

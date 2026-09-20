@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,58 +16,6 @@ import {
 	MIN_TRANSPILABLE_NODE_MAJOR,
 	TargetDevice,
 } from "../dist/index.js";
-
-async function withFetch<T>(handler: (url: string) => Response, fn: () => Promise<T>): Promise<T> {
-	const original = globalThis.fetch;
-	// @ts-expect-error test-only stub
-	globalThis.fetch = (url: string) => handler(String(url));
-	try {
-		return await fn();
-	} finally {
-		globalThis.fetch = original;
-	}
-}
-
-async function withIsolatedCache<T>(fn: () => Promise<T>): Promise<T> {
-	const previous = process.env.FORGEGRAAL_CACHE;
-	process.env.FORGEGRAAL_CACHE = mkdtempSync(join(tmpdir(), "forgegraal-lp-cache-"));
-	try {
-		return await fn();
-	} finally {
-		if (previous === undefined) delete process.env.FORGEGRAAL_CACHE;
-		else process.env.FORGEGRAAL_CACHE = previous;
-	}
-}
-
-function response(body: Buffer): Response {
-	return {
-		ok: true,
-		status: 200,
-		arrayBuffer: async () => body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength),
-	} as Response;
-}
-
-function fakeOfficialNodeExe(machine: number, version: string): Buffer {
-	const header = Buffer.alloc(256);
-	header.write("MZ", 0, "latin1");
-	header.writeUInt32LE(0x80, 0x3c);
-	header.writeUInt32BE(0x50450000, 0x80);
-	header.writeUInt16LE(machine, 0x84);
-	header.writeUInt16LE(0x10b, 0x98);
-	const marker = Buffer.from(`https://nodejs.org/download/release/v${version}/`, "latin1");
-	return Buffer.concat([header, marker, Buffer.alloc(16)]);
-}
-
-function serveFakeDist(fileKey: string, content: Buffer) {
-	const remotePath = `${fileKey.replace(/-exe$/, "")}/node.exe`;
-	const sha256 = createHash("sha256").update(content).digest("hex");
-	const shasums = `${sha256}  ${remotePath}\n`;
-	return (url: string) => {
-		if (url.endsWith("SHASUMS256.txt")) return response(Buffer.from(shasums, "utf-8"));
-		if (url.endsWith(remotePath)) return response(content);
-		throw new Error(`unexpected fetch: ${url}`);
-	};
-}
 
 function entry(path: string, contents: string) {
 	return { path, source: Buffer.from(contents, "utf-8"), mode: 0o644 };
@@ -327,6 +274,12 @@ test("a native addon that matches the target's architecture but cannot load is s
 	// The case that reached a real Windows machine unannounced: @lmdb/lmdb-win32-x64 is a valid
 	// win32 x64 PE, so the architecture check passed and the build said nothing. It still failed
 	// to load, because it is built for a newer Node ABI and a newer Windows.
+	//
+	// win-legacy-x64 now defaults to the ForgeGraal native host rather than Node.js, which turns
+	// this from "warn and ship anyway" into a hard build failure -- strictly better for exactly
+	// this case, since quickjs-ng cannot load ANY native addon here, not just this one. No Node
+	// download mocking is needed any more either: the native-addon check now runs before any
+	// runtime is even considered.
 	const root = mkdtempSync(join(tmpdir(), "forgegraal-lmdb-"));
 	mkdirSync(join(root, "node_modules/lmdb"), { recursive: true });
 	writeFileSync(join(root, "package.json"), JSON.stringify({ name: "lmdb-bot", dependencies: { lmdb: "^3" } }));
@@ -346,20 +299,14 @@ test("a native addon that matches the target's architecture but cannot load is s
 	writeFileSync(join(root, "node_modules/lmdb/node.napi.node"), pe);
 	writeFileSync(join(root, "index.js"), 'require("lmdb");');
 
-	const content = fakeOfficialNodeExe(0x8664, "12.22.12");
-	await withIsolatedCache(() =>
-		withFetch(serveFakeDist("win-x64-exe", content), async () => {
-			const result = await BinaryPackager.compile({
-				entrypoint: join(root, "index.js"),
-				target: TargetDevice.WinLegacyX64,
-				packageManager: "npm",
-				offline: false,
-			});
-			assert.ok(
-				result.warnings.some((w: string) => w.includes("lmdb") && w.includes("procedure could not be found")),
-				`the build must warn before deployment, not leave it to the target machine:\n${result.warnings.join("\n")}`
-			);
-		})
+	await assert.rejects(
+		BinaryPackager.compile({
+			entrypoint: join(root, "index.js"),
+			target: TargetDevice.WinLegacyX64,
+			packageManager: "npm",
+			offline: true,
+		}),
+		/lmdb.*dlopen\/N-API surface/s
 	);
 });
 
@@ -373,7 +320,10 @@ test("a modern target does not get the legacy native-addon warning", async () =>
 
 	const result = await BinaryPackager.compile({
 		entrypoint: join(root, "index.js"),
-		target: TargetDevice.LinuxModernX64,
+		// Not LinuxModernX64: that target now runs on the ForgeGraal native host, which never
+		// calls checkNativeAddons()'s legacy-warning path at all (see quickJsPackager.test.ts for
+		// its own native-addon handling). LinuxModernArm64 is equally modern and still Node-based.
+		target: TargetDevice.LinuxModernArm64,
 		packageManager: "npm",
 		offline: true,
 		strategy: "portable",

@@ -1,5 +1,6 @@
 import { type TargetDevice, type TargetMetadata } from "../structures";
 import { type PackageManager } from "./PolicyEnforcer";
+import { type NativeHostLibc } from "./QuickJsPackager";
 export type BuildStrategy = "auto" | "sea" | "portable";
 /**
  * Runtimes below this major need their bundled code lowered and the modern platform APIs
@@ -40,11 +41,18 @@ export interface BuildOptions {
     includeDev?: boolean;
     includeEnv?: boolean;
     allowNativeMismatch?: boolean;
+    /**
+     * Which libc the ForgeGraal native host is built against, for targets that default to it
+     * (see QuickJsPackager). Defaults to "musl": the one build that runs unmodified on both glibc
+     * and musl systems. "glibc" is an explicit opt-in, only wired up where it has actually been
+     * built and run — see NATIVE_HOST_GLIBC_BUILD_TARGET.
+     */
+    nativeLibc?: NativeHostLibc;
     onLog?: (message: string) => void;
 }
 export interface BuildResult {
     success: true;
-    strategy: "sea" | "portable";
+    strategy: "sea" | "portable" | "quickjs";
     outputPath: string;
     /** Executable to start: the SEA binary or the portable launcher script. */
     launcherPath: string;

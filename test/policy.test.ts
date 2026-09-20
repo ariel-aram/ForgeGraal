@@ -38,6 +38,25 @@ test("No package manager is restricted to a subset of targets", () => {
 	}
 });
 
+test("PNPM, Yarn and Bun projects build the Node.js targets, including the ARM ones Android runs under", () => {
+	// LinuxArmV7 and LinuxModernArm64 are what an Android device (Termux or similar) actually is:
+	// ARM Linux. They stay on the Node.js path rather than the ForgeGraal native host, so a bot
+	// author's package manager choice has to keep working here specifically, not just in the
+	// generic ALL_TARGETS sweep above.
+	for (const pm of ["pnpm", "yarn", "bun"] as const) {
+		for (const target of [
+			TargetDevice.LinuxArmV7,
+			TargetDevice.LinuxModernArm64,
+			TargetDevice.LinuxModernX64,
+			TargetDevice.WinModernX64,
+			TargetDevice.DarwinX64,
+			TargetDevice.DarwinArm64,
+		]) {
+			assert.equal(PolicyEnforcer.assertTargetAllowed(target, pm), target, `${pm} on ${target}`);
+		}
+	}
+});
+
 test("NPM, PNPM and Yarn projects may build every target", () => {
 	for (const pm of ["npm", "pnpm", "yarn"] as const) {
 		assert.deepEqual(PolicyEnforcer.getAllowedTargets(pm), [...ALL_TARGETS]);

@@ -13,6 +13,7 @@ import {
 	PathOutsideRootError,
 	ProjectCollector,
 	ProjectError,
+	QuickJsPackager,
 	resolveInside,
 	TargetDevice,
 } from "../dist/index.js";
@@ -237,7 +238,11 @@ test("Portable bundles run with the host Node.js and keep the project layout", a
 	const root = createProject();
 	const result = await BinaryPackager.compile({
 		entrypoint: join(root, "src/index.js"),
-		target: `linux-modern-${process.arch === "arm64" ? "arm64" : "x64"}`,
+		// Fixed rather than matched to the host arch: this only shells out via the host's own
+		// process.execPath below, so any still-Node-based modern target proves the same thing.
+		// linux-modern-x64 specifically now runs on the ForgeGraal native host instead (see
+		// quickJsPackager.test.ts), so it no longer belongs in this test.
+		target: TargetDevice.LinuxModernArm64,
 		strategy: "portable",
 		packageManager: "npm",
 		offline: true,
@@ -275,6 +280,9 @@ test("Portable bundles support ESM entrypoints", async () => {
 		entrypoint: join(root, "index.js"),
 		target: TargetDevice.IosIshX86,
 		packageManager: "bun",
+		// iSH now defaults to the ForgeGraal native host, whose require() is CJS-only -- ESM
+		// entrypoints are a Node-portable-pipeline concern, so opt back into it explicitly.
+		strategy: "portable",
 		offline: true,
 	});
 	assert.equal(result.strategy, "portable");
@@ -284,12 +292,16 @@ test("Portable bundles support ESM entrypoints", async () => {
 });
 
 test("Native addons built for another platform are rejected", async () => {
+	// Not IosIshX86: it now defaults to the ForgeGraal native host, which hard-rejects ANY native
+	// addon regardless of architecture match (see quickJsPackager.test.ts) -- this test is about
+	// the Node-path arch-mismatch mechanics (NativeAddonMismatchError, allowNativeMismatch)
+	// specifically, so it needs a target still on that path. WinX86 is equally 32-bit.
 	const root = createProject();
 	write(join(root, "node_modules/a/build/Release/addon.node"), pe(0x8664, 0x20b));
 	await assert.rejects(
 		BinaryPackager.compile({
 			entrypoint: join(root, "src/index.js"),
-			target: TargetDevice.IosIshX86,
+			target: TargetDevice.WinX86,
 			packageManager: "npm",
 			offline: true,
 		}),
@@ -297,7 +309,7 @@ test("Native addons built for another platform are rejected", async () => {
 	);
 	const allowed = await BinaryPackager.compile({
 		entrypoint: join(root, "src/index.js"),
-		target: TargetDevice.IosIshX86,
+		target: TargetDevice.WinX86,
 		packageManager: "npm",
 		offline: true,
 		allowNativeMismatch: true,
@@ -313,6 +325,10 @@ test("SEA executables run standalone", { timeout: 300_000 }, async (t) => {
 	const runtime = readFileSync(process.execPath);
 	if (!hostTarget || NodeRuntime.seaFuseState(runtime) !== "ready") {
 		t.skip("host Node.js cannot be used as a SEA runtime");
+		return;
+	}
+	if (QuickJsPackager.supports(hostTarget as TargetDevice)) {
+		t.skip(`${hostTarget} now runs on the ForgeGraal native host, not a Node.js SEA — see quickJsPackager.test.ts`);
 		return;
 	}
 
