@@ -1,8 +1,59 @@
-# ForgeGraal
+<p align="center"><img src="https://cdn.discordapp.com/emojis/1185683362334134362.png?size=1024" alt="ForgeGraal logo"></p>
+<h1 align="center">ForgeGraal</h1><p align="center">Standalone executables for ForgeScript powered apps, on every device, with no Node.js required.</p>
 
-ForgeScript extension and CLI that turns [ForgeScript](https://github.com/tryforge/ForgeScript) bots into
-standalone executables and portable bundles — including 32-bit devices (iSH on iOS, x86, ARMv7, FreeBSD) and
-legacy Windows (XP, Vista, 7).
+<p align="center">
+<a href="https://github.com/ariel-aram/ForgeGraal/"><img src="https://img.shields.io/github/package-json/v/ariel-aram/ForgeGraal/main?label=forgegraal&color=5c16d4" alt="forgegraal"></a>
+<a href="https://github.com/tryforge/ForgeScript/"><img src="https://img.shields.io/github/package-json/v/tryforge/ForgeScript/main?label=@tryforge/forgescript&color=5c16d4" alt="@tryforge/forgescript"></a>
+<a href="https://discord.gg/hcJgjzPvqb"><img src="https://img.shields.io/discord/739934735387721768?logo=discord" alt="Discord"></a>
+</p>
+<h2 align="center">Contents</h2>
+
+1. [Installation](#installation)
+2. [Quick start](#quick-start)
+3. [How a build works](#how-a-build-works)
+4. [Supported targets](#supported-targets)
+5. [Native host (quickjs-ng)](#quickjs-ng-the-way-past-nodes-ceiling)
+   - [Native addons (Node-API)](#native-addons-node-api)
+   - [Addons written against V8 or NAN](#addons-written-against-v8-or-nan)
+   - [Windows 7 compatibility](#windows-what-is-verified-and-what-makes-windows-7-work)
+6. [Package managers](#bun-projects)
+7. [CLI](#cli)
+8. [Extension](#extension)
+9. [Development](#development)
+<br>
+
+<h3 align="center">Installation</h3><hr>
+
+1. Run the following command to install ForgeGraal in your project:
+```bash
+npm i forgegraal
+```
+2. Optionally, add it to your client to use `$compileBinary` from inside a bot (see [Extension](#extension)):
+```js
+const { ForgeClient } = require("@tryforge/forgescript")
+const { ForgeGraal } = require("forgegraal")
+
+const client = new ForgeClient({
+    ...options // The options you currently have
+    extensions: [
+        new ForgeGraal({ allowCompile: false })
+    ]
+})
+```
+Building on Linux needs no extra tools for most targets; cross-building the native host uses
+`mingw-w64`/musl toolchains that ForgeGraal fetches or reports on its own.
+
+<h3 align="center">Quick start</h3><hr>
+
+1. Build your bot's JavaScript first (TypeScript projects run `tsc`), then compile it:
+```bash
+npx forgegraal compile dist/index.js --target win-legacy-x64
+```
+2. Copy the output folder to the device and run the launcher inside it (`<name>.cmd` on Windows, `<name>`
+   elsewhere). The archive is extracted beside the executable on first start.
+3. List every device with `npx forgegraal targets`, and check one with `npx forgegraal info <target>`.
+
+<br>
 
 ---
 
@@ -25,28 +76,34 @@ legacy Windows (XP, Vista, 7).
 
 ## Supported targets
 
-| Target               | Platform                                | Runtime                                                      |
-| -------------------- | --------------------------------------- | -------------------------------------------------------------- |
-| `win-xp-x86`         | Windows XP / Server 2003 (NT 5.1/5.2)   | portable, `--node-binary` — no automatable source (see below) |
-| `win-vista-x86`      | Windows Vista (32-bit)                  | portable, **auto**: official Node.js 5.12.0                   |
-| `win-vista-x64`      | Windows Vista (64-bit)                  | portable, **auto**: official Node.js 5.12.0                   |
-| `win-legacy-x86`     | Windows 7 (32-bit)                      | portable, **auto**: official Node.js 12.22.12                 |
-| `win-legacy-x64`     | Windows 7 (64-bit)                      | portable, **auto**: official Node.js 12.22.12                 |
-| `ios-ish-x86`        | Alpine (musl i686) under iOS iSH        | portable, **auto**: installs itself on-device (`apk`)         |
-| `linux-x86`          | Linux 32-bit (i686)                     | portable, `--node-binary` — no automatable source (see below) |
-| `freebsd-x86`        | FreeBSD 32-bit                          | portable, **auto**: installs itself on-device (`pkg`)         |
-| `win-x86`            | Windows 10 / 11 (32-bit)                | sea, official (up to Node 22)                                  |
-| `linux-armv7`        | Linux ARMv7 (32-bit)                    | sea, official                                                  |
-| `win-modern-x64`     | Windows 10 / 11 (64-bit)                | sea, official                                                  |
-| `linux-modern-x64`   | Linux 64-bit (x86_64)                   | sea, official                                                  |
-| `linux-modern-arm64` | Linux ARM64 (AArch64)                   | sea, official                                                  |
-| `darwin-x64`         | macOS Intel                             | sea, official (sign with `codesign --sign -`)                 |
-| `darwin-arm64`       | macOS Apple Silicon                     | sea, official (sign with `codesign --sign -`)                 |
+| Target               | Platform                                | Runtime                                                          |
+| -------------------- | --------------------------------------- | ---------------------------------------------------------------- |
+| `win-xp-x86`         | Windows XP / Server 2003 (NT 5.1/5.2)   | **native host** (quickjs-ng)                                     |
+| `win-vista-x86`      | Windows Vista (32-bit)                  | **native host** (quickjs-ng)                                     |
+| `win-vista-x64`      | Windows Vista (64-bit)                  | **native host** (quickjs-ng)                                     |
+| `win-legacy-x86`     | Windows 7 (32-bit)                      | **native host** (quickjs-ng)                                     |
+| `win-legacy-x64`     | Windows 7 (64-bit)                      | **native host** (quickjs-ng)                                     |
+| `ios-ish-x86`        | Alpine (musl i686) under iOS iSH        | **native host** (quickjs-ng)                                     |
+| `linux-x86`          | Linux 32-bit (i686)                     | **native host** (quickjs-ng)                                     |
+| `linux-modern-x64`   | Linux 64-bit (x86_64)                   | **native host** (quickjs-ng), static musl or `--native-libc glibc` |
+| `freebsd-x86`        | FreeBSD 32-bit                          | portable Node.js, installs itself on-device (`pkg`)              |
+| `win-x86`            | Windows 10 / 11 (32-bit)                | sea, official Node.js (up to Node 22)                            |
+| `linux-armv7`        | Linux ARMv7 (32-bit)                    | sea, official Node.js                                            |
+| `win-modern-x64`     | Windows 10 / 11 (64-bit)                | sea, official Node.js                                            |
+| `linux-modern-arm64` | Linux ARM64 (AArch64)                   | sea, official Node.js                                            |
+| `darwin-x64`         | macOS Intel                             | sea, official Node.js (sign with `codesign --sign -`)            |
+| `darwin-arm64`       | macOS Apple Silicon                     | sea, official Node.js (sign with `codesign --sign -`)            |
+
+The native host is the default wherever Node.js itself is the obstacle. Any target can still be moved back onto
+Node.js with `--node-binary`, `--strategy sea|portable` or a registered runtime (see [CLI](#cli)).
 
 Every package manager (NPM, PNPM, Yarn, Bun) may build every target. Yarn Plug'n'Play is not supported;
 set `nodeLinker: node-modules` in `.yarnrc.yml` and reinstall.
 
-### Why some legacy targets still need `--node-binary`
+### Node.js fallback for legacy targets
+
+> These targets now build on the native host by default and need none of the below. This section only
+> applies when you opt back onto Node.js with `--node-binary` or `--strategy sea|portable`.
 
 **Windows 7** used to say "supply a community build yourself." That was wrong — Node.js's own
 `BUILDING.md` declares Windows 7 Tier 1 support through v13.x (Node 14 bumped the floor to Windows 8.1).
@@ -543,12 +600,12 @@ XP/Vista/7's outdated store is normally not why a bot cannot reach Discord. Forc
 
 ```sh
 # The entrypoint must be JavaScript: build TypeScript first.
-forgegraal compile dist/index.js --target linux-modern-x64
-forgegraal compile dist/index.js --target ios-ish-x86          # installs Node.js on-device itself
-forgegraal compile dist/index.js --target win-legacy-x64       # auto-fetches Node.js 12.22.12
-forgegraal compile dist/index.js --target win-vista-x86        # auto-fetches Node.js 5.12.0
-forgegraal compile dist/index.js --target win-xp-x86 --node-binary ./node-xp/node.exe
-forgegraal compile dist/index.js --target linux-x86 --node-binary ./node-linux-x86/node
+forgegraal compile dist/index.js --target linux-modern-x64     # native host, no Node.js in the output
+forgegraal compile dist/index.js --target ios-ish-x86          # native host, static musl
+forgegraal compile dist/index.js --target win-legacy-x64       # native host, Windows 7 patches applied
+forgegraal compile dist/index.js --target win-xp-x86
+forgegraal compile dist/index.js --target win-modern-x64       # sea, official Node.js
+forgegraal compile dist/index.js --target win-vista-x86 --node-binary ./node-5.12.0/node.exe   # opt back onto Node.js
 
 forgegraal targets
 forgegraal info win-legacy-x86                                 # shows the discord.js-compatibility warning
@@ -559,7 +616,7 @@ forgegraal runtimes list
 ```
 
 Options: `--output`, `--strategy auto|sea|portable`, `--pm`, `--node-binary`, `--node-version`, `--offline`,
-`--include-dev`, `--include-env`, `--allow-native-mismatch`.
+`--include-dev`, `--include-env`, `--allow-native-mismatch`, `--native-libc musl|musl-dynamic|glibc`, `--ucrt-dir`.
 
 ---
 
@@ -590,5 +647,11 @@ const client = new ForgeClient({
 pnpm install
 pnpm typecheck && pnpm build && pnpm test && pnpm check
 ```
+
+<h3 align="center">Credits</h3><hr>
+
+- [ForgeScript](https://github.com/tryforge/ForgeScript) by the TryForge team.
+- [quickjs-ng](https://github.com/quickjs-ng/quickjs), [mbedTLS](https://github.com/Mbed-TLS/mbedtls) and
+  [miniz](https://github.com/richgel999/miniz) power the native host.
 
 Licensed under GPL-3.0-or-later (see `LICENSE`).
