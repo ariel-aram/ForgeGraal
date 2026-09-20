@@ -105,11 +105,6 @@ class BinaryPackager {
                 includeEnv: options.includeEnv,
                 excludePaths,
             });
-            if (project.usesBunApis.length) {
-                warnings.push(`Bun APIs detected (${project.usesBunApis.slice(0, 5).join(", ")}). The compiled executable runs on ` +
-                    "Node.js: bun:sqlite and common Bun globals (env, file, write, serve, sleep, which) are polyfilled " +
-                    "at startup, but anything else (Bun.password, Bun.hash, FFI, Bun.spawn, ...) will fail when reached.");
-            }
             if (!options.includeEnv) {
                 warnings.push(".env files were not bundled; provide secrets through the environment at runtime.");
             }
@@ -122,6 +117,11 @@ class BinaryPackager {
             //   - an explicit --strategy sea/portable (asking for a Node-shaped output by name)
             const explicitNodeOverride = Boolean(options.nodeBinary) || strategy !== "auto" || RuntimeRegistry_1.RuntimeRegistry.find(target, root).length > 0;
             if (QuickJsPackager_1.QuickJsPackager.supports(target) && !explicitNodeOverride) {
+                if (project.usesBunApis.length) {
+                    warnings.push(`Bun APIs detected (${project.usesBunApis.slice(0, 5).join(", ")}). The native host does not provide ` +
+                        "Bun: anything under Bun.* or bun:* fails when reached. Use node: APIs or a portable database " +
+                        "driver, or build with --node-binary / --strategy sea|portable to get the Bun polyfills on Node.js.");
+                }
                 // Node-API is implemented by the host itself (quickjs/native/napi.c), so a native addon is
                 // not an obstacle here: it loads the way it would under Node.js, provided it was built for
                 // this target's architecture and the host can dlopen at all.
@@ -207,6 +207,11 @@ class BinaryPackager {
                     `${runtime.version}. Their code is being lowered and the missing APIs polyfilled, which is what makes ` +
                     "that declaration surmountable — but it is an override, not a guarantee, so test the executable before " +
                     "relying on it.");
+            }
+            if (project.usesBunApis.length) {
+                warnings.push(`Bun APIs detected (${project.usesBunApis.slice(0, 5).join(", ")}). The compiled executable runs on ` +
+                    "Node.js: bun:sqlite and common Bun globals (env, file, write, serve, sleep, which) are polyfilled " +
+                    "at startup, but anything else (Bun.password, Bun.hash, FFI, Bun.spawn, ...) will fail when reached.");
             }
             let chosen;
             if (strategy === "sea") {

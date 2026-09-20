@@ -3,6 +3,7 @@ import { parseArgs } from "node:util";
 import { BinaryInspector } from "./compiler/BinaryInspector";
 import { BinaryPackager, type BuildStrategy } from "./compiler/BinaryPackager";
 import { PolicyEnforcer } from "./compiler/PolicyEnforcer";
+import { QuickJsPackager } from "./compiler/QuickJsPackager";
 import { RuntimeRegistry } from "./compiler/RuntimeRegistry";
 import { ExtensionRegistry } from "./integrations/ExtensionRegistry";
 import { FORGEDB_DRIVERS, type ForgeDBDriver, ForgeDBIntegration } from "./integrations/ForgeDBIntegration";
@@ -142,18 +143,24 @@ async function main(): Promise<void> {
 			console.log(`  OS             : ${meta.os}`);
 			console.log(`  Binary format  : ${meta.binaryFormat}`);
 			console.log(`  32-bit/legacy  : ${meta.is32BitOrLegacy ? "yes" : "no"}`);
+			const native = QuickJsPackager.supports(meta.id);
+			console.log(
+				`  Engine         : ${native ? "ForgeGraal native host (quickjs-ng), no Node.js bundled" : "Node.js"}`
+			);
 			console.log(`  Official Node  : ${meta.officialNodeFile ?? "none"}`);
 			if (meta.pinnedLegacyNode) {
 				console.log(
-					`  Pinned runtime : Node.js ${meta.pinnedLegacyNode.version} (${meta.pinnedLegacyNode.fileKey}), auto-fetched`
+					`  ${native ? "Node fallback " : "Pinned runtime"} : Node.js ${meta.pinnedLegacyNode.version} (${meta.pinnedLegacyNode.fileKey}), auto-fetched${native ? " (only with --node-binary or --strategy sea|portable)" : ""}`
 				);
 			}
 			if (meta.bootstrapInstall) {
 				console.log(`  Auto-install   : ${meta.bootstrapInstall.command.join(" ")} (on-device, on first run)`);
 			}
-			console.log(`  Runtime        : ${meta.runtimeHint}`);
+			console.log(`  ${native ? "Fallback note " : "Runtime       "} : ${meta.runtimeHint}`);
 			console.log(`  Description    : ${meta.description}`);
-			if (meta.pinnedLegacyNode) console.log(`\n  Warning: ${meta.pinnedLegacyNode.warning}`);
+			if (meta.pinnedLegacyNode) {
+				console.log(`\n  ${native ? "Warning (Node.js fallback only)" : "Warning"}: ${meta.pinnedLegacyNode.warning}`);
+			}
 			if (values.db) {
 				const driver = ForgeDBIntegration.parseDriver(values.db);
 				if (!driver)

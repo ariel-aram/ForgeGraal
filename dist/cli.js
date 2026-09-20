@@ -5,6 +5,7 @@ const node_util_1 = require("node:util");
 const BinaryInspector_1 = require("./compiler/BinaryInspector");
 const BinaryPackager_1 = require("./compiler/BinaryPackager");
 const PolicyEnforcer_1 = require("./compiler/PolicyEnforcer");
+const QuickJsPackager_1 = require("./compiler/QuickJsPackager");
 const RuntimeRegistry_1 = require("./compiler/RuntimeRegistry");
 const ExtensionRegistry_1 = require("./integrations/ExtensionRegistry");
 const ForgeDBIntegration_1 = require("./integrations/ForgeDBIntegration");
@@ -135,17 +136,20 @@ async function main() {
             console.log(`  OS             : ${meta.os}`);
             console.log(`  Binary format  : ${meta.binaryFormat}`);
             console.log(`  32-bit/legacy  : ${meta.is32BitOrLegacy ? "yes" : "no"}`);
+            const native = QuickJsPackager_1.QuickJsPackager.supports(meta.id);
+            console.log(`  Engine         : ${native ? "ForgeGraal native host (quickjs-ng), no Node.js bundled" : "Node.js"}`);
             console.log(`  Official Node  : ${meta.officialNodeFile ?? "none"}`);
             if (meta.pinnedLegacyNode) {
-                console.log(`  Pinned runtime : Node.js ${meta.pinnedLegacyNode.version} (${meta.pinnedLegacyNode.fileKey}), auto-fetched`);
+                console.log(`  ${native ? "Node fallback " : "Pinned runtime"} : Node.js ${meta.pinnedLegacyNode.version} (${meta.pinnedLegacyNode.fileKey}), auto-fetched${native ? " (only with --node-binary or --strategy sea|portable)" : ""}`);
             }
             if (meta.bootstrapInstall) {
                 console.log(`  Auto-install   : ${meta.bootstrapInstall.command.join(" ")} (on-device, on first run)`);
             }
-            console.log(`  Runtime        : ${meta.runtimeHint}`);
+            console.log(`  ${native ? "Fallback note " : "Runtime       "} : ${meta.runtimeHint}`);
             console.log(`  Description    : ${meta.description}`);
-            if (meta.pinnedLegacyNode)
-                console.log(`\n  Warning: ${meta.pinnedLegacyNode.warning}`);
+            if (meta.pinnedLegacyNode) {
+                console.log(`\n  ${native ? "Warning (Node.js fallback only)" : "Warning"}: ${meta.pinnedLegacyNode.warning}`);
+            }
             if (values.db) {
                 const driver = ForgeDBIntegration_1.ForgeDBIntegration.parseDriver(values.db);
                 if (!driver)

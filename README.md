@@ -631,7 +631,7 @@ forgegraal compile dist/index.js --target win-modern-x64       # sea, official N
 forgegraal compile dist/index.js --target win-vista-x86 --node-binary ./node-5.12.0/node.exe   # opt back onto Node.js
 
 forgegraal targets [--pm <package manager>]
-forgegraal info win-legacy-x64 [--db sqlite]                   # architecture, format, runtime, warnings
+forgegraal info win-legacy-x64 [--db sqlite]                   # engine, architecture, format, Node.js fallback, warnings
 forgegraal extensions                                          # ForgeScript extensions the project uses
 forgegraal inspect ./forgegraal-out/bot-linux-modern-x64
 forgegraal runtimes list [--target <target>]
@@ -683,8 +683,8 @@ const client = new ForgeClient({
 | Policy | `$isTargetSupported`, `$supportedTargets`, `$packageManager`, `$packagerType`, `$canPackageOnBun` |
 | Target | `$listPlatforms`, `$targetName`, `$targetDescription`, `$targetPlatform`, `$targetBits`, `$binaryArchitecture`, `$binaryExtension`, `$binaryFormat`, `$is32BitTarget`, `$is64BitTarget`, `$is32BitOrLegacy`, `$isArmTarget`, `$isIsh`, `$isLegacyWindows` |
 
-`$packagerType` reports the Node.js default (`sea` or `portable`); a target on the native host ignores it
-unless you pass `--strategy`.
+`$packagerType` returns `native` for a target on the native host and `sea` or `portable` for the Node.js
+targets.
 
 ---
 
