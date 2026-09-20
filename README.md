@@ -1,4 +1,4 @@
-<p align="center"><img src="https://cdn.discordapp.com/emojis/1185683362334134362.png?size=1024" alt="ForgeGraal logo"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/ariel-aram/ForgeGraal/main/assets/logo.webp" alt="ForgeGraal logo" width="256"></p>
 <h1 align="center">ForgeGraal</h1><p align="center">Standalone executables for ForgeScript powered apps, on every device, with no Node.js required.</p>
 
 <p align="center">
