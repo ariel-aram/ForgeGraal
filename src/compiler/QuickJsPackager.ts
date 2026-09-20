@@ -150,6 +150,7 @@ const RUNTIME_FILES = [
 	"node-web.js",
 	"node-misc.js",
 	"node-inspect.js",
+	"node-url.js",
 	"segmenter.js",
 	"segmenter-tables.js",
 	"native-modules.js",

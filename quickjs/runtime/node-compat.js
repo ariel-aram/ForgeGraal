@@ -24,9 +24,16 @@ import * as std from "qjs:std";
 import * as web from "./node-web.js";
 import * as misc from "./node-misc.js";
 import { createConsole, format as inspectFormat, inspect as inspectValue, setPromiseStateReader } from "./node-inspect.js";
+import { URL, URLSearchParams, urlModule } from "./node-url.js";
 import { Segmenter } from "./segmenter.js";
 
 const globalObject = globalThis;
+
+// The engine has no URL; fetch, http and most libraries need it.
+if (typeof globalThis.URL === "undefined") {
+	globalThis.URL = URL;
+	globalThis.URLSearchParams = URLSearchParams;
+}
 
 // The engine's console prints every object as "[object Object]"; this one formats like Node's.
 {
@@ -1629,7 +1636,7 @@ const builtins = {
 	"util/types": util.types,
 	console: globalObject.console,
 	perf_hooks: { performance: globalObject.performance },
-	url: { URL: globalObject.URL, URLSearchParams: globalObject.URLSearchParams },
+	url: urlModule,
 
 	// Backed by the native layer when there is one; otherwise they say what is missing.
 	net: nativeModules?.net ?? notImplemented("net", NEEDS_NATIVE_WORK),
