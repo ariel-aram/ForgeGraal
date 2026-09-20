@@ -20,6 +20,9 @@
  */
 
 #include "quickjs.h"
+#ifdef __GLIBC__
+#include <gnu/libc-version.h>
+#endif
 
 #include <stdlib.h>
 #include <string.h>
@@ -530,7 +533,31 @@ static JSValue fg_decode_utf8(JSContext *ctx, JSValueConst this_val, int argc, J
 
 /* ------------------------------------------------------------------ install */
 
+/* evalScript(source, filename): the engine's std.evalScript names every script "<evalScript>", which
+   makes every stack frame anonymous. Loaded modules need their own file name, both for readable errors
+   and for the packages (bindings, depd, ...) that read it back out of a stack trace. */
+static JSValue fg_eval_script(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    size_t len;
+    const char *source, *filename;
+    JSValue result;
+
+    if (argc < 2) return JS_ThrowTypeError(ctx, "evalScript(source, filename) expects two arguments");
+    source = JS_ToCStringLen(ctx, &len, argv[0]);
+    if (!source) return JS_EXCEPTION;
+    filename = JS_ToCString(ctx, argv[1]);
+    if (!filename) {
+        JS_FreeCString(ctx, source);
+        return JS_EXCEPTION;
+    }
+    result = JS_Eval(ctx, source, len, filename, JS_EVAL_TYPE_GLOBAL);
+    JS_FreeCString(ctx, source);
+    JS_FreeCString(ctx, filename);
+    return result;
+}
+
 static const JSCFunctionListEntry fg_native_funcs[] = {
+    JS_CFUNC_DEF("evalScript", 2, fg_eval_script),
     JS_CFUNC_DEF("connect", 3, fg_connect),
     JS_CFUNC_DEF("read", 1, fg_read),
     JS_CFUNC_DEF("write", 2, fg_write),
@@ -543,6 +570,10 @@ static const JSCFunctionListEntry fg_native_funcs[] = {
     JS_CFUNC_DEF("encodeUtf8", 1, fg_encode_utf8),
     JS_CFUNC_DEF("decodeUtf8", 1, fg_decode_utf8),
 };
+
+void forgegraal_napi_init(JSContext *ctx);
+extern const JSCFunctionListEntry forgegraal_napi_funcs[];
+extern const size_t forgegraal_napi_funcs_count;
 
 void forgegraal_native_init(JSContext *ctx)
 {
@@ -558,11 +589,29 @@ void forgegraal_native_init(JSContext *ctx)
     native = JS_NewObject(ctx);
     JS_SetPropertyFunctionList(ctx, native, fg_native_funcs,
                                sizeof(fg_native_funcs) / sizeof(fg_native_funcs[0]));
+    /* Node-API: dlopen/LoadLibrary of `.node` addons plus the pump that delivers their async results. */
+    forgegraal_napi_init(ctx);
+    JS_SetPropertyFunctionList(ctx, native, forgegraal_napi_funcs, (int) forgegraal_napi_funcs_count);
     JS_SetPropertyStr(ctx, native, "backend", JS_NewString(ctx, "c"));
 #ifdef _WIN32
     JS_SetPropertyStr(ctx, native, "platform", JS_NewString(ctx, "win32"));
 #else
     JS_SetPropertyStr(ctx, native, "platform", JS_NewString(ctx, "linux"));
+#endif
+    /* The architecture this binary was built for, which is what a native addon has to match. */
+#if defined(__x86_64__) || defined(_M_X64)
+    JS_SetPropertyStr(ctx, native, "arch", JS_NewString(ctx, "x64"));
+#elif defined(__aarch64__) || defined(_M_ARM64)
+    JS_SetPropertyStr(ctx, native, "arch", JS_NewString(ctx, "arm64"));
+#elif defined(__arm__)
+    JS_SetPropertyStr(ctx, native, "arch", JS_NewString(ctx, "arm"));
+#else
+    JS_SetPropertyStr(ctx, native, "arch", JS_NewString(ctx, "ia32"));
+#endif
+#ifdef __GLIBC__
+    /* Native addons pick their glibc or musl prebuilt by asking this (Node exposes it through
+       process.report), so it has to be truthful rather than guessed from the filesystem. */
+    JS_SetPropertyStr(ctx, native, "glibc", JS_NewString(ctx, gnu_get_libc_version()));
 #endif
     JS_SetPropertyStr(ctx, global, "__forgegraal_native", native);
     JS_FreeValue(ctx, global);

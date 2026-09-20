@@ -28,5 +28,6 @@ __exportStar(require("./QuickJsPackager"), exports);
 __exportStar(require("./QuickJsRuntime"), exports);
 __exportStar(require("./RuntimeRegistry"), exports);
 __exportStar(require("./SeaPackager"), exports);
+__exportStar(require("./V8AddonBuilder"), exports);
 __exportStar(require("./YarnPnpCompat"), exports);
 //# sourceMappingURL=index.js.map

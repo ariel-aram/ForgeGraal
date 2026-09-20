@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { OPTIONAL_ACCELERATORS } from "../runtime/nativeShim";
 import { RuntimeError, TARGET_METADATA_MAP, TargetDevice } from "../structures";
 import type { ArchiveEntry } from "./Archive";
 import { NodeRuntime } from "./NodeRuntime";
@@ -72,6 +73,51 @@ const NATIVE_HOST_GLIBC_BUILD_TARGET: Partial<Record<TargetDevice, string>> = {
 
 export type NativeHostLibc = "musl" | "glibc";
 
+const PLATFORM_SUFFIX = /-(?:win32|linux|darwin|freebsd|openbsd|android)-.+$/;
+
+/**
+ * Maps an addon's archive path to the package a developer actually depends on. Native packages
+ * usually ship as a per-platform sibling (`@lmdb/lmdb-win32-x64`, `mediaplex-win32-x64-msvc`), so
+ * the platform suffix is stripped and both the scoped and unscoped spellings are returned.
+ */
+export function addonPackageNames(addonPath: string): string[] {
+	const segments = addonPath.split("/");
+	const at = segments.lastIndexOf("node_modules");
+	const first = segments[at + 1];
+	if (at < 0 || !first) return [addonPath];
+	const scoped = first.startsWith("@");
+	const scope = scoped ? first : "";
+	const raw = (scoped ? segments[at + 2] : first) ?? first;
+	const base = raw.replace(PLATFORM_SUFFIX, "");
+	if (!scoped) return [base, raw];
+	// `@lmdb/lmdb-win32-x64` is the platform half of plain `lmdb`, not of a package called `@lmdb/lmdb`.
+	const own = `${scope}/${base}`;
+	return scope.slice(1) === base ? [base, own, `${scope}/${raw}`] : [own, base, `${scope}/${raw}`];
+}
+
+/**
+ * Splits the native addons found in a project into the ones the bot can live without and the ones
+ * it needs. `required` addons decide which host gets built: a static executable cannot dlopen, so a
+ * bot that depends on one needs a dynamically linked host. `optional` ones are accelerators whose own
+ * library falls back to pure JavaScript, and must not be the reason a build gives up the portable
+ * static host.
+ */
+export function classifyNativeAddons(addonPaths: readonly string[]): {
+	required: Map<string, string[]>;
+	optional: Map<string, string[]>;
+} {
+	const required = new Map<string, string[]>();
+	const optional = new Map<string, string[]>();
+	for (const path of addonPaths) {
+		const names = addonPackageNames(path);
+		const fallback = names.find((n) => (OPTIONAL_ACCELERATORS as readonly string[]).includes(n));
+		const bucket = fallback ? optional : required;
+		const key = fallback ?? names[0];
+		bucket.set(key, [...(bucket.get(key) ?? []), path]);
+	}
+	return { required, optional };
+}
+
 /**
  * `node-compat.js`'s own dependency graph: `node-web.js` (Web platform bits), `node-misc.js`,
  * `segmenter.js` + `segmenter-tables.js` (Intl.Segmenter), and `native-modules.js` (dynamically
@@ -115,6 +161,17 @@ export class QuickJsPackager {
 	}
 
 	/**
+	 * Whether the host built for `target` with `libc` can `dlopen` a native addon. Windows hosts are
+	 * ordinary dynamic executables and always can. On Linux only the dynamically linked glibc build
+	 * can: a static musl executable has no dynamic loader to load a library with, and this is a
+	 * property of static linking, not a limitation of the host's Node-API layer.
+	 */
+	public static loadsAddons(target: TargetDevice, libc: NativeHostLibc): boolean {
+		const buildTarget = (libc === "glibc" ? NATIVE_HOST_GLIBC_BUILD_TARGET : NATIVE_HOST_BUILD_TARGET)[target];
+		return buildTarget !== undefined && (buildTarget.startsWith("win-") || buildTarget.endsWith("-glibc"));
+	}
+
+	/**
 	 * Builds (and caches) the `forgegraal-c` binary for a target by invoking
 	 * `quickjs/native/build.sh`. Not a download: there is no published, checksummed release of
 	 * this binary yet (unlike `QuickJsRuntime`'s bare engine builds or Node.js itself), so the
@@ -146,7 +203,11 @@ export class QuickJsPackager {
 		const buildScript = join(repoRoot, "quickjs/native/build.sh");
 		const cacheDir = join(NodeRuntime.cacheDir(), "native-host", buildTarget);
 		const exe = join(cacheDir, buildTarget.startsWith("win-") ? "forgegraal-c.exe" : "forgegraal-c");
-		if (existsSync(exe)) return exe;
+		// The cached binary is only good for the sources it was built from: a host cached before the
+		// native layer changed would otherwise be reused forever, missing whatever changed.
+		const sourceHash = QuickJsPackager.nativeSourceHash(repoRoot);
+		const marker = join(cacheDir, ".native-source-hash");
+		if (existsSync(exe) && existsSync(marker) && readFileSync(marker, "utf-8") === sourceHash) return exe;
 
 		onLog(`Building the ForgeGraal native host for '${buildTarget}' (first run only; cached at ${exe} after)`);
 		mkdirSync(cacheDir, { recursive: true });
@@ -158,7 +219,23 @@ export class QuickJsPackager {
 			);
 		}
 		chmodSync(exe, 0o755);
+		writeFileSync(marker, sourceHash);
 		return exe;
+	}
+
+	/** Hash of everything under `quickjs/native/` that ends up inside the host binary. */
+	private static nativeSourceHash(repoRoot: string): string {
+		const hash = createHash("sha256");
+		const walk = (dir: string) => {
+			for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
+				const path = join(dir, entry.name);
+				if (entry.isDirectory()) walk(path);
+				else if (/\.(c|h|sh|py)$/.test(entry.name)) hash.update(entry.name).update(readFileSync(path));
+			}
+		};
+		walk(join(repoRoot, "quickjs/native"));
+		hash.update(readFileSync(join(repoRoot, "quickjs/winxp-compat.patch")));
+		return hash.digest("hex");
 	}
 
 	/**

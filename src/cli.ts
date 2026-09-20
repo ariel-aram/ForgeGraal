@@ -43,10 +43,12 @@ Compile options:
 
 Most targets default to the ForgeGraal native host (quickjs-ng + quickjs/native/), not Node.js:
 every legacy Windows target (XP, Vista, "Legacy" 7), iSH, 32-bit Linux, and linux-modern-x64.
-No Node.js binary is involved anywhere in that output. A native (.node) addon is a hard build
-error there, not a warning — quickjs-ng has no dlopen/N-API surface at all. Pass --node-binary,
---strategy sea/portable, or register a runtime with 'forgegraal runtimes add', to opt a
-specific build back onto Node.js instead.
+No Node.js binary is involved anywhere in that output. Native (.node) addons load there too: the
+host implements Node-API itself. A static host cannot dlopen, so a bot that needs an addon gets the
+dynamically linked build (glibc on Linux) automatically. Addons compiled against V8 or NAN are
+rebuilt from their source against ForgeGraal's V8 layer for the target (no source, no rebuild). Pass --node-binary, --strategy
+sea/portable, or register a runtime with 'forgegraal runtimes add', to opt a specific build back
+onto Node.js instead.
 
 Targets still on Node.js (win-x86, win-modern-x64, linux-armv7, linux-modern-arm64, darwin-x64,
 darwin-arm64, freebsd-x86) handle the runtime automatically:

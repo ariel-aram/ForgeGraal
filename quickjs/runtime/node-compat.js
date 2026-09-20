@@ -27,6 +27,159 @@ import { Segmenter } from "./segmenter.js";
 
 const globalObject = globalThis;
 
+/*
+ * Timers. The stock `qjs` binary puts these on the global object; the ForgeGraal host embeds only the
+ * engine's `os` module, where they live as os.setTimeout and friends. Node hands back an object rather
+ * than a number, and libraries call .unref() on it, so the same shape is returned here. The engine has
+ * no unref'd timers, so ref/unref are accepted and keep the loop alive either way.
+ */
+if (typeof globalObject.setTimeout === "undefined" && typeof os.setTimeout === "function") {
+	class Timeout {
+		constructor(handle) {
+			this._handle = handle;
+		}
+		ref() {
+			return this;
+		}
+		unref() {
+			return this;
+		}
+		hasRef() {
+			return true;
+		}
+		refresh() {
+			return this;
+		}
+		close() {
+			os.clearTimeout(this._handle);
+			return this;
+		}
+		[Symbol.toPrimitive]() {
+			return 0;
+		}
+	}
+	const start = (create) => (fn, ms, ...args) => {
+		if (typeof fn !== "function") {
+			throw new TypeError('The "callback" argument must be of type function.');
+		}
+		const run = args.length ? () => fn(...args) : fn;
+		return new Timeout(create(run, Math.max(1, Number(ms) || 1)));
+	};
+	const clear = (timer) => {
+		if (timer instanceof Timeout) os.clearTimeout(timer._handle);
+		else if (timer != null) os.clearTimeout(timer);
+	};
+	globalObject.setTimeout = start((fn, ms) => os.setTimeout(fn, ms));
+	globalObject.setInterval = start((fn, ms) => os.setInterval(fn, ms));
+	globalObject.clearTimeout = clear;
+	globalObject.clearInterval = clear;
+}
+
+/*
+ * V8's stack-trace API. `Error.captureStackTrace` exists in the engine, but `Error.prepareStackTrace`
+ * and CallSite objects do not, and a good deal of published code depends on them: `bindings` finds the
+ * calling module's directory this way, and `depd` and `source-map-support` read file and line out of it.
+ * The engine's own stack text is parsed into CallSites when a custom prepareStackTrace is installed.
+ */
+{
+	const captureNative = Error.captureStackTrace;
+	const FRAME = /^\s*at (?:(.*?) \()?(.*?)(?::(\d+):(\d+))?\)?$/;
+	class CallSite {
+		constructor(frame) {
+			this._frame = frame;
+		}
+		getThis() {
+			return undefined;
+		}
+		getTypeName() {
+			return null;
+		}
+		getFunction() {
+			return undefined;
+		}
+		getFunctionName() {
+			return this._frame.fn || null;
+		}
+		getMethodName() {
+			return null;
+		}
+		getFileName() {
+			return this._frame.file === "native" ? undefined : this._frame.file;
+		}
+		getLineNumber() {
+			return this._frame.line;
+		}
+		getColumnNumber() {
+			return this._frame.column;
+		}
+		getEvalOrigin() {
+			return undefined;
+		}
+		getScriptNameOrSourceURL() {
+			return this.getFileName();
+		}
+		isToplevel() {
+			return !this._frame.fn;
+		}
+		isEval() {
+			return false;
+		}
+		isNative() {
+			return this._frame.file === "native";
+		}
+		isConstructor() {
+			return false;
+		}
+		isAsync() {
+			return false;
+		}
+		isPromiseAll() {
+			return false;
+		}
+		getPromiseIndex() {
+			return null;
+		}
+		toString() {
+			const where = this._frame.file + (this._frame.line ? `:${this._frame.line}:${this._frame.column}` : "");
+			return this._frame.fn ? `${this._frame.fn} (${where})` : where;
+		}
+	}
+	Object.defineProperty(Error, "prepareStackTrace", { value: undefined, writable: true, configurable: true, enumerable: false });
+	if (typeof captureNative === "function") {
+		Error.captureStackTrace = function captureStackTrace(target, constructorOpt) {
+			// Frames above and including constructorOpt are left out; this wrapper is one more of them.
+			captureNative.call(this, target, constructorOpt ?? Error.captureStackTrace);
+			if (typeof Error.prepareStackTrace !== "function") return;
+			const lines = String(target.stack).split("\n");
+			const frames = lines
+				.filter((line) => /^\s*at /.test(line))
+				.map((line) => {
+					const m = FRAME.exec(line);
+					return {
+						fn: m?.[1] ?? "",
+						file: m?.[2] ?? "",
+						line: m?.[3] ? Number(m[3]) : null,
+						column: m?.[4] ? Number(m[4]) : null,
+					};
+				});
+			const sites = frames.map((frame) => new CallSite(frame));
+			// Evaluated on first read, as V8 does, so a caller can install its hook, capture, read, restore.
+			Object.defineProperty(target, "stack", {
+				configurable: true,
+				enumerable: false,
+				get() {
+					const value = Error.prepareStackTrace(target, sites);
+					Object.defineProperty(target, "stack", { value, writable: true, configurable: true, enumerable: false });
+					return value;
+				},
+				set(value) {
+					Object.defineProperty(target, "stack", { value, writable: true, configurable: true, enumerable: false });
+				},
+			});
+		};
+	}
+}
+
 /* ------------------------------------------------------------------ helpers */
 
 function notImplemented(moduleName, reason) {
@@ -218,10 +371,9 @@ class Buffer extends Uint8Array {
 	static from(value, encodingOrOffset, length) {
 		if (typeof value === "string") return Buffer._fromString(value, encodingOrOffset || "utf8");
 		if (value instanceof ArrayBuffer) {
-			const view = new Uint8Array(value, encodingOrOffset || 0, length);
-			const out = new Buffer(view.length);
-			out.set(view);
-			return out;
+			// Shares memory with the ArrayBuffer rather than copying it, as Node does. Native addons
+			// rely on it: they write into the buffer they created after handing it back to JavaScript.
+			return new Buffer(value, encodingOrOffset || 0, length);
 		}
 		if (ArrayBuffer.isView(value)) {
 			const out = new Buffer(value.byteLength);
@@ -342,10 +494,14 @@ class Buffer extends Uint8Array {
 
 /* ------------------------------------------------------------------- events */
 
+function initEventEmitter() {
+	this._events = Object.create(null);
+	this._maxListeners = 10;
+}
+
 class EventEmitter {
 	constructor() {
-		this._events = Object.create(null);
-		this._maxListeners = 10;
+		initEventEmitter.call(this);
 	}
 
 	on(name, fn) {
@@ -645,7 +801,7 @@ Object.assign(processModule, {
 	argv: ["qjs", ...(globalObject.scriptArgs ?? []).slice(1)],
 	env: std.getenviron(),
 	platform: os.platform === "win32" ? "win32" : os.platform,
-	arch: "ia32",
+	arch: globalThis.__forgegraal_native?.arch ?? "ia32",
 	version: "v18.0.0-forgegraal-quickjs",
 	versions: { node: "18.0.0", quickjs: "0.16.2" },
 	pid: os.getpid(),
@@ -729,6 +885,19 @@ const util = {
 	},
 	deprecate(fn) {
 		return fn;
+	},
+	// NODE_DEBUG=section[,section...] turns a section's log on, as in Node.js.
+	debuglog(section) {
+		const wanted = (std.getenv("NODE_DEBUG") ?? "")
+			.split(",")
+			.map((name) => name.trim().toUpperCase())
+			.filter(Boolean);
+		const enabled = wanted.includes(String(section).toUpperCase()) || wanted.includes("*");
+		const log = (...args) => {
+			if (enabled) std.err.puts(`${String(section).toUpperCase()} ${processModule.pid ?? 0}: ${util.format(...args)}\n`);
+		};
+		log.enabled = enabled;
+		return log;
 	},
 	TextEncoder,
 	TextDecoder,
@@ -1018,17 +1187,21 @@ const diagnosticsChannel = {
  */
 class Stream extends EventEmitter {}
 
+function initReadable(options = {}) {
+	this._buffer = [];
+	this._flowing = false;
+	this._ended = false;
+	this._destroyed = false;
+	this.readable = true;
+	this.readableObjectMode = Boolean(options.objectMode);
+	this.readableHighWaterMark = options.highWaterMark ?? 16384;
+	if (options.read) this._read = options.read;
+}
+
 class Readable extends Stream {
 	constructor(options = {}) {
 		super();
-		this._buffer = [];
-		this._flowing = false;
-		this._ended = false;
-		this._destroyed = false;
-		this.readable = true;
-		this.readableObjectMode = Boolean(options.objectMode);
-		this.readableHighWaterMark = options.highWaterMark ?? 16384;
-		if (options.read) this._read = options.read;
+		initReadable.call(this, options);
 	}
 
 	_read() {}
@@ -1130,15 +1303,19 @@ class Readable extends Stream {
 	}
 }
 
+function initWritable(options = {}) {
+	this.writable = true;
+	this._chunks = [];
+	this.writableObjectMode = Boolean(options.objectMode);
+	this.writableHighWaterMark = options.highWaterMark ?? 16384;
+	if (options.write) this._write = options.write;
+	if (options.final) this._final = options.final;
+}
+
 class Writable extends Stream {
 	constructor(options = {}) {
 		super();
-		this.writable = true;
-		this._chunks = [];
-		this.writableObjectMode = Boolean(options.objectMode);
-		this.writableHighWaterMark = options.highWaterMark ?? 16384;
-		if (options.write) this._write = options.write;
-		if (options.final) this._final = options.final;
+		initWritable.call(this, options);
 	}
 
 	_write(chunk, _encoding, callback) {
@@ -1190,38 +1367,47 @@ class Writable extends Stream {
 	}
 }
 
+/*
+ * Duplex is a Readable that is also a Writable. The writable half is mixed in as methods on the
+ * prototype rather than held as a separate object, so `_write` and `_final` resolve on the instance:
+ * a subclass overriding them, as sharp and most stream libraries do, is honoured.
+ */
 class Duplex extends Readable {
 	constructor(options = {}) {
 		super(options);
-		const writable = new Writable(options);
-		this.writable = true;
-		this.write = writable.write.bind(writable);
-		this.end = writable.end.bind(writable);
-		this._writableSide = writable;
-		// Writable-side events have to surface on the duplex itself, or `finish` never arrives.
-		for (const event of ["finish", "drain"]) writable.on(event, (...args) => this.emit(event, ...args));
+		initWritable.call(this, options);
 	}
+}
+for (const name of Object.getOwnPropertyNames(Writable.prototype)) {
+	if (name === "constructor" || name === "destroy" || Object.hasOwn(Duplex.prototype, name)) continue;
+	Object.defineProperty(Duplex.prototype, name, Object.getOwnPropertyDescriptor(Writable.prototype, name));
+}
+
+function initTransform(options = {}) {
+	if (options.transform) this._transform = options.transform;
+	if (options.flush) this._flush = options.flush;
 }
 
 class Transform extends Duplex {
 	constructor(options = {}) {
 		super(options);
-		if (options.transform) this._transform = options.transform;
-		if (options.flush) this._flush = options.flush;
-		this._writableSide._write = (chunk, encoding, callback) => {
-			this._transform(chunk, encoding, (err, value) => {
-				if (err) return callback(err);
-				if (value !== undefined && value !== null) this.push(value);
-				callback();
-			});
-		};
-		this._writableSide._final = (callback) => {
-			this._flush((err, value) => {
-				if (value !== undefined && value !== null) this.push(value);
-				this.push(null);
-				callback(err);
-			});
-		};
+		initTransform.call(this, options);
+	}
+
+	_write(chunk, encoding, callback) {
+		this._transform(chunk, encoding, (err, value) => {
+			if (err) return callback(err);
+			if (value !== undefined && value !== null) this.push(value);
+			callback();
+		});
+	}
+
+	_final(callback) {
+		this._flush((err, value) => {
+			if (value !== undefined && value !== null) this.push(value);
+			this.push(null);
+			callback(err);
+		});
 	}
 
 	_transform(chunk, _encoding, callback) {
@@ -1235,13 +1421,35 @@ class Transform extends Duplex {
 
 class PassThrough extends Transform {}
 
+/*
+ * ES classes cannot be invoked without `new`, but a great deal of published code inherits the old
+ * way: `util.inherits(Sharp, Duplex)` and then `Duplex.call(this, options)`. Wrapping the exported
+ * constructor lets that call run the same initialisation on the caller's `this`.
+ */
+function callable(Class, ...inits) {
+	return new Proxy(Class, {
+		apply(_target, thisArg, args) {
+			for (const init of inits) init.apply(thisArg, args);
+		},
+	});
+}
+
+const CallableEventEmitter = callable(EventEmitter, initEventEmitter);
+EventEmitter.EventEmitter = CallableEventEmitter;
+const CallableStream = callable(Stream, initEventEmitter);
+const CallableReadable = callable(Readable, initEventEmitter, initReadable);
+const CallableWritable = callable(Writable, initEventEmitter, initWritable);
+const CallableDuplex = callable(Duplex, initEventEmitter, initReadable, initWritable);
+const CallableTransform = callable(Transform, initEventEmitter, initReadable, initWritable, initTransform);
+const CallablePassThrough = callable(PassThrough, initEventEmitter, initReadable, initWritable, initTransform);
+
 const streamModule = {
-	Stream,
-	Readable,
-	Writable,
-	Duplex,
-	Transform,
-	PassThrough,
+	Stream: CallableStream,
+	Readable: CallableReadable,
+	Writable: CallableWritable,
+	Duplex: CallableDuplex,
+	Transform: CallableTransform,
+	PassThrough: CallablePassThrough,
 	pipeline(...args) {
 		const callback = typeof args[args.length - 1] === "function" ? args.pop() : null;
 		const [source, ...rest] = args;
@@ -1283,6 +1491,49 @@ if (nativeLayer) {
 	const { net, tls } = nm.createNetModules(EventEmitter);
 	const { http, https, fetch } = web.createHttpModules({ net, tls }, nm.zlib, EventEmitter);
 	nativeModules = { net, tls, http, https, fetch, crypto: nm.crypto, zlib: nm.zlib };
+
+	// Loaders for native addons choose between glibc and musl prebuilts by reading this, exactly as
+	// they do under Node.js.
+	processModule.report = {
+		getReport: () => ({
+			header: {
+				glibcVersionRuntime: nativeLayer.glibc,
+				glibcVersionCompiler: nativeLayer.glibc,
+				platform: processModule.platform,
+				arch: processModule.arch,
+			},
+		}),
+	};
+
+	// Native addons. A `.node` file is a shared library speaking Node-API, which the host implements
+	// itself (quickjs/native/napi.c). Async work and thread-safe functions finish on other threads, so
+	// while any is outstanding a timer drains their results on this one; it backs off when idle.
+	if (typeof nativeLayer.dlopen === "function") {
+		let timer = null;
+		let pumping = false;
+		let delay = 1;
+		const tick = () => {
+			timer = null;
+			delay = nativeLayer.napiDrain() > 0 ? 1 : Math.min(delay * 2, 25);
+			if (pumping) timer = globalObject.setTimeout(tick, delay);
+		};
+		nativeLayer.napiInit({
+			Buffer,
+			start() {
+				pumping = true;
+				delay = 1;
+				if (!timer) timer = globalObject.setTimeout(tick, delay);
+			},
+			stop() {
+				pumping = false;
+				if (timer) globalObject.clearTimeout(timer);
+				timer = null;
+			},
+		});
+		processModule.dlopen = (module, filename) => {
+			module.exports = nativeLayer.dlopen(filename, module.exports);
+		};
+	}
 
 	// Web globals that only become real once there is a socket and a compressor behind them.
 	defGlobal("fetch", fetch);
@@ -1344,7 +1595,7 @@ const builtins = {
 	assert,
 	"assert/strict": assert,
 	buffer: { Buffer, atob: (s) => Buffer.from(s, "base64").toString("latin1"), btoa: (s) => Buffer.from(s, "latin1").toString("base64") },
-	events: EventEmitter,
+	events: CallableEventEmitter,
 	fs,
 	"fs/promises": fs.promises,
 	os: osModule,
@@ -1384,7 +1635,12 @@ const builtins = {
 		misc.createWorkerThreads(os.Worker, EventEmitter) ??
 		notImplemented("worker_threads", "This engine build has no Worker implementation."),
 	child_process:
-		misc.createChildProcess(os, EventEmitter) ??
+		misc.createChildProcess(os, EventEmitter, {
+			Buffer,
+			readText: (path) => std.loadFile(path),
+			tmpdir: () => std.getenv("TMPDIR") ?? std.getenv("TEMP") ?? "/tmp",
+			writeStderr: (text) => std.err.puts(text),
+		}) ??
 		notImplemented("child_process", "This engine build exposes no exec()."),
 	async_hooks: misc.asyncHooks,
 	v8: misc.v8,
@@ -1400,6 +1656,77 @@ const builtins = {
 
 const moduleCache = new Map();
 
+function moduleNotFound(specifier, fromDir) {
+	const err = new Error(`Cannot find module '${specifier}' from '${fromDir}'`);
+	err.code = "MODULE_NOT_FOUND";
+	return err;
+}
+
+/** `@scope/pkg/sub/path` -> { name: "@scope/pkg", sub: "./sub/path" }; a bare package gets sub ".". */
+function splitSpecifier(specifier) {
+	const parts = specifier.split("/");
+	const nameLength = specifier.startsWith("@") ? 2 : 1;
+	return {
+		name: parts.slice(0, nameLength).join("/"),
+		sub: parts.length > nameLength ? `./${parts.slice(nameLength).join("/")}` : ".",
+	};
+}
+
+/**
+ * Resolves `sub` ("." or "./x") against a package's "exports": an exact key first, then the
+ * longest matching "./dir/*" pattern. Returns null when the package does not export it.
+ */
+function matchExports(exports, sub) {
+	if (typeof exports === "string" || Array.isArray(exports)) return sub === "." ? resolveExports(exports) : null;
+	if (!exports || typeof exports !== "object") return null;
+
+	const keys = Object.keys(exports);
+	// No key starts with ".", so this object is a condition map for the root export alone.
+	if (!keys.some((key) => key.startsWith("."))) return sub === "." ? resolveExports(exports) : null;
+	if (Object.hasOwn(exports, sub)) return resolveExports(exports[sub]);
+
+	let best = null;
+	for (const key of keys) {
+		const star = key.indexOf("*");
+		if (star < 0) continue;
+		const prefix = key.slice(0, star);
+		const suffix = key.slice(star + 1);
+		if (sub.length >= key.length - 1 && sub.startsWith(prefix) && sub.endsWith(suffix)) {
+			if (!best || prefix.length > best.prefix.length) best = { key, prefix, suffix };
+		}
+	}
+	if (!best) return null;
+	const target = resolveExports(exports[best.key]);
+	const middle = sub.slice(best.prefix.length, sub.length - best.suffix.length);
+	return target ? target.replaceAll("*", middle) : null;
+}
+
+function resolveInstalledPackage(dir, specifier) {
+	const { name, sub } = splitSpecifier(specifier);
+	const packageDir = pathModule.join(dir, "node_modules", name);
+	const manifestPath = pathModule.join(packageDir, "package.json");
+	if (fs.existsSync(manifestPath)) {
+		let exports;
+		try {
+			exports = JSON.parse(fs.readFileSync(manifestPath, "utf8")).exports;
+		} catch {
+			exports = undefined;
+		}
+		if (exports !== undefined && exports !== null) {
+			const target = matchExports(exports, sub);
+			if (target) {
+				const found = resolvePackage(pathModule.join(packageDir, target));
+				if (found) return found;
+			} else if (sub !== ".") {
+				const err = new Error(`Package subpath '${sub}' is not defined by "exports" in ${manifestPath}`);
+				err.code = "ERR_PACKAGE_PATH_NOT_EXPORTED";
+				throw err;
+			}
+		}
+	}
+	return resolvePackage(pathModule.join(dir, "node_modules", specifier));
+}
+
 function resolveModule(specifier, fromDir) {
 	const bare = specifier.startsWith("node:") ? specifier.slice(5) : specifier;
 	if (bare in builtins) return { builtin: bare };
@@ -1411,18 +1738,17 @@ function resolveModule(specifier, fromDir) {
 		// Walk up node_modules the way Node does, so an installed dependency tree resolves.
 		let dir = fromDir;
 		for (;;) {
-			const candidate = pathModule.join(dir, "node_modules", specifier);
-			const found = resolvePackage(candidate);
+			const found = resolveInstalledPackage(dir, specifier);
 			if (found) return { file: found };
 			const parent = pathModule.dirname(dir);
 			if (parent === dir) break;
 			dir = parent;
 		}
-		throw new Error(`Cannot find module '${specifier}' from '${fromDir}'`);
+		throw moduleNotFound(specifier, fromDir);
 	}
 
 	const found = resolvePackage(base);
-	if (!found) throw new Error(`Cannot find module '${specifier}' from '${fromDir}'`);
+	if (!found) throw moduleNotFound(specifier, fromDir);
 	return { file: found };
 }
 
@@ -1458,7 +1784,7 @@ function resolveExports(exports) {
 }
 
 function resolvePackage(base) {
-	for (const candidate of [base, `${base}.js`, `${base}.cjs`, `${base}.json`]) {
+	for (const candidate of [base, `${base}.js`, `${base}.cjs`, `${base}.json`, `${base}.node`]) {
 		if (fs.existsSync(candidate) && !fs.statSync(candidate).isDirectory()) return candidate;
 	}
 	if (fs.existsSync(base) && fs.statSync(base).isDirectory()) {
@@ -1500,11 +1826,25 @@ function createRequire(fromFile) {
 
 		const module = { exports: {}, id: file, filename: file, loaded: false };
 		moduleCache.set(file, module);
+		if (file.endsWith(".node")) {
+			if (typeof processModule.dlopen !== "function") {
+				moduleCache.delete(file);
+				throw new Error(
+					`Cannot load native addon '${file}': this ForgeGraal runtime has no native host to load it with.`
+				);
+			}
+			try {
+				processModule.dlopen(module, file);
+			} catch (err) {
+				moduleCache.delete(file);
+				throw err;
+			}
+			module.loaded = true;
+			return module.exports;
+		}
 		const source = fs.readFileSync(file, "utf8");
-		const wrapper = std.evalScript(
-			`(function (exports, require, module, __filename, __dirname) {${source}\n})`,
-			{ filename: file }
-		);
+		const text = `(function (exports, require, module, __filename, __dirname) {${source}\n})`;
+		const wrapper = nativeLayer?.evalScript ? nativeLayer.evalScript(text, file) : std.evalScript(text);
 		wrapper(module.exports, createRequire(file), module, file, pathModule.dirname(file));
 		module.loaded = true;
 		return module.exports;

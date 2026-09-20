@@ -149,13 +149,24 @@ WIN_LIBS=""
 [ "$WINDOWS" = "1" ] && WIN_LIBS="-lws2_32 -ladvapi32 -lbcrypt"
 [ "$TARGET" = "win-xp-x86" ] && WIN_LIBS="-lws2_32 -ladvapi32"
 
+# Node-API needs the host to export its napi_* functions to the addons it loads: dynamic Linux builds
+# link with --export-dynamic, Windows exports them through dllexport, and a static executable cannot
+# dlopen anything at all, so those builds compile the loader out and say so when an addon is loaded.
+NAPI_CFLAGS=""
+NAPI_LDFLAGS=""
+if [ "$WINDOWS" != "1" ]; then
+	if [ "$STATIC" = "1" ]; then NAPI_CFLAGS="-DFG_NO_DLOPEN"; else NAPI_LDFLAGS="-Wl,--export-dynamic"; fi
+fi
+
 # -DMINIZ_NO_TIME keeps miniz off time() APIs that differ across the old Windows CRTs.
-"$CC" -O2 -std=gnu11 -w $XP_FLAGS \
+"$CC" -O2 -DNDEBUG -std=gnu11 -w $XP_FLAGS \
 	-D_GNU_SOURCE -DMINIZ_NO_TIME -DMINIZ_NO_STDIO \
-	-I quickjs-ng -I mbedtls/include -I miniz -I "$SCRIPT_DIR" \
+	$NAPI_CFLAGS \
+	-I quickjs-ng -I mbedtls/include -I miniz -I "$SCRIPT_DIR" -I "$SCRIPT_DIR/include" \
 	-o "$EXE" \
 	"$SCRIPT_DIR/fg_main.c" \
 	"$SCRIPT_DIR/forgegraal_native.c" \
+	"$SCRIPT_DIR/napi.c" \
 	"$SCRIPT_DIR/ca_bundle.c" \
 	miniz/miniz.c \
 	quickjs-ng/quickjs.c quickjs-ng/libregexp.c quickjs-ng/libunicode.c \
@@ -163,6 +174,7 @@ WIN_LIBS=""
 	quickjs-ng/gen/repl.c quickjs-ng/gen/standalone.c \
 	-L "$MBEDTLS_BUILD/library" -lmbedtls -lmbedx509 -lmbedcrypto \
 	$WIN_LIBS -lm $([ "$WINDOWS" = "1" ] || echo "-ldl -lpthread -latomic") \
+	$NAPI_LDFLAGS \
 	$([ "$STATIC" = "1" ] && echo "-static-libgcc -static")
 
 echo "[build] built $OUT_DIR/$EXE"

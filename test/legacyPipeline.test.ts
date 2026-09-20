@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -270,16 +270,12 @@ test("the legacy polyfills provide global fetch, which is what a bot actually ca
 	assert.match(source, /fetch\(\) is not available on/);
 });
 
-test("a native addon that matches the target's architecture but cannot load is still flagged", async () => {
+test("a native addon built for the target's architecture is bundled and loaded by the native host", async () => {
 	// The case that reached a real Windows machine unannounced: @lmdb/lmdb-win32-x64 is a valid
-	// win32 x64 PE, so the architecture check passed and the build said nothing. It still failed
-	// to load, because it is built for a newer Node ABI and a newer Windows.
-	//
-	// win-legacy-x64 now defaults to the ForgeGraal native host rather than Node.js, which turns
-	// this from "warn and ship anyway" into a hard build failure -- strictly better for exactly
-	// this case, since quickjs-ng cannot load ANY native addon here, not just this one. No Node
-	// download mocking is needed any more either: the native-addon check now runs before any
-	// runtime is even considered.
+	// win32 x64 PE. Under Node.js on Windows 7 it failed to load, because it is built for a newer
+	// Node ABI. win-legacy-x64 now runs on the ForgeGraal native host, which implements Node-API
+	// itself, so there is no Node ABI to be too new for: the addon ships with the bot and the host
+	// loads it (this sandbox cannot run a Windows binary, so what is checked is the build).
 	const root = mkdtempSync(join(tmpdir(), "forgegraal-lmdb-"));
 	mkdirSync(join(root, "node_modules/lmdb"), { recursive: true });
 	writeFileSync(join(root, "package.json"), JSON.stringify({ name: "lmdb-bot", dependencies: { lmdb: "^3" } }));
@@ -299,15 +295,28 @@ test("a native addon that matches the target's architecture but cannot load is s
 	writeFileSync(join(root, "node_modules/lmdb/node.napi.node"), pe);
 	writeFileSync(join(root, "index.js"), 'require("lmdb");');
 
-	await assert.rejects(
-		BinaryPackager.compile({
-			entrypoint: join(root, "index.js"),
-			target: TargetDevice.WinLegacyX64,
-			packageManager: "npm",
-			offline: true,
-		}),
-		/lmdb.*dlopen\/N-API surface/s
+	const result = await BinaryPackager.compile({
+		entrypoint: join(root, "index.js"),
+		target: TargetDevice.WinLegacyX64,
+		packageManager: "npm",
+		offline: true,
+	});
+
+	assert.equal(result.strategy, "quickjs");
+	assert.ok(
+		existsSync(join(result.outputPath, "app/node_modules/lmdb/node.napi.node")),
+		"the addon ships with the bot"
 	);
+	assert.ok(
+		result.warnings.some((w) => /each one must itself run on win-legacy-x64/.test(w)),
+		"the build says the OS, not ForgeGraal, loads the addon"
+	);
+
+	// The Windows host has to export the Node-API surface for the addon's imports to bind to.
+	const host = readFileSync(join(result.outputPath, "forgegraal-c.exe"));
+	for (const symbol of ["napi_create_function", "napi_module_register", "napi_queue_async_work"]) {
+		assert.ok(host.includes(symbol), `${symbol} must be exported by the Windows host`);
+	}
 });
 
 test("a modern target does not get the legacy native-addon warning", async () => {

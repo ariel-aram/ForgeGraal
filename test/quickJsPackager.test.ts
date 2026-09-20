@@ -1,10 +1,17 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { BinaryInspector, BinaryPackager, QuickJsPackager, TargetDevice } from "../dist/index.js";
+import {
+	addonPackageNames,
+	BinaryInspector,
+	BinaryPackager,
+	classifyNativeAddons,
+	QuickJsPackager,
+	TargetDevice,
+} from "../dist/index.js";
 
 function hasDocker(): boolean {
 	try {
@@ -260,7 +267,7 @@ test("legacy Windows targets default to the native host, and the bundled binary 
 	}
 });
 
-test("a native addon makes a quickjs-targeted build fail loudly, not silently drop it", async () => {
+function lmdbLikeProject(): string {
 	const root = createProject();
 	writeFileSync(
 		join(root, "package.json"),
@@ -269,18 +276,165 @@ test("a native addon makes a quickjs-targeted build fail loudly, not silently dr
 	mkdirSync(join(root, "node_modules/lmdb/build/Release"), { recursive: true });
 	writeFileSync(join(root, "node_modules/lmdb/package.json"), JSON.stringify({ name: "lmdb", main: "index.js" }));
 	writeFileSync(join(root, "node_modules/lmdb/index.js"), 'module.exports = require("./build/Release/lmdb.node");');
-	// Content does not matter: quickjs-ng has no dlopen surface, so any .node file must be rejected
-	// regardless of whether it would otherwise match the target's architecture.
 	writeFileSync(join(root, "node_modules/lmdb/build/Release/lmdb.node"), Buffer.from("not a real binary"));
 	writeFileSync(join(root, "src/index.js"), 'require("lmdb");');
+	return root;
+}
 
+test("a bot that needs a native addon gets the dynamically linked host instead of being refused", async () => {
+	const root = lmdbLikeProject();
+	const result = await BinaryPackager.compile({
+		entrypoint: join(root, "src/index.js"),
+		target: TargetDevice.LinuxModernX64,
+		packageManager: "npm",
+		offline: true,
+	});
+
+	assert.equal(result.strategy, "quickjs");
+	assert.ok(result.warnings.some((w) => /dynamically linked glibc host/.test(w)));
+	assert.ok(
+		existsSync(join(result.outputPath, "app/node_modules/lmdb/build/Release/lmdb.node")),
+		"the addon must ship with the bot"
+	);
+	const ldd = spawnSync("ldd", [join(result.outputPath, "forgegraal-c")], { encoding: "utf-8" });
+	assert.match(ldd.stdout, /libc\.so\.6/, "an addon-loading host has to be dynamic, since a static one cannot dlopen");
+});
+
+test("--native-libc musl with a native addon explains why it cannot work, rather than building a host that cannot load it", async () => {
 	await assert.rejects(
 		BinaryPackager.compile({
-			entrypoint: join(root, "src/index.js"),
+			entrypoint: join(lmdbLikeProject(), "src/index.js"),
 			target: TargetDevice.LinuxModernX64,
 			packageManager: "npm",
+			nativeLibc: "musl",
 			offline: true,
 		}),
-		/dlopen\/N-API surface/
+		/static executable has no dynamic loader/
 	);
+});
+
+test("a target whose only host is static says so when a native addon needs loading", async () => {
+	await assert.rejects(
+		BinaryPackager.compile({
+			entrypoint: join(lmdbLikeProject(), "src/index.js"),
+			target: TargetDevice.LinuxX86,
+			packageManager: "npm",
+			offline: true,
+			allowNativeMismatch: true,
+		}),
+		/only has a statically linked host/
+	);
+});
+
+const hasGcc = spawnSync("gcc", ["--version"]).status === 0;
+
+test("a real Node-API addon loads and behaves exactly as it does under Node.js", {
+	skip: !hasGcc && "gcc is not installed",
+	timeout: 300_000,
+}, async () => {
+	// The addon calls napi_* functions and links against nothing: they resolve from the host at load
+	// time, which is precisely the contract the host's Node-API layer has to honour. It covers values,
+	// strings, objects, buffers, callbacks, exceptions, wrapped classes, references, BigInt, async work
+	// resolving a promise, and a thread-safe function called from a second OS thread.
+	const work = mkdtempSync(join(tmpdir(), "forgegraal-napi-"));
+	const addon = join(work, "addon.node");
+	const build = spawnSync(
+		"gcc",
+		[
+			"-shared",
+			"-fPIC",
+			"-O1",
+			"-I",
+			join(process.cwd(), "quickjs/native/include"),
+			"-o",
+			addon,
+			join(process.cwd(), "test/fixtures/napi/addon.c"),
+			"-lpthread",
+		],
+		{ encoding: "utf-8" }
+	);
+	assert.equal(build.status, 0, build.stderr);
+
+	const root = mkdtempSync(join(tmpdir(), "forgegraal-napi-project-"));
+	mkdirSync(join(root, "node_modules/napi-fixture"), { recursive: true });
+	writeFileSync(
+		join(root, "package.json"),
+		JSON.stringify({ name: "napi-bot", dependencies: { "napi-fixture": "1" } })
+	);
+	writeFileSync(
+		join(root, "node_modules/napi-fixture/package.json"),
+		JSON.stringify({ name: "napi-fixture", version: "1.0.0", main: "index.js" })
+	);
+	writeFileSync(join(root, "node_modules/napi-fixture/index.js"), 'module.exports = require("./addon.node");');
+	copyFileSync(addon, join(root, "node_modules/napi-fixture/addon.node"));
+	const script = readFileSync(join(process.cwd(), "test/fixtures/napi/run.js"), "utf-8").replace(
+		'require("./addon.node")',
+		'require("napi-fixture")'
+	);
+	writeFileSync(join(root, "index.js"), script);
+
+	const expected = spawnSync(process.execPath, [join(root, "index.js")], { cwd: root, encoding: "utf-8" });
+	assert.equal(expected.status, 0, `Node baseline failed: ${expected.stderr}`);
+
+	const result = await BinaryPackager.compile({
+		entrypoint: join(root, "index.js"),
+		target: TargetDevice.LinuxModernX64,
+		packageManager: "npm",
+		offline: true,
+	});
+	assert.equal(result.strategy, "quickjs");
+	assert.equal(
+		readdirSync(result.outputPath).some((f) => f === "node" || f === "node.exe"),
+		false
+	);
+
+	const run = spawnSync(result.launcherPath, [], { cwd: result.outputPath, encoding: "utf-8", timeout: 60_000 });
+	assert.equal(run.status, 0, run.stderr);
+	assert.equal(run.stdout.trim(), expected.stdout.trim(), "the host must produce what Node.js produces");
+});
+
+test("addon paths map to the package a developer depends on, platform suffix stripped", () => {
+	const names = (p: string) => addonPackageNames(p)[0];
+	assert.equal(names("node_modules/@lmdb/lmdb-win32-x64/node.napi.node"), "lmdb");
+	assert.equal(names("node_modules/mediaplex-win32-x64-msvc/mediaplex.win32-x64-msvc.node"), "mediaplex");
+	assert.equal(names("node_modules/@snazzah/davey-win32-x64-msvc/davey.win32-x64-msvc.node"), "@snazzah/davey");
+	assert.equal(names("node_modules/bcrypt/lib/binding/bcrypt_lib.node"), "bcrypt");
+	assert.equal(names("node_modules/@rollup/rollup-win32-x64-gnu/rollup.win32-x64-gnu.node"), "rollup");
+});
+
+test("classifyNativeAddons separates addons a bot needs from optional accelerators", () => {
+	const { required, optional } = classifyNativeAddons([
+		"node_modules/@lmdb/lmdb-win32-x64/node.napi.node",
+		"node_modules/@snazzah/davey-win32-x64-msvc/davey.win32-x64-msvc.node",
+		"node_modules/mediaplex-win32-x64-msvc/mediaplex.win32-x64-msvc.node",
+		"node_modules/@msgpackr-extract/msgpackr-extract-win32-x64/node.napi.node",
+		"node_modules/@msgpackr-extract/msgpackr-extract-win32-x64/node.abi115.node",
+	]);
+	assert.deepEqual([...required.keys()].sort(), ["@snazzah/davey", "lmdb"]);
+	assert.deepEqual([...optional.keys()].sort(), ["mediaplex", "msgpackr-extract"]);
+	assert.equal(optional.get("msgpackr-extract")?.length, 2, "both addon files group under one package");
+});
+
+test("an optional accelerator's addon warns instead of failing a native-host build", async () => {
+	const root = createProject();
+	writeFileSync(
+		join(root, "package.json"),
+		JSON.stringify({ name: "qjs-bot", dependencies: { a: "1", b: "1", "msgpackr-extract": "^3" } })
+	);
+	mkdirSync(join(root, "node_modules/msgpackr-extract"), { recursive: true });
+	writeFileSync(
+		join(root, "node_modules/msgpackr-extract/package.json"),
+		JSON.stringify({ name: "msgpackr-extract", main: "index.js" })
+	);
+	writeFileSync(join(root, "node_modules/msgpackr-extract/index.js"), "module.exports = {};");
+	writeFileSync(join(root, "node_modules/msgpackr-extract/node.napi.node"), Buffer.from("not a real binary"));
+
+	const result = await BinaryPackager.compile({
+		entrypoint: join(root, "src/index.js"),
+		target: TargetDevice.LinuxModernX64,
+		packageManager: "npm",
+		offline: true,
+	});
+	assert.equal(result.strategy, "quickjs");
+	assert.ok(result.warnings.some((w) => /msgpackr-extract.*fall back to pure JavaScript/.test(w)));
 });

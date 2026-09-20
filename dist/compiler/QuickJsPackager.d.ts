@@ -1,6 +1,23 @@
 import { TargetDevice } from "../structures";
 import type { ArchiveEntry } from "./Archive";
 export type NativeHostLibc = "musl" | "glibc";
+/**
+ * Maps an addon's archive path to the package a developer actually depends on. Native packages
+ * usually ship as a per-platform sibling (`@lmdb/lmdb-win32-x64`, `mediaplex-win32-x64-msvc`), so
+ * the platform suffix is stripped and both the scoped and unscoped spellings are returned.
+ */
+export declare function addonPackageNames(addonPath: string): string[];
+/**
+ * Splits the native addons found in a project into the ones the bot can live without and the ones
+ * it needs. `required` addons decide which host gets built: a static executable cannot dlopen, so a
+ * bot that depends on one needs a dynamically linked host. `optional` ones are accelerators whose own
+ * library falls back to pure JavaScript, and must not be the reason a build gives up the portable
+ * static host.
+ */
+export declare function classifyNativeAddons(addonPaths: readonly string[]): {
+    required: Map<string, string[]>;
+    optional: Map<string, string[]>;
+};
 export interface QuickJsBuildOptions {
     target: TargetDevice;
     name: string;
@@ -24,6 +41,13 @@ export declare class QuickJsPackager {
     /** Whether this target has a wired-up native host build (see the module doc for why so few do). */
     static supports(target: TargetDevice): boolean;
     /**
+     * Whether the host built for `target` with `libc` can `dlopen` a native addon. Windows hosts are
+     * ordinary dynamic executables and always can. On Linux only the dynamically linked glibc build
+     * can: a static musl executable has no dynamic loader to load a library with, and this is a
+     * property of static linking, not a limitation of the host's Node-API layer.
+     */
+    static loadsAddons(target: TargetDevice, libc: NativeHostLibc): boolean;
+    /**
      * Builds (and caches) the `forgegraal-c` binary for a target by invoking
      * `quickjs/native/build.sh`. Not a download: there is no published, checksummed release of
      * this binary yet (unlike `QuickJsRuntime`'s bare engine builds or Node.js itself), so the
@@ -32,6 +56,8 @@ export declare class QuickJsPackager {
      * directory convention as `NodeRuntime`.
      */
     static ensureNativeHost(target: TargetDevice, libc?: NativeHostLibc, onLog?: (message: string) => void): Promise<string>;
+    /** Hash of everything under `quickjs/native/` that ends up inside the host binary. */
+    private static nativeSourceHash;
     /**
      * Writes the project, the compatibility layer and the native host into `outputPath`, plus a
      * launcher script that runs them with no Node.js involved at any point.

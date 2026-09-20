@@ -450,28 +450,156 @@ function createReadline(EventEmitter) {
 
 /* ------------------------------------------------------------ child_process */
 
-function createChildProcess(host, EventEmitter) {
+function createChildProcess(host, EventEmitter, io = {}) {
 	if (!host.exec) {
 		return null;
 	}
 
-	function spawnSync(command, args = [], options = {}) {
-		const argv = [command, ...args];
-		// The engine's exec() is blocking and returns an exit status; output capture goes
-		// through a temporary file, which is the portable option here.
-		const status = host.exec(argv, { block: true, ...options });
-		return { status, signal: null, pid: 0, stdout: null, stderr: null, output: [null, null, null] };
+	const isWindows = host.platform === "win32";
+	let counter = 0;
+	const shellArgv = (command) => (isWindows ? ["cmd.exe", "/d", "/s", "/c", command] : ["/bin/sh", "-c", command]);
+	const decode = (text, encoding) => {
+		if (encoding && encoding !== "buffer") return text;
+		return io.Buffer ? io.Buffer.from(text) : text;
+	};
+	const inherits = (options, index) => {
+		const stdio = options.stdio;
+		return stdio === "inherit" || (Array.isArray(stdio) && stdio[index] === "inherit");
+	};
+
+	/**
+	 * Runs a command to completion and captures what it wrote. The engine's exec() takes file
+	 * descriptors, not pipes, so the child's output goes to temporary files and is read back once it
+	 * exits: unlike a pipe this cannot deadlock on output larger than the pipe buffer.
+	 */
+	function run(argv, options = {}) {
+		const base = `${io.tmpdir?.() ?? "/tmp"}/forgegraal-cp-${host.getpid?.() ?? 0}-${counter++}`;
+		const write = host.O_WRONLY | host.O_CREAT | host.O_TRUNC;
+		const files = [];
+		const open = (suffix, flags) => {
+			const path = `${base}.${suffix}`;
+			files.push(path);
+			return host.open(path, flags, 0o600);
+		};
+		const fds = [];
+		const execOptions = { block: true, usePath: true };
+		if (options.cwd) execOptions.cwd = options.cwd;
+		if (options.env) execOptions.env = options.env;
+		if (options.input !== undefined) {
+			const fd = open("in", write);
+			fds.push(fd);
+			const bytes = typeof options.input === "string" ? io.Buffer.from(options.input) : options.input;
+			const view = new Uint8Array(bytes);
+			host.write(fd, view.buffer, view.byteOffset, view.byteLength);
+			host.close(fd);
+			execOptions.stdin = host.open(`${base}.in`, host.O_RDONLY, 0);
+			fds.push(execOptions.stdin);
+		}
+		let outPath = null;
+		let errPath = null;
+		if (!inherits(options, 1)) {
+			execOptions.stdout = open("out", write);
+			outPath = `${base}.out`;
+			fds.push(execOptions.stdout);
+		}
+		if (!inherits(options, 2)) {
+			execOptions.stderr = open("err", write);
+			errPath = `${base}.err`;
+			fds.push(execOptions.stderr);
+		}
+
+		let status = null;
+		let error;
+		try {
+			status = host.exec(argv, execOptions);
+		} catch (err) {
+			error = err;
+		} finally {
+			for (const fd of fds) {
+				try {
+					host.close(fd);
+				} catch {
+					/* already closed */
+				}
+			}
+		}
+		const read = (path) => (path && io.readText ? (io.readText(path) ?? "") : "");
+		const stdout = read(outPath);
+		const stderr = read(errPath);
+		for (const path of files) {
+			try {
+				host.remove(path);
+			} catch {
+				/* best effort */
+			}
+		}
+		return { status, stdout, stderr, error };
 	}
 
-	function spawn(command, args = [], options = {}) {
+	function normalizeArgs(args, options) {
+		// spawnSync(command, options) is legal: the argument list is optional.
+		if (args !== undefined && !Array.isArray(args)) return { args: [], options: args ?? {} };
+		return { args: args ?? [], options: options ?? {} };
+	}
+
+	function result(captured, options) {
+		const encoding = options.encoding;
+		const stdout = decode(captured.stdout, encoding);
+		const stderr = decode(captured.stderr, encoding);
+		const res = {
+			status: captured.status,
+			signal: null,
+			pid: 0,
+			stdout,
+			stderr,
+			output: [null, stdout, stderr],
+		};
+		if (captured.error) res.error = captured.error;
+		return res;
+	}
+
+	function failure(command, captured, options) {
+		const err = new Error(`Command failed: ${command}${captured.stderr ? `\n${captured.stderr}` : ""}`);
+		err.status = captured.status;
+		err.stdout = decode(captured.stdout, options.encoding);
+		err.stderr = decode(captured.stderr, options.encoding);
+		return err;
+	}
+
+	function spawnSync(command, args, options) {
+		const norm = normalizeArgs(args, options);
+		const argv = norm.options.shell ? shellArgv([command, ...norm.args].join(" ")) : [command, ...norm.args];
+		return result(run(argv, norm.options), norm.options);
+	}
+
+	function execSync(command, options = {}) {
+		const captured = run(shellArgv(command), options);
+		if (!inherits(options, 2) && captured.stderr) io.writeStderr?.(captured.stderr);
+		if (captured.status !== 0) throw failure(command, captured, options);
+		return decode(captured.stdout, options.encoding);
+	}
+
+	function execFileSync(file, args, options) {
+		const norm = normalizeArgs(args, options);
+		const captured = run([file, ...norm.args], norm.options);
+		if (captured.status !== 0) throw failure(file, captured, norm.options);
+		return decode(captured.stdout, norm.options.encoding);
+	}
+
+	function spawn(command, args, options) {
+		const norm = normalizeArgs(args, options);
 		const emitter = new EventEmitter();
 		emitter.stdout = new EventEmitter();
 		emitter.stderr = new EventEmitter();
 		queueMicrotask(() => {
 			try {
-				const status = spawnSync(command, args, options).status;
-				emitter.emit("exit", status, null);
-				emitter.emit("close", status, null);
+				const res = spawnSync(command, norm.args, norm.options);
+				if (res.stdout?.length) emitter.stdout.emit("data", res.stdout);
+				if (res.stderr?.length) emitter.stderr.emit("data", res.stderr);
+				emitter.stdout.emit("end");
+				emitter.stderr.emit("end");
+				emitter.emit("exit", res.status, null);
+				emitter.emit("close", res.status, null);
 			} catch (err) {
 				emitter.emit("error", err);
 			}
@@ -480,25 +608,32 @@ function createChildProcess(host, EventEmitter) {
 		return emitter;
 	}
 
+	function asyncRunner(sync) {
+		return (...params) => {
+			const callback = typeof params.at(-1) === "function" ? params.pop() : null;
+			const emitter = new EventEmitter();
+			queueMicrotask(() => {
+				try {
+					const out = sync(...params);
+					callback?.(null, out, "");
+				} catch (err) {
+					callback?.(err, err.stdout ?? "", err.stderr ?? "");
+				}
+			});
+			return emitter;
+		};
+	}
+
 	return {
 		spawn,
 		spawnSync,
-		execSync(command) {
-			const status = host.exec(["/bin/sh", "-c", command], { block: true });
-			if (status !== 0) throw new Error(`command failed with status ${status}: ${command}`);
-			return "";
-		},
-		exec(command, callback) {
-			queueMicrotask(() => {
-				try {
-					const status = host.exec(["/bin/sh", "-c", command], { block: true });
-					callback?.(status === 0 ? null : new Error(`exit ${status}`), "", "");
-				} catch (err) {
-					callback?.(err, "", "");
-				}
-			});
-			return new EventEmitter();
-		},
+		execSync,
+		execFileSync,
+		exec: asyncRunner((command, options) => execSync(command, { encoding: "utf8", ...(options ?? {}) })),
+		execFile: asyncRunner((file, args, options) => {
+			const norm = normalizeArgs(args, options);
+			return execFileSync(file, norm.args, { encoding: "utf8", ...norm.options });
+		}),
 		fork() {
 			throw new Error("child_process.fork is not available: this runtime has no IPC channel to a child.");
 		},

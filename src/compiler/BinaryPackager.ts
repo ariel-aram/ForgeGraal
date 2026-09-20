@@ -21,9 +21,10 @@ import { MIN_SEA_NODE_VERSION, NodeRuntime } from "./NodeRuntime";
 import { type PackageManager, PolicyEnforcer } from "./PolicyEnforcer";
 import { PortablePackager } from "./PortablePackager";
 import { compareVersions, ProjectCollector } from "./ProjectCollector";
-import { type NativeHostLibc, QuickJsPackager } from "./QuickJsPackager";
+import { classifyNativeAddons, type NativeHostLibc, QuickJsPackager } from "./QuickJsPackager";
 import { RuntimeRegistry } from "./RuntimeRegistry";
 import { SeaPackager } from "./SeaPackager";
+import { V8AddonBuilder } from "./V8AddonBuilder";
 import { YarnPnpCompat } from "./YarnPnpCompat";
 
 export type BuildStrategy = "auto" | "sea" | "portable";
@@ -191,22 +192,47 @@ export class BinaryPackager {
 			//   - an explicit --node-binary
 			//   - a runtime already registered with `forgegraal runtimes add` for this target
 			//   - an explicit --strategy sea/portable (asking for a Node-shaped output by name)
-			// Native addons are a hard stop on the native-host path, not the usual arch-match warning:
-			// quickjs-ng has no dlopen/N-API surface, so a `.node` file cannot load no matter how well
-			// it matches the target's architecture.
 			const explicitNodeOverride =
 				Boolean(options.nodeBinary) || strategy !== "auto" || RuntimeRegistry.find(target, root).length > 0;
 			if (QuickJsPackager.supports(target) && !explicitNodeOverride) {
-				if (project.nativeAddons.length) {
-					throw new RuntimeError(
-						`${project.nativeAddons.map((a) => a.path).join(", ")} ship native (.node) addons, but ${meta.name} ` +
-							"runs on the ForgeGraal native host (quickjs-ng), which has no dlopen/N-API surface at all -- no " +
-							"native addon can load here, matched architecture or not. Remove the dependency or replace it " +
-							"with a pure JavaScript alternative."
+				// Node-API is implemented by the host itself (quickjs/native/napi.c), so a native addon is
+				// not an obstacle here: it loads the way it would under Node.js, provided it was built for
+				// this target's architecture and the host can dlopen at all.
+				BinaryPackager.rebuildV8Addons(project, target, options, warnings, log);
+				BinaryPackager.checkNativeAddons(project.nativeAddons, target, options, warnings, "native");
+				const { required, optional } = classifyNativeAddons(project.nativeAddons.map((a) => a.path));
+				let nativeLibc = options.nativeLibc;
+				if (required.size && !QuickJsPackager.loadsAddons(target, nativeLibc ?? "musl")) {
+					const names = [...required.keys()].join(", ");
+					if (nativeLibc === "musl") {
+						throw new RuntimeError(
+							`${names} ship native addons, but --native-libc musl builds a statically linked host, and a ` +
+								"static executable has no dynamic loader to load them with. Use --native-libc glibc, or drop the flag " +
+								"and let ForgeGraal pick the dynamically linked host itself."
+						);
+					}
+					if (!nativeLibc && QuickJsPackager.loadsAddons(target, "glibc")) {
+						nativeLibc = "glibc";
+						warnings.push(
+							`${names} ship native addons, which a static executable cannot load, so this build uses the ` +
+								"dynamically linked glibc host instead of the default static musl one. It runs on glibc systems " +
+								"(most Linux distributions) but not on Alpine; pass --native-libc musl only for a bot without addons."
+						);
+					} else {
+						throw new RuntimeError(
+							`${names} ship native addons, but ${meta.name} only has a statically linked host, and a static ` +
+								"executable cannot load shared libraries. No dynamically linked host is built for this target yet."
+						);
+					}
+				}
+				if (optional.size && !QuickJsPackager.loadsAddons(target, nativeLibc ?? "musl")) {
+					warnings.push(
+						`${[...optional.keys()].join(", ")} ship native addons that this static host cannot load; ` +
+							"their libraries fall back to pure JavaScript on their own."
 					);
 				}
 				log(`Packaging for the ForgeGraal native host on ${meta.name} (no Node.js runtime bundled)`);
-				const nativeHostBinary = await QuickJsPackager.ensureNativeHost(target, options.nativeLibc ?? "musl", log);
+				const nativeHostBinary = await QuickJsPackager.ensureNativeHost(target, nativeLibc ?? "musl", log);
 				const outputPath = resolve(options.output ?? join(defaultOutDir, `${project.name}-${target}`));
 				const res = QuickJsPackager.build({
 					target,
@@ -435,11 +461,47 @@ export class BinaryPackager {
 		return { kind: "lower", jsTarget: `node${major}.${minor}` };
 	}
 
+	/**
+	 * A prebuilt addon compiled against V8 cannot load outside Node.js, but the package that ships it
+	 * usually ships its source too. That source is rebuilt here against ForgeGraal's V8 layer for the
+	 * target -- from any build machine, whatever platform the installed prebuild was for.
+	 *
+	 * Packages that are only optional accelerators, with a host that cannot load addons anyway, are
+	 * left alone: building them would produce something the host then could not use.
+	 */
+	private static rebuildV8Addons(
+		project: ReturnType<typeof ProjectCollector.collect>,
+		target: TargetDevice,
+		options: BuildOptions,
+		warnings: string[],
+		log: (message: string) => void
+	) {
+		const packages = V8AddonBuilder.find(project.entries);
+		if (!packages.length) return;
+		const hostLoadsAddons = QuickJsPackager.loadsAddons(target, options.nativeLibc ?? "musl");
+		const needsHost = classifyNativeAddons(project.nativeAddons.map((a) => a.path)).required.size > 0;
+		if (!hostLoadsAddons && !needsHost && options.nativeLibc !== "glibc") return;
+
+		for (const pkg of packages) {
+			const built = V8AddonBuilder.build({ pkg, target, onLog: log });
+			const dir = V8AddonBuilder.archiveDirOf(pkg.addonPaths[0]);
+			V8AddonBuilder.replace(project.entries, pkg, built, dir);
+			project.nativeAddons = project.nativeAddons.filter((a) => !pkg.addonPaths.includes(a.path));
+			const path = `${dir}/${built.relativePath}`;
+			project.nativeAddons.push({ path, info: BinaryInspector.inspect(built.file) });
+			warnings.push(
+				`${pkg.name} was compiled against V8, which only Node.js has, so it was rebuilt from source against ForgeGraal's ` +
+					`V8 layer for ${target}. The prebuilt binary it shipped was not used.`
+			);
+		}
+	}
+
 	private static checkNativeAddons(
 		addons: ReturnType<typeof ProjectCollector.collect>["nativeAddons"],
 		target: TargetDevice,
 		options: BuildOptions,
-		warnings: string[]
+		warnings: string[],
+		host: "node" | "native" = "node"
 	) {
 		// Prebuilt packages often ship addons for several platforms: a package is fine
 		// as soon as one of its addons fits the target
@@ -480,7 +542,15 @@ export class BinaryPackager {
 		// For legacy targets, warn about the packages the runtime shim deliberately will not
 		// substitute: if one of those is bundled, it is the most likely thing to stop the bot, and
 		// finding that out at build time beats finding out on the target machine.
-		if (TARGET_METADATA_MAP[target].is32BitOrLegacy) {
+		if (host === "native" && TARGET_METADATA_MAP[target].is32BitOrLegacy && byPackage.size) {
+			// The Node-API layer is the host's own, so there is no Node ABI to be too new for. The addon
+			// is still a native binary its authors built for some Windows or glibc, and if that is newer
+			// than the target's, loading it fails with the system's own error message, not a build error.
+			warnings.push(
+				`Native addons are loaded by the operating system, not by ForgeGraal, so each one must itself run on ${target}. ` +
+					"Prebuilt addons are usually built for a recent OS; if one is not, it fails at load time with the system's error."
+			);
+		} else if (host === "node" && TARGET_METADATA_MAP[target].is32BitOrLegacy) {
 			const bundled = new Set([...byPackage.keys()].map((key) => key.split("node_modules/").pop() ?? key));
 			const risky = UNSUBSTITUTABLE_NATIVE.filter((name) => bundled.has(name));
 			if (risky.length) {

@@ -14,6 +14,7 @@
 #include <string.h>
 
 void forgegraal_native_init(JSContext *ctx);
+void forgegraal_napi_shutdown(void);
 
 static char *read_file(const char *path, size_t *len_out)
 {
@@ -77,6 +78,8 @@ int main(int argc, char **argv)
     /* The engine's own std/os modules supply timers, files and the module loader; the native
        layer adds what they lack. Together they match what the Rust host provides. */
     js_std_init_handlers(rt);
+    /* An unhandled rejection is an error in the program, not something to ignore: report it and fail. */
+    JS_SetHostPromiseRejectionTracker(rt, js_std_promise_rejection_tracker, NULL);
     JS_SetModuleLoaderFunc(rt, NULL, js_module_loader, NULL);
     js_init_module_std(ctx, "qjs:std");
     js_init_module_os(ctx, "qjs:os");
@@ -99,11 +102,24 @@ int main(int argc, char **argv)
     if (JS_IsException(result)) {
         js_std_dump_error(ctx);
         status = 1;
-    }
-    JS_FreeValue(ctx, result);
+        JS_FreeValue(ctx, result);
+    } else {
+        /* Pending promises and timers still need to run before the process ends. */
+        js_std_loop(ctx);
 
-    /* Pending promises and timers still need to run before the process ends. */
-    js_std_loop(ctx);
+        /* A module with top-level await evaluates to a promise, and an error thrown by the script
+           rejects it. Without this check the process would exit 0 having silently failed. */
+        if (JS_PromiseState(ctx, result) == JS_PROMISE_REJECTED) {
+            JSValue reason = JS_PromiseResult(ctx, result);
+            JS_Throw(ctx, reason);
+            js_std_dump_error(ctx);
+            status = 1;
+        }
+        JS_FreeValue(ctx, result);
+    }
+
+    /* Addons get their cleanup hooks while the engine is still alive to be called into. */
+    forgegraal_napi_shutdown();
 
     js_std_free_handlers(rt);
     JS_FreeContext(ctx);

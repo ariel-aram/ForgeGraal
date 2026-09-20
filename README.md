@@ -320,9 +320,95 @@ Still on Node.js, deliberately:
   Node.js, with full `npm`/`pnpm`/`yarn`/`bun` support (`PolicyEnforcer.getAllowedTargets` never
   restricted these by package manager; `linux-armv7`/`linux-modern-arm64` is what an Android device
   actually is, and both were already covered before this rollout).
-- A native (`.node`) addon on a `QuickJsPackager` target is a hard build error, not a warning:
-  quickjs-ng has no dlopen/N-API surface at all, so no prebuilt addon can load there regardless of
-  architecture match.
+
+### Native addons (Node-API)
+
+A `.node` file is a shared library that imports `napi_*` functions from the process that loads it.
+Nothing in that contract needs Node.js, so the native host implements it itself:
+`quickjs/native/napi.c` exports the whole Node-API surface (every function Node's own headers
+declare, ~150) on top of the QuickJS C API, and loads the library with `dlopen` / `LoadLibrary`.
+Addons built on Node-API run unmodified, on the architecture they were built for.
+
+Verified for real, not by inspection, on the Linux glibc host:
+
+- **`@napi-rs/canvas`** (Skia): draws and encodes a PNG synchronously and asynchronously; the file is
+  byte-identical to the one Node.js writes.
+- **`sharp`** (libvips): a full image pipeline through async work and a promise.
+- **`@gifsx/gifsx`, `bufferutil`, `utf-8-validate`**: load and run, through their real platform
+  loaders (`node-gyp-build`, napi-rs's glibc/musl selection).
+- A purpose-built fixture addon (`test/fixtures/napi/addon.c`) covering values, strings, objects,
+  buffers, callbacks, exceptions, wrapped classes, references, BigInt, async work resolving a
+  promise, and a thread-safe function called from a second OS thread. Its output is compared
+  against Node.js's, and is identical.
+
+What follows from how it is built:
+
+- **A static host cannot load addons.** A statically linked executable has no dynamic loader, so
+  when a bot needs an addon, `linux-modern-x64` automatically gets the dynamically linked glibc host
+  instead of the default static musl one, and the build says so. It then runs on glibc systems (most
+  distributions) but not on Alpine. `--native-libc musl` with an addon is refused with that
+  explanation, and `ios-ish-x86`/`linux-x86`, which have only a static host, say so too.
+  Addons that are only optional accelerators (`msgpackr-extract`, `zlib-sync`, `mediaplex`, ...) do
+  not trigger any of this: their libraries fall back to JavaScript, so the portable static host is
+  kept and the build warns.
+- **Windows hosts export the Node-API functions** (they are ordinary dynamic executables), and the
+  addon's own delay-load hook binds to them. This is built and checked (145 exported symbols), but
+  like everything Windows here, **not yet run on real Windows hardware**.
+- **The addon still has to run on the target's OS.** It is a native binary its authors built for
+  some Windows or glibc; on a target older than that, loading fails with the system's own message
+  (for example Windows error 127, which the host explains), and the build warns for legacy targets.
+- **Addons written against V8 or NAN are rebuilt from source** -- see the next section.
+- Getting real packages to run turned up gaps in the Node compatibility layer, fixed at the root
+  rather than per package: global `setTimeout`/`setInterval` did not exist in the host; a script
+  that threw at top level exited 0 silently (the module's rejected promise was never checked; now
+  an error and exit 1); `package.json` `exports` subpaths (`pkg/sub`, patterns) were ignored;
+  `Buffer.from(arrayBuffer)` copied instead of sharing memory; `Duplex.call(this)` and
+  `EventEmitter.call(this)` (the pre-ES6 inheritance most libraries still use) threw; `child_process`
+  captured no output; and `util.debuglog`, `process.report` and `process.arch` were missing or wrong.
+- Async work runs on real OS threads, one per queued item, and finishes on the JavaScript thread
+  through a timer that runs only while work is outstanding and backs off when idle. Weak references
+  are real (`WeakRef`), and finalizers run at safe points, never inside the engine's GC.
+
+### Addons written against V8 or NAN
+
+A prebuilt V8 addon (the older `better-sqlite3`, `erlpack`, `zlib-sync`, anything on NAN) cannot be
+loaded by anything but Node.js: the compiled code reads V8's own heap layout. Its *source* is another
+matter -- it is C++ written against a documented API. So ForgeGraal ships an implementation of that API
+on top of Node-API (`quickjs/native/v8/`: `v8.h`, `node.h`, `node_buffer.h`, `node_object_wrap.h`,
+`uv.h`), header-only, and `forgegraal compile` rebuilds such a package from its source against it:
+
+1. A `.node` file is recognised as a V8 binary by the symbols it imports (`_ZN2v8...`, `...@v8@@`).
+2. The package's `binding.gyp` is read (targets, sources, include_dirs, defines, cflags, libraries,
+   dependent static-library targets such as a vendored zlib, `conditions` on OS and arch) and compiled with
+   the **target's** cross toolchain -- any build machine, whatever platform the installed prebuild was for.
+3. The result imports only `napi_*` functions, so the host loads it like any other addon, and it replaces
+   the prebuilt binary in the output (`build/Release/<target>.node`, where `bindings` and `node-gyp-build`
+   look first).
+
+Verified with the real thing, not a stand-in: **`erlpack`** (Discord's own NAN addon) installed from npm
+with its real V8 binary, packaged, and run with no Node.js -- output identical to Node's own V8 build;
+**`zlib-sync`** built from its unmodified source with its bundled zlib, inflating a real deflate stream;
+**NAN 2.29** itself (`Nan::New`, `ObjectWrap`, `AsyncWorker`, `Callback`, `Persistent`, accessors,
+`Buffer`), and a raw-V8 fixture (`FunctionTemplate`, `ObjectWrap`, `Persistent`, `TryCatch`, ...), each
+compared against Node.js running the same source. Windows 7 x64/x86 builds compile and link, and their
+import tables show `napi_*` bound to the host executable; like everything Windows here, not yet run on
+real hardware.
+
+What this cannot do, said plainly:
+
+- **A V8 binary with no source next to it cannot be rebuilt.** The build stops naming the package
+  ("ships only a prebuilt addon compiled against V8"), rather than shipping something that would fail at
+  runtime. Use a version that ships its source, or a Node-API build of it (`better-sqlite3` 13 is one).
+- **The gyp reader is a subset.** A `binding.gyp` that needs something outside it (`actions`, unusual
+  command expansions) stops the build and names it.
+- **It is the API addons use, not all of V8.** A call outside it is an ordinary compile error, so a gap
+  shows at build time. Named and indexed property interceptors (`ObjectTemplate::SetHandler`) have no
+  Node-API equivalent and fail loudly at the call.
+- **A static host still cannot dlopen**, so this applies wherever the addon-loading (dynamic) host does.
+
+Getting these to run also fixed the runtime underneath: a stack-trace API (`Error.prepareStackTrace` and
+CallSite objects, which `bindings` uses to find the calling module) and real file names in stack frames
+(they used to read `<evalScript>`).
 
 ---
 

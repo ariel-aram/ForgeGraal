@@ -83,6 +83,15 @@ export declare class BinaryPackager {
      * string, so lowering is never more aggressive than the runtime requires.
      */
     static legacyRuntimePlan(runtimeVersion: string | null): LegacyRuntimePlan;
+    /**
+     * A prebuilt addon compiled against V8 cannot load outside Node.js, but the package that ships it
+     * usually ships its source too. That source is rebuilt here against ForgeGraal's V8 layer for the
+     * target -- from any build machine, whatever platform the installed prebuild was for.
+     *
+     * Packages that are only optional accelerators, with a host that cannot load addons anyway, are
+     * left alone: building them would produce something the host then could not use.
+     */
+    private static rebuildV8Addons;
     private static checkNativeAddons;
     private static selectRuntime;
     /**
