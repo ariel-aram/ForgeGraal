@@ -1,5 +1,5 @@
 <p align="center"><img src="https://raw.githubusercontent.com/ariel-aram/ForgeGraal/main/assets/logo.webp" alt="ForgeGraal logo" width="256"></p>
-<h1 align="center">ForgeGraal</h1><p align="center">Standalone executables for ForgeScript powered apps, on every device, with no Node.js required.</p>
+<h1 align="center">ForgeGraal</h1><p align="center">Standalone executables for ForgeScript powered apps, on every device, with no Node.js required on the device.</p>
 
 <p align="center">
 <a href="https://github.com/ariel-aram/ForgeGraal/"><img src="https://img.shields.io/github/package-json/v/ariel-aram/ForgeGraal/main?label=forgegraal&color=5c16d4" alt="forgegraal"></a>
@@ -12,14 +12,19 @@
 2. [Quick start](#quick-start)
 3. [How a build works](#how-a-build-works)
 4. [Supported targets](#supported-targets)
-5. [Native host (quickjs-ng)](#quickjs-ng-the-way-past-nodes-ceiling)
+5. [Native host (quickjs-ng)](#native-host-quickjs-ng)
+   - [The compatibility layer](#the-compatibility-layer)
+   - [The C host](#the-native-host-quickjsnative-c)
    - [Native addons (Node-API)](#native-addons-node-api)
    - [Addons written against V8 or NAN](#addons-written-against-v8-or-nan)
    - [Windows 7 compatibility](#windows-what-is-verified-and-what-makes-windows-7-work)
-6. [Package managers](#bun-projects)
-7. [CLI](#cli)
-8. [Extension](#extension)
-9. [Development](#development)
+6. [Package managers](#package-managers)
+   - [Bun projects](#bun-projects)
+   - [Yarn Plug'n'Play](#yarn-plugnplay)
+7. [The Node.js path](#the-nodejs-path)
+8. [CLI](#cli)
+9. [Extension](#extension)
+10. [Development](#development)
 <br>
 
 <h3 align="center">Installation</h3><hr>
@@ -40,8 +45,11 @@ const client = new ForgeClient({
     ]
 })
 ```
-Building on Linux needs no extra tools for most targets; cross-building the native host uses
-`mingw-w64`/musl toolchains that ForgeGraal fetches or reports on its own.
+Building for the native host cross-compiles a C binary on your machine (Linux is the build host), so it also
+needs `git` and `cmake`, plus, per target: `mingw-w64` for Windows, a prebuilt `x86_64-linux-musl-cross` /
+`i686-linux-musl-cross` toolchain from [musl.cc](https://musl.cc) on `PATH` for static Linux and iSH builds, and
+`x86_64-linux-gnu-gcc` for `--native-libc glibc`. The build stops and names whatever is missing. Targets that
+still use Node.js need only the CLI.
 
 <h3 align="center">Quick start</h3><hr>
 
@@ -50,7 +58,8 @@ Building on Linux needs no extra tools for most targets; cross-building the nati
 npx forgegraal compile dist/index.js --target win-legacy-x64
 ```
 2. Copy the output folder to the device and run the launcher inside it (`<name>.cmd` on Windows, `<name>`
-   elsewhere). The archive is extracted beside the executable on first start.
+   elsewhere). A native-host build is ready to run as it is; a Node.js build extracts its archive beside the
+   executable on first start.
 3. List every device with `npx forgegraal targets`, and check one with `npx forgegraal info <target>`.
 
 <br>
@@ -60,17 +69,25 @@ npx forgegraal compile dist/index.js --target win-legacy-x64
 ## How a build works
 
 1. The project (the directory of the closest `package.json`) and its production `node_modules` are collected.
-   pnpm/Bun symlink layouts are flattened into a plain, Node-resolvable tree. `.env`, `.npmrc`, `.git` and
+   pnpm and Bun symlink layouts are flattened into a plain, resolvable tree, and a Yarn Plug'n'Play project is
+   materialized into one (see [Package managers](#package-managers)). `.env`, `.npmrc`, `.git` and
    devDependencies stay out unless you ask for them.
-2. Everything is packed into a compressed archive next to a small launcher. On first start the archive is
-   extracted beside the executable (`<name>.forgegraal/app`, or `app/` in a portable bundle) and the bot runs
-   from there, so ForgeScript's directory scanning (`client.commands.load("./commands")`, extensions, ForgeDB)
-   keeps working. Files the bot writes there — SQLite databases included — survive rebuilds.
-3. Output is one of two strategies:
+2. The target decides the engine that runs the bot. Output is one of three strategies:
+   - **native host** (default for XP, Vista, Windows 7, iSH, 32-bit Linux and `linux-modern-x64`) — ForgeGraal's
+     own C binary, `forgegraal-c`, embedding quickjs-ng. **No Node.js binary is shipped.** The output folder holds
+     `forgegraal-c[.exe]`, `runtime/` (the Node-shaped compatibility layer), `app/` (your bot and its
+     `node_modules`, as loose files) and a launcher (`<name>.cmd` / `<name>`). Files the bot writes to `app/`,
+     SQLite databases included, stay put across rebuilds. See [Native host](#native-host-quickjs-ng).
    - **sea** — a [Node.js Single Executable Application](https://nodejs.org/api/single-executable-applications.html)
      injected into a target Node.js runtime (>= 20.12). Official runtimes are downloaded and SHA-256 verified.
-   - **portable** — a folder with the archive, `boot.cjs`, a launcher (`<name>.cmd` / `<name>` shell script)
-     and the runtime if one is available. Chosen automatically when no SEA-capable runtime exists.
+     The archive is extracted beside the executable on first start (`<name>.forgegraal/app`).
+   - **portable** — a folder with the archive, `boot.cjs`, a launcher and the runtime if one is available.
+     Chosen automatically when no SEA-capable runtime exists.
+3. `--node-binary`, `--strategy sea|portable` or a runtime registered with `forgegraal runtimes add` move any
+   native-host target back onto Node.js. Everything else stays on the native host.
+
+The build machine needs Node.js >= 20.12 to run `forgegraal` itself. The compiled bot needs nothing installed on
+the device when it targets the native host.
 
 ---
 
@@ -97,100 +114,15 @@ npx forgegraal compile dist/index.js --target win-legacy-x64
 The native host is the default wherever Node.js itself is the obstacle. Any target can still be moved back onto
 Node.js with `--node-binary`, `--strategy sea|portable` or a registered runtime (see [CLI](#cli)).
 
-Every package manager (NPM, PNPM, Yarn, Bun) may build every target. Yarn Plug'n'Play is not supported;
-set `nodeLinker: node-modules` in `.yarnrc.yml` and reinstall.
-
-### Node.js fallback for legacy targets
-
-> These targets now build on the native host by default and need none of the below. This section only
-> applies when you opt back onto Node.js with `--node-binary` or `--strategy sea|portable`.
-
-**Windows 7** used to say "supply a community build yourself." That was wrong — Node.js's own
-`BUILDING.md` declares Windows 7 Tier 1 support through v13.x (Node 14 bumped the floor to Windows 8.1).
-But that Tier declaration reflects Node's CI image (Windows Server 2012 R2), not genuine Windows 7
-hardware; community reports describe later 13.x/14.x builds crashing on real Windows 7 with missing
-`ws2_32.dll` entry points, unconfirmed here without real hardware to test on. ForgeGraal pins **v12.22.12**
-instead, the version community guidance converges on as actually launching there, and downloads/verifies
-it automatically, no `--node-binary` needed.
-
-Node 12 cannot parse or run current discord.js as published, so ForgeGraal rewrites the bot instead of
-giving up — see **[Legacy runtimes](#legacy-runtimes-running-modern-code-on-old-nodejs)** below. A real
-ForgeScript bot built this way was verified end to end on a real Node.js 12.22.12: 1120 native functions
-registered, `$sum[$multi[3;4];$sum[10;5]]` evaluated to `27`, and live HTTPS calls to Discord's API
-returning real responses through both `undici.request()` and `fetch()`.
-
-**Windows Vista** is a separate, older pin — Node.js dropped Vista support entirely in v6.0.0, so the
-Windows 7 build above will not even launch there (missing Win32 APIs, not a syntax problem). The last
-release that runs on Vista at all is **v5.12.0**, checksum-verified and fetched automatically for
-`win-vista-x86` / `win-vista-x64`. It is pre-ES6, and that puts it below what the legacy pipeline can
-reach: esbuild refuses to emit below ES6, so the bundled code is shipped unchanged and the build says so.
-Only a bot whose entire dependency tree is already ES5 can run there. See
-`forgegraal info win-vista-x86`.
-
-**iSH and FreeBSD** were never actually missing a binary — `apk`/`pkg` already have a real, current Node.js
-build for their own platform. The executable now runs that install command itself on first launch instead
-of just telling you to.
-
-**Windows XP and 32-bit Linux** genuinely have no automatable path today. XP's last Node.js release predates
-ES6 and modern TLS by years; 32-bit Linux's last community build (`unofficial-builds.nodejs.org`, checked
-directly) is Node 12.16.3, already below ForgeScript's own `engines.node` floor. These stay `--node-binary`
-or `forgegraal runtimes add` (checksum-pinned, tried automatically after that).
+Every package manager (NPM, PNPM, Yarn, Bun) may build every target, and Yarn Plug'n'Play projects build too.
 
 ---
 
-## Legacy runtimes: running modern code on old Node.js
+## Native host (quickjs-ng)
 
-When the runtime a build targets is older than Node.js 20, ForgeGraal stops treating the bot as
-something to ship as-is and starts rewriting it. Two gaps have to be closed, and they are separate
-problems:
-
-**Syntax.** Every bundled JavaScript file is re-emitted for the target's exact language level
-(`node12.22`, not a fixed guess) with esbuild. ES modules become CommonJS and `"type": "module"` is
-dropped, because `require()` of an ES module only works on Node 20.19+/22.12+ and ForgeScript
-`require()`s chalk, which is published as pure ESM. Your `node_modules` on disk is never touched — the
-rewrite happens on the way into the archive.
-
-> esbuild is used rather than the TypeScript compiler on evidence, not preference: TypeScript's ES2019
-> downlevel hoists private class methods out of the class body but leaves their `super.x()` calls
-> behind, emitting `SyntaxError: 'super' keyword unexpected here`. undici's decompress interceptor hits
-> this. esbuild emits a `__superGet` helper, and is about six times faster over a real dependency tree.
-
-**APIs.** The runtime's missing platform surface is filled in at startup: Web Streams, `EventTarget`,
-`AbortController`, `Blob`/`File`/`FormData`, `DOMException`, `AggregateError`, `WeakRef`, the `node:`
-specifier prefix, `diagnostics_channel`, `structuredClone`, `crypto.randomUUID`, `stream.isDisturbed`,
-and the newer `Array`/`String`/`Promise` statics. The gap was measured against a real Node 12.22.12
-rather than assumed.
-
-**Code generated at runtime.** Rewriting files ahead of time cannot reach source a program builds while
-running, and ForgeScript's compiler does exactly that — it generates a template literal containing `??`
-and hands it to `new Function`. So esbuild's WebAssembly build ships with the bundle (~3.6 MiB
-compressed) and lowers generated source on the device, memoised so repeated templates cost one transform
-instead of one per call. The launcher waits for it to come up before loading the bot, since ForgeScript
-compiles while its own modules are still being required.
-
-### What it deliberately does not do
-
-- **`Intl.Segmenter` throws** instead of being approximated. Correct grapheme and word breaking needs
-  ICU's segmentation tables; splitting by code point would mis-handle emoji, combining marks and ZWJ
-  sequences while looking like it worked. `$segmentTextSplit` and friends fail loudly on these targets.
-- **`WeakRef` and `FinalizationRegistry` never collect.** Neither can be implemented without
-  garbage-collector integration the engine does not expose, so they hold strong references and never
-  finalize. undici uses them only to evict idle per-origin dispatchers, so what leaks is bounded by the
-  number of hosts the bot talks to.
-- **A dependency's `engines.node` floor is overridden, and says so.** Running code on a runtime older
-  than its authors declared is the entire point, but the build prints that it did this rather than
-  passing silently.
-- **Below Node.js 6, nothing is rewritten.** esbuild cannot emit below ES6, so Windows Vista's Node 5.12
-  pin gets its code shipped unchanged and a warning saying why.
-
----
-
-## quickjs-ng: the way past Node's ceiling
-
-Everything above works around a constraint that is really Node's, not the hardware's. Node decides
-which *language* an old machine may run: Windows 7 is stuck on Node 12, 32-bit Linux on an
-unofficial Node 12.16.3. Lowering code to fit that is what the legacy pipeline does, and it works —
-but it is treating a symptom.
+Node's own limits, not the hardware's, decide which *language* an old machine may run: Windows 7 is
+stuck on Node 12, 32-bit Linux on an unofficial Node 12.16.3. Lowering code to fit that is what the
+[legacy pipeline](#the-nodejs-path) does, and it works — but it is treating a symptom.
 
 [quickjs-ng](https://github.com/quickjs-ng/quickjs) does not have that coupling. It is a ~72k-line
 C99 engine that publishes *current* builds for exactly the platforms Node abandoned, including
@@ -518,23 +450,31 @@ CallSite objects, which `bindings` uses to find the calling module) and real fil
 
 ---
 
-## Bun projects
+## Package managers
+
+npm, pnpm, Yarn and Bun all build every target; the manager is detected from `packageManager` in
+`package.json`, then the lockfile, then the invoking environment, and can be forced with `--pm`.
+
+### Bun projects
 
 ForgeGraal assists Bun's own binary system rather than replacing it — use whichever fits.
 `bun build --compile` is the quick path for a modern 64-bit desktop, with no other cooperation
 needed. But it produces a binary that needs Bun's own runtime on the device, and on Android
 (Termux), running that at all commonly means going through proot-distro first — friction that a
 plain Node.js build does not have. ForgeGraal builds every target for Bun projects, including
-`linux-armv7`, by transpiling the Bun-authored source at build time and shipping a build that runs
-on a plain Node.js on the device: no Bun and no proot-distro required there.
+`linux-armv7`, by transpiling the Bun-authored source at build time. On the native host there is
+no Node.js and no Bun on the device; on the Node.js targets the build runs on a plain Node.js. Either
+way no Bun and no proot-distro are required there.
 
 - **TypeScript and JSX entrypoints are transpiled automatically.** Bun projects are commonly run straight
   from `.ts`/`.tsx` with no separate build step; ForgeGraal runs `bun build --target=node --format=cjs
   --packages=external` on the entrypoint itself so local imports are bundled but installed packages stay
   external — the real, installed `node_modules` your lockfile pinned are what gets shipped, not a
   bundler's copy of them. Requires `bun` on PATH at build time only; the compiled executable never needs it.
-- **`bun:sqlite` and common `Bun` globals work in the compiled executable.** It runs on Node.js
-  regardless of target, so code written against Bun's own APIs is polyfilled at startup:
+- **`bun:sqlite` and common `Bun` globals work on the Node.js targets only.** Code written against Bun's own
+  APIs is polyfilled at startup there. The **native host does not polyfill `Bun`**: a bot on
+  `win-legacy-x64`, `linux-x86`, ... that reaches for `Bun.*` or `bun:sqlite` fails at the point of use, so
+  use `node:` APIs or a portable database driver for those targets. On the Node.js targets:
   - `import { Database } from "bun:sqlite"` — backed by Node's built-in `node:sqlite` (Node.js >= 22.5),
     matching Bun's synchronous API. Rows go to the real database file.
   - `Bun.env`, `Bun.file`, `Bun.write`, `Bun.sleep`, `Bun.which`, `Bun.nanoseconds` — real, working
@@ -546,9 +486,7 @@ on a plain Node.js on the device: no Bun and no proot-distro required there.
     correctness bug (hashes that don't verify, cache keys that never hit), not a compatibility shim.
     `Bun.spawn`, FFI, and anything else not listed above throw the same way, at the point of use.
 
----
-
-## Yarn Plug'n'Play
+### Yarn Plug'n'Play
 
 A PnP project (`nodeLinker: pnp`, Yarn Berry's default) has no `node_modules` at all — dependencies
 live as zip archives that `.pnp.cjs` resolves at `require()` time, in the project's own `.yarn/cache/`
@@ -567,7 +505,92 @@ had no gap here — this only matters for PnP specifically.
 
 ---
 
-## Legacy behaviour
+## The Node.js path
+
+Everything in this part applies only to builds that ship a Node.js runtime: the targets that are still on
+Node.js (`win-x86`, `win-modern-x64`, `linux-armv7`, `linux-modern-arm64`, `darwin-*`, `freebsd-x86`) and any
+native-host target you move back with `--node-binary` or `--strategy sea|portable`. The native host needs none
+of it: it runs current JavaScript directly and loads native addons itself.
+
+### Runtime pins for legacy targets
+
+**Windows 7** used to say "supply a community build yourself." That was wrong — Node.js's own
+`BUILDING.md` declares Windows 7 Tier 1 support through v13.x (Node 14 bumped the floor to Windows 8.1).
+But that Tier declaration reflects Node's CI image (Windows Server 2012 R2), not genuine Windows 7
+hardware; community reports describe later 13.x/14.x builds crashing on real Windows 7 with missing
+`ws2_32.dll` entry points, unconfirmed here without real hardware to test on. ForgeGraal pins **v12.22.12**
+instead, the version community guidance converges on as actually launching there, and downloads/verifies
+it automatically, no `--node-binary` needed.
+
+Node 12 cannot parse or run current discord.js as published, so ForgeGraal rewrites the bot instead of
+giving up — see **[Legacy runtimes](#legacy-runtimes-running-modern-code-on-old-nodejs)** below. A real
+ForgeScript bot built this way was verified end to end on a real Node.js 12.22.12: 1120 native functions
+registered, `$sum[$multi[3;4];$sum[10;5]]` evaluated to `27`, and live HTTPS calls to Discord's API
+returning real responses through both `undici.request()` and `fetch()`.
+
+**Windows Vista** is a separate, older pin — Node.js dropped Vista support entirely in v6.0.0, so the
+Windows 7 build above will not even launch there (missing Win32 APIs, not a syntax problem). The last
+release that runs on Vista at all is **v5.12.0**, checksum-verified and fetched automatically for
+`win-vista-x86` / `win-vista-x64`. It is pre-ES6, and that puts it below what the legacy pipeline can
+reach: esbuild refuses to emit below ES6, so the bundled code is shipped unchanged and the build says so.
+Only a bot whose entire dependency tree is already ES5 can run there. See
+`forgegraal info win-vista-x86`.
+
+**iSH and FreeBSD** were never actually missing a binary — `apk`/`pkg` already have a real, current Node.js
+build for their own platform. The executable now runs that install command itself on first launch instead
+of just telling you to.
+
+**Windows XP and 32-bit Linux** genuinely have no automatable path today. XP's last Node.js release predates
+ES6 and modern TLS by years; 32-bit Linux's last community build (`unofficial-builds.nodejs.org`, checked
+directly) is Node 12.16.3, already below ForgeScript's own `engines.node` floor. These stay `--node-binary`
+or `forgegraal runtimes add` (checksum-pinned, tried automatically after that).
+
+### Legacy runtimes: running modern code on old Node.js
+
+When the runtime a build targets is older than Node.js 20, ForgeGraal stops treating the bot as
+something to ship as-is and starts rewriting it. Two gaps have to be closed, and they are separate
+problems:
+
+**Syntax.** Every bundled JavaScript file is re-emitted for the target's exact language level
+(`node12.22`, not a fixed guess) with esbuild. ES modules become CommonJS and `"type": "module"` is
+dropped, because `require()` of an ES module only works on Node 20.19+/22.12+ and ForgeScript
+`require()`s chalk, which is published as pure ESM. Your `node_modules` on disk is never touched — the
+rewrite happens on the way into the archive.
+
+> esbuild is used rather than the TypeScript compiler on evidence, not preference: TypeScript's ES2019
+> downlevel hoists private class methods out of the class body but leaves their `super.x()` calls
+> behind, emitting `SyntaxError: 'super' keyword unexpected here`. undici's decompress interceptor hits
+> this. esbuild emits a `__superGet` helper, and is about six times faster over a real dependency tree.
+
+**APIs.** The runtime's missing platform surface is filled in at startup: Web Streams, `EventTarget`,
+`AbortController`, `Blob`/`File`/`FormData`, `DOMException`, `AggregateError`, `WeakRef`, the `node:`
+specifier prefix, `diagnostics_channel`, `structuredClone`, `crypto.randomUUID`, `stream.isDisturbed`,
+and the newer `Array`/`String`/`Promise` statics. The gap was measured against a real Node 12.22.12
+rather than assumed.
+
+**Code generated at runtime.** Rewriting files ahead of time cannot reach source a program builds while
+running, and ForgeScript's compiler does exactly that — it generates a template literal containing `??`
+and hands it to `new Function`. So esbuild's WebAssembly build ships with the bundle (~3.6 MiB
+compressed) and lowers generated source on the device, memoised so repeated templates cost one transform
+instead of one per call. The launcher waits for it to come up before loading the bot, since ForgeScript
+compiles while its own modules are still being required.
+
+#### What it deliberately does not do
+
+- **`Intl.Segmenter` throws** instead of being approximated. Correct grapheme and word breaking needs
+  ICU's segmentation tables; splitting by code point would mis-handle emoji, combining marks and ZWJ
+  sequences while looking like it worked. `$segmentTextSplit` and friends fail loudly on these targets.
+- **`WeakRef` and `FinalizationRegistry` never collect.** Neither can be implemented without
+  garbage-collector integration the engine does not expose, so they hold strong references and never
+  finalize. undici uses them only to evict idle per-origin dispatchers, so what leaks is bounded by the
+  number of hosts the bot talks to.
+- **A dependency's `engines.node` floor is overridden, and says so.** Running code on a runtime older
+  than its authors declared is the entire point, but the build prints that it did this rather than
+  passing silently.
+- **Below Node.js 6, nothing is rewritten.** esbuild cannot emit below ES6, so Windows Vista's Node 5.12
+  pin gets its code shipped unchanged and a warning saying why.
+
+### Legacy behaviour on Node.js
 
 Old and 32-bit targets get two adjustments, both derived from the target metadata rather than guessed
 from the target name:
@@ -599,7 +622,7 @@ XP/Vista/7's outdated store is normally not why a bot cannot reach Discord. Forc
 ## CLI
 
 ```sh
-# The entrypoint must be JavaScript: build TypeScript first.
+# The entrypoint must be JavaScript (TypeScript and JSX are transpiled only for Bun projects, see above).
 forgegraal compile dist/index.js --target linux-modern-x64     # native host, no Node.js in the output
 forgegraal compile dist/index.js --target ios-ish-x86          # native host, static musl
 forgegraal compile dist/index.js --target win-legacy-x64       # native host, Windows 7 patches applied
@@ -607,16 +630,30 @@ forgegraal compile dist/index.js --target win-xp-x86
 forgegraal compile dist/index.js --target win-modern-x64       # sea, official Node.js
 forgegraal compile dist/index.js --target win-vista-x86 --node-binary ./node-5.12.0/node.exe   # opt back onto Node.js
 
-forgegraal targets
-forgegraal info win-legacy-x86                                 # shows the discord.js-compatibility warning
-forgegraal info linux-armv7 --db sqlite
+forgegraal targets [--pm <package manager>]
+forgegraal info win-legacy-x64 [--db sqlite]                   # architecture, format, runtime, warnings
+forgegraal extensions                                          # ForgeScript extensions the project uses
 forgegraal inspect ./forgegraal-out/bot-linux-modern-x64
+forgegraal runtimes list [--target <target>]
 forgegraal runtimes add linux-x86 12.16.3 https://example.com/node-linux-x86.tar.gz --sha256 <hex>
-forgegraal runtimes list
+forgegraal runtimes remove linux-x86 12.16.3
+forgegraal version
 ```
 
-Options: `--output`, `--strategy auto|sea|portable`, `--pm`, `--node-binary`, `--node-version`, `--offline`,
-`--include-dev`, `--include-env`, `--allow-native-mismatch`, `--native-libc musl|musl-dynamic|glibc`, `--ucrt-dir`.
+| Option | Effect |
+| --- | --- |
+| `-t, --target <name>` | Target device (see `forgegraal targets`) |
+| `-o, --output <path>` | Output file (sea) or directory (portable, native host) |
+| `-s, --strategy auto\|sea\|portable` | `auto` picks the target's default. `sea` or `portable` also moves a native-host target onto Node.js |
+| `--pm <name>` | Package manager override (`bun`, `pnpm`, `npm`, `yarn`) |
+| `--node-binary <path>` | Use this Node.js runtime instead of the target's default. Also moves a native-host target onto Node.js |
+| `--node-version <ver>` | Official Node.js version to download (`22` or `22.11.0`) |
+| `--native-libc musl\|musl-dynamic\|glibc` | Libc of the native host. `musl` (static) is the default and runs on glibc and musl systems; it cannot load addons, so a bot that needs one gets a dynamic host automatically |
+| `--ucrt-dir <dir>` | `Redist\ucrt\DLLs\<arch>` from a Windows SDK, shipped app-local for addons that need the Universal C Runtime on Windows 7 (sharp/libvips) |
+| `--offline` | Never download runtimes or fetch addon sources |
+| `--include-dev` | Bundle devDependencies too |
+| `--include-env` | Bundle `.env` files (they usually contain your bot token) |
+| `--allow-native-mismatch` | Bundle native addons built for another platform |
 
 ---
 
@@ -639,6 +676,16 @@ const client = new ForgeClient({
 `$compileBinary` stays disabled unless `allowCompile: true`. Function reference lives in
 `metadata/functions.json` (regenerate with `pnpm docgen`).
 
+| Group | Functions |
+| --- | --- |
+| Build | `$compileBinary`, `$dbDriverCompat`, `$suggestDbDriver`, `$graalVersion` |
+| Binary | `$binarySize`, `$sha256Binary`, `$verifyBinaryHeader`, `$generateSeaConfig` |
+| Policy | `$isTargetSupported`, `$supportedTargets`, `$packageManager`, `$packagerType`, `$canPackageOnBun` |
+| Target | `$listPlatforms`, `$targetName`, `$targetDescription`, `$targetPlatform`, `$targetBits`, `$binaryArchitecture`, `$binaryExtension`, `$binaryFormat`, `$is32BitTarget`, `$is64BitTarget`, `$is32BitOrLegacy`, `$isArmTarget`, `$isIsh`, `$isLegacyWindows` |
+
+`$packagerType` reports the Node.js default (`sea` or `portable`); a target on the native host ignores it
+unless you pass `--strategy`.
+
 ---
 
 ## Development
@@ -647,6 +694,13 @@ const client = new ForgeClient({
 pnpm install
 pnpm typecheck && pnpm build && pnpm test && pnpm check
 ```
+
+`pnpm test` compiles first and runs everything under `test/` with Node's test runner. Checks that need
+something extra skip themselves when it is missing: a built host (`FORGEGRAAL_C`), `qjs` (`FORGEGRAAL_QJS`),
+the musl.cc toolchains on `PATH`, NAN sources (`FORGEGRAAL_NAN_DIR`) and the `fg-wine` Docker image, which
+runs the Windows host. `pnpm conformance` measures an engine against what a ForgeScript bot needs, and
+`quickjs/native/build.sh <target>` builds the C host by hand. `dist/` is committed, so run `pnpm build` before
+committing.
 
 <h3 align="center">Credits</h3><hr>
 
