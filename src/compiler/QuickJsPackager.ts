@@ -71,7 +71,28 @@ const NATIVE_HOST_GLIBC_BUILD_TARGET: Partial<Record<TargetDevice, string>> = {
 	[TargetDevice.LinuxModernX64]: "linux-x64-glibc",
 };
 
-export type NativeHostLibc = "musl" | "glibc";
+/**
+ * Dynamically linked against musl: what an addon needs on Alpine and iSH, where the static host
+ * cannot dlopen. Only built for the targets where musl is the system libc.
+ */
+const NATIVE_HOST_MUSL_DYNAMIC_BUILD_TARGET: Partial<Record<TargetDevice, string>> = {
+	[TargetDevice.LinuxModernX64]: "linux-x64-musl-dyn",
+	[TargetDevice.LinuxX86]: "linux-x86-musl-dyn",
+	[TargetDevice.IosIshX86]: "linux-x86-musl-dyn",
+};
+
+/** "musl" is the static host, "musl-dynamic" and "glibc" the ones that can load native addons. */
+export type NativeHostLibc = "musl" | "musl-dynamic" | "glibc";
+
+function buildTargetFor(target: TargetDevice, libc: NativeHostLibc): string | undefined {
+	const map =
+		libc === "glibc"
+			? NATIVE_HOST_GLIBC_BUILD_TARGET
+			: libc === "musl-dynamic"
+				? NATIVE_HOST_MUSL_DYNAMIC_BUILD_TARGET
+				: NATIVE_HOST_BUILD_TARGET;
+	return map[target];
+}
 
 const PLATFORM_SUFFIX = /-(?:win32|linux|darwin|freebsd|openbsd|android)-.+$/;
 
@@ -128,6 +149,7 @@ const RUNTIME_FILES = [
 	"node-compat.js",
 	"node-web.js",
 	"node-misc.js",
+	"node-inspect.js",
 	"segmenter.js",
 	"segmenter-tables.js",
 	"native-modules.js",
@@ -167,8 +189,8 @@ export class QuickJsPackager {
 	 * property of static linking, not a limitation of the host's Node-API layer.
 	 */
 	public static loadsAddons(target: TargetDevice, libc: NativeHostLibc): boolean {
-		const buildTarget = (libc === "glibc" ? NATIVE_HOST_GLIBC_BUILD_TARGET : NATIVE_HOST_BUILD_TARGET)[target];
-		return buildTarget !== undefined && (buildTarget.startsWith("win-") || buildTarget.endsWith("-glibc"));
+		const buildTarget = buildTargetFor(target, libc);
+		return buildTarget !== undefined && (buildTarget.startsWith("win-") || libc !== "musl");
 	}
 
 	/**
@@ -184,13 +206,15 @@ export class QuickJsPackager {
 		libc: NativeHostLibc = "musl",
 		onLog: (message: string) => void = () => {}
 	): Promise<string> {
-		const map = libc === "glibc" ? NATIVE_HOST_GLIBC_BUILD_TARGET : NATIVE_HOST_BUILD_TARGET;
-		const buildTarget = map[target];
+		const buildTarget = buildTargetFor(target, libc);
 		if (!buildTarget) {
-			if (libc === "glibc") {
+			if (libc !== "musl") {
+				const available = Object.keys(
+					libc === "glibc" ? NATIVE_HOST_GLIBC_BUILD_TARGET : NATIVE_HOST_MUSL_DYNAMIC_BUILD_TARGET
+				);
 				throw new RuntimeError(
-					`No glibc native host build exists yet for ${target}. Only ${Object.keys(NATIVE_HOST_GLIBC_BUILD_TARGET).join(", ")} ` +
-						"do. Drop --native-libc to use the static-musl default instead, which every native-host target has."
+					`No ${libc} native host build exists yet for ${target}. Only ${available.join(", ")} do. ` +
+						"Drop --native-libc to use the static-musl default instead, which every native-host target has."
 				);
 			}
 			throw new RuntimeError(
@@ -221,6 +245,26 @@ export class QuickJsPackager {
 		chmodSync(exe, 0o755);
 		writeFileSync(marker, sourceHash);
 		return exe;
+	}
+
+	/**
+	 * Whether every one of these addon files is linked against musl rather than glibc, which decides
+	 * which dynamic host fits them: a musl-linked addon cannot load into a glibc process, or the reverse.
+	 */
+	public static addonsAreMusl(entries: readonly ArchiveEntry[], paths: readonly string[]): boolean {
+		const sources = paths
+			.map((p) => entries.find((e) => e.path === p)?.source)
+			.filter((s): s is string => typeof s === "string");
+		// glibc-linked code carries GLIBC_x.y symbol-version strings; musl-linked code names musl's loader
+		// or its libc (Rust's musl targets say libc.musl-<arch>.so.1, musl's own toolchains just libc.so).
+		return (
+			sources.length > 0 &&
+			sources.every((file) => {
+				const bytes = readFileSync(file);
+				if (bytes.includes("GLIBC_")) return false;
+				return bytes.includes("libc.musl") || bytes.includes("ld-musl") || bytes.includes("libc.so\0");
+			})
+		);
 	}
 
 	/** Hash of everything under `quickjs/native/` that ends up inside the host binary. */

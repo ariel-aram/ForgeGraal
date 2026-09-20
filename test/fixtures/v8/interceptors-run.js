@@ -1,0 +1,15 @@
+const { Dict } = require("./interceptors.node");
+const d = new Dict();
+const out = {};
+d.foo = "bar";
+d.count = 3;
+out.get = [d.foo, d.count, d.missing];
+out.has = ["foo" in d, "nope" in d];
+out.keys = Object.keys(d);
+d._plain = "declined";
+out.declined = [d._plain, Object.keys(d).includes("_plain"), d.size()];
+out.index = [d[3], d[9], d[12]];
+out.delete = [delete d.foo, "foo" in d, d.foo, d.size()];
+out.proto = [d instanceof Dict, typeof d.size, Object.getPrototypeOf(d) === Dict.prototype];
+out.json = JSON.stringify(d);
+console.log(JSON.stringify(out));

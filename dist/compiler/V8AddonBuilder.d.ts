@@ -13,6 +13,8 @@ export declare function parseGyp(text: string): GypDict;
 export interface V8AddonPackage {
     /** Absolute directory of the package that owns the addon. */
     packageDir: string;
+    /** Where the source to build lives, when it is not next to the addon (fetched from the package's repository). */
+    sourceDir?: string;
     /** Package name as it appears under node_modules. */
     name: string;
     /** Archive paths of that package's V8 `.node` files. */
@@ -26,14 +28,26 @@ export interface V8BuildResult {
 }
 export declare class V8AddonBuilder {
     /** Whether V8 addons can be built for this target at all (needs the target's cross toolchain). */
-    static supports(target: TargetDevice): boolean;
+    static supports(target: TargetDevice, libc?: "musl-dynamic" | string): boolean;
     /** Groups the project's V8 addons by owning package. `entries` are what the archive will contain. */
     static find(entries: readonly ArchiveEntry[]): V8AddonPackage[];
+    /**
+     * A package that ships only its prebuilt binary usually still names its repository, and the tag for
+     * the version installed holds the source. This fetches that (from GitHub, or `mirror`, which serves
+     * codeload.github.com's paths) into the cache and returns the directory holding `binding.gyp`.
+     */
+    static fetchSource(pkg: V8AddonPackage, options?: {
+        offline?: boolean;
+        mirror?: string;
+        onLog?: (message: string) => void;
+    }): Promise<string | null>;
     private static packageDirOf;
     /** Compiles the package's addon for `target`. Throws, naming the reason, when it cannot. */
     static build(options: {
         pkg: V8AddonPackage;
         target: TargetDevice;
+        /** "musl-dynamic" builds for a musl host (Alpine, iSH); anything else uses the target's default. */
+        libc?: string;
         onLog?: (message: string) => void;
     }): V8BuildResult;
     /**

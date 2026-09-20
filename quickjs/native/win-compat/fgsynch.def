@@ -1,0 +1,59 @@
+LIBRARY fgsynch.dll
+EXPORTS
+    WaitOnAddress
+    WakeByAddressSingle
+    WakeByAddressAll
+; The rest of api-ms-win-core-synch-l1-2-0.dll is ordinary kernel32, which Windows 7 has: forwarded, so
+; a descriptor that imports Sleep alongside WaitOnAddress can be redirected whole.
+    AcquireSRWLockExclusive = KERNEL32.AcquireSRWLockExclusive
+    AcquireSRWLockShared = KERNEL32.AcquireSRWLockShared
+    CreateEventA = KERNEL32.CreateEventA
+    CreateEventExA = KERNEL32.CreateEventExA
+    CreateEventExW = KERNEL32.CreateEventExW
+    CreateEventW = KERNEL32.CreateEventW
+    CreateMutexA = KERNEL32.CreateMutexA
+    CreateMutexExA = KERNEL32.CreateMutexExA
+    CreateMutexExW = KERNEL32.CreateMutexExW
+    CreateMutexW = KERNEL32.CreateMutexW
+    CreateSemaphoreExW = KERNEL32.CreateSemaphoreExW
+    CreateSemaphoreW = KERNEL32.CreateSemaphoreW
+    CreateWaitableTimerExW = KERNEL32.CreateWaitableTimerExW
+    CreateWaitableTimerW = KERNEL32.CreateWaitableTimerW
+    DeleteCriticalSection = KERNEL32.DeleteCriticalSection
+    EnterCriticalSection = KERNEL32.EnterCriticalSection
+    InitOnceBeginInitialize = KERNEL32.InitOnceBeginInitialize
+    InitOnceComplete = KERNEL32.InitOnceComplete
+    InitOnceExecuteOnce = KERNEL32.InitOnceExecuteOnce
+    InitializeConditionVariable = KERNEL32.InitializeConditionVariable
+    InitializeCriticalSection = KERNEL32.InitializeCriticalSection
+    InitializeCriticalSectionAndSpinCount = KERNEL32.InitializeCriticalSectionAndSpinCount
+    InitializeCriticalSectionEx = KERNEL32.InitializeCriticalSectionEx
+    InitializeSRWLock = KERNEL32.InitializeSRWLock
+    LeaveCriticalSection = KERNEL32.LeaveCriticalSection
+    OpenEventA = KERNEL32.OpenEventA
+    OpenEventW = KERNEL32.OpenEventW
+    OpenMutexW = KERNEL32.OpenMutexW
+    OpenSemaphoreW = KERNEL32.OpenSemaphoreW
+    OpenWaitableTimerW = KERNEL32.OpenWaitableTimerW
+    ReleaseMutex = KERNEL32.ReleaseMutex
+    ReleaseSRWLockExclusive = KERNEL32.ReleaseSRWLockExclusive
+    ReleaseSRWLockShared = KERNEL32.ReleaseSRWLockShared
+    ReleaseSemaphore = KERNEL32.ReleaseSemaphore
+    ResetEvent = KERNEL32.ResetEvent
+    SetCriticalSectionSpinCount = KERNEL32.SetCriticalSectionSpinCount
+    SetEvent = KERNEL32.SetEvent
+    SetWaitableTimer = KERNEL32.SetWaitableTimer
+    SetWaitableTimerEx = KERNEL32.SetWaitableTimerEx
+    SignalObjectAndWait = KERNEL32.SignalObjectAndWait
+    Sleep = KERNEL32.Sleep
+    SleepConditionVariableCS = KERNEL32.SleepConditionVariableCS
+    SleepConditionVariableSRW = KERNEL32.SleepConditionVariableSRW
+    SleepEx = KERNEL32.SleepEx
+    TryAcquireSRWLockExclusive = KERNEL32.TryAcquireSRWLockExclusive
+    TryAcquireSRWLockShared = KERNEL32.TryAcquireSRWLockShared
+    TryEnterCriticalSection = KERNEL32.TryEnterCriticalSection
+    WaitForMultipleObjectsEx = KERNEL32.WaitForMultipleObjectsEx
+    WaitForSingleObject = KERNEL32.WaitForSingleObject
+    WaitForSingleObjectEx = KERNEL32.WaitForSingleObjectEx
+    WakeAllConditionVariable = KERNEL32.WakeAllConditionVariable
+    WakeConditionVariable = KERNEL32.WakeConditionVariable

@@ -146,6 +146,8 @@ test("linux-modern-x64 is static musl, not dynamic glibc, and really runs on Alp
 		[
 			"run",
 			"--rm",
+			"--platform",
+			"linux/amd64",
 			"-v",
 			`${bin}:/forgegraal-c:ro`,
 			"-v",
@@ -313,16 +315,22 @@ test("--native-libc musl with a native addon explains why it cannot work, rather
 	);
 });
 
-test("a target whose only host is static says so when a native addon needs loading", async () => {
-	await assert.rejects(
-		BinaryPackager.compile({
-			entrypoint: join(lmdbLikeProject(), "src/index.js"),
-			target: TargetDevice.LinuxX86,
-			packageManager: "npm",
-			offline: true,
-			allowNativeMismatch: true,
-		}),
-		/only has a statically linked host/
+test("32-bit Linux and iSH get the dynamic musl host when an addon needs loading", async () => {
+	const result = await BinaryPackager.compile({
+		entrypoint: join(lmdbLikeProject(), "src/index.js"),
+		target: TargetDevice.IosIshX86,
+		packageManager: "npm",
+		offline: true,
+		allowNativeMismatch: true,
+	});
+	assert.equal(result.strategy, "quickjs");
+	assert.ok(result.warnings.some((w) => /dynamically linked musl host/.test(w)));
+	const info = BinaryInspector.inspect(join(result.outputPath, "forgegraal-c"));
+	assert.equal(info?.arch, "x86");
+	assert.match(
+		readFileSync(join(result.outputPath, "forgegraal-c")).toString("latin1"),
+		/ld-musl-i386\.so\.1/,
+		"it is dynamic, so it can dlopen"
 	);
 });
 
@@ -437,4 +445,87 @@ test("an optional accelerator's addon warns instead of failing a native-host bui
 	});
 	assert.equal(result.strategy, "quickjs");
 	assert.ok(result.warnings.some((w) => /msgpackr-extract.*fall back to pure JavaScript/.test(w)));
+});
+
+const hasMuslGcc = spawnSync("x86_64-linux-musl-gcc", ["--version"]).status === 0;
+
+test("a musl-linked addon gets the dynamic musl host and runs on real Alpine", {
+	skip: (!hasGcc && "gcc is not installed") || (!hasMuslGcc && "no musl C compiler") || (!hasDocker() && "no docker"),
+	timeout: 600_000,
+}, async () => {
+	// On Alpine a native addon is a musl-linked shared library, and a static host cannot load it. The
+	// addon's own libc decides which dynamic host it gets, so it works there instead of being refused.
+	const work = mkdtempSync(join(tmpdir(), "forgegraal-muslnapi-"));
+	const addon = join(work, "addon.node");
+	const source = join(process.cwd(), "test/fixtures/napi/addon.c");
+	const include = join(process.cwd(), "quickjs/native/include");
+	const build = spawnSync(
+		"x86_64-linux-musl-gcc",
+		["-shared", "-fPIC", "-O1", "-I", include, "-o", addon, source, "-lpthread"],
+		{ encoding: "utf-8" }
+	);
+	assert.equal(build.status, 0, build.stderr);
+
+	const root = mkdtempSync(join(tmpdir(), "forgegraal-muslnapi-project-"));
+	mkdirSync(join(root, "node_modules/napi-fixture"), { recursive: true });
+	writeFileSync(
+		join(root, "package.json"),
+		JSON.stringify({ name: "musl-bot", dependencies: { "napi-fixture": "1" } })
+	);
+	writeFileSync(
+		join(root, "node_modules/napi-fixture/package.json"),
+		JSON.stringify({ name: "napi-fixture", version: "1.0.0", main: "index.js" })
+	);
+	writeFileSync(join(root, "node_modules/napi-fixture/index.js"), 'module.exports = require("./addon.node");');
+	copyFileSync(addon, join(root, "node_modules/napi-fixture/addon.node"));
+	const script = readFileSync(join(process.cwd(), "test/fixtures/napi/run.js"), "utf-8").replace(
+		'require("./addon.node")',
+		'require("napi-fixture")'
+	);
+	writeFileSync(join(root, "index.js"), script);
+
+	const glibcAddon = join(work, "oracle.node");
+	assert.equal(
+		spawnSync("gcc", ["-shared", "-fPIC", "-O1", "-I", include, "-o", glibcAddon, source, "-lpthread"]).status,
+		0
+	);
+	writeFileSync(
+		join(work, "oracle.js"),
+		readFileSync(join(process.cwd(), "test/fixtures/napi/run.js"), "utf-8").replace("./addon.node", "./oracle.node")
+	);
+	const expected = spawnSync(process.execPath, [join(work, "oracle.js")], { cwd: work, encoding: "utf-8" });
+	assert.equal(expected.status, 0, expected.stderr);
+
+	const result = await BinaryPackager.compile({
+		entrypoint: join(root, "index.js"),
+		target: TargetDevice.LinuxModernX64,
+		packageManager: "npm",
+		offline: true,
+	});
+	assert.equal(result.strategy, "quickjs");
+	assert.ok(
+		result.warnings.some((w) => /dynamically linked musl host/.test(w)),
+		result.warnings.join("\n")
+	);
+
+	const run = spawnSync(
+		"docker",
+		[
+			"run",
+			"--rm",
+			"--platform",
+			"linux/amd64",
+			"-v",
+			`${result.outputPath}:/app:ro`,
+			"-w",
+			"/app",
+			"alpine:latest",
+			"./forgegraal-c",
+			"/app/runtime/node-compat.js",
+			"/app/app/index.js",
+		],
+		{ encoding: "utf-8", timeout: 120_000 }
+	);
+	assert.equal(run.status, 0, run.stderr);
+	assert.equal(run.stdout.trim(), expected.stdout.trim());
 });

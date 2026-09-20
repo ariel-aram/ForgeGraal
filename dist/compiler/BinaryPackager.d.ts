@@ -1,4 +1,4 @@
-import { type TargetDevice, type TargetMetadata } from "../structures";
+import { TargetDevice, type TargetMetadata } from "../structures";
 import { type PackageManager } from "./PolicyEnforcer";
 import { type NativeHostLibc } from "./QuickJsPackager";
 export type BuildStrategy = "auto" | "sea" | "portable";
@@ -48,6 +48,10 @@ export interface BuildOptions {
      * built and run — see NATIVE_HOST_GLIBC_BUILD_TARGET.
      */
     nativeLibc?: NativeHostLibc;
+    /** A mirror serving codeload.github.com's paths, for fetching the source of a V8 addon that ships none. */
+    v8SourceMirror?: string;
+    /** Windows SDK `Redist\\ucrt\\DLLs\\<arch>` folder, shipped app-local for addons that need the Universal C Runtime on Windows 7. */
+    ucrtDir?: string;
     onLog?: (message: string) => void;
 }
 export interface BuildResult {
@@ -92,6 +96,18 @@ export declare class BinaryPackager {
      * left alone: building them would produce something the host then could not use.
      */
     private static rebuildV8Addons;
+    /**
+     * On Windows Vista and 7, redirects the few imports a prebuilt addon (or a DLL it ships) needs that
+     * those systems lack, to compatibility DLLs shipped beside it. See Win7Compat.
+     */
+    private static applyWin7Compat;
+    /**
+     * Some addons and DLLs (libvips, for sharp) link the Universal C Runtime. Windows 7 has it only with
+     * update KB2999226. Microsoft allows shipping it app-local, so when a directory of those DLLs is
+     * given (the `Redist\\ucrt\\DLLs\\<arch>` folder of a Windows SDK) they are copied beside the file
+     * that needs them; without one, the build says what will happen.
+     */
+    private static bundleUcrt;
     private static checkNativeAddons;
     private static selectRuntime;
     /**

@@ -71,6 +71,23 @@ const NATIVE_HOST_BUILD_TARGET = {
 const NATIVE_HOST_GLIBC_BUILD_TARGET = {
     [structures_1.TargetDevice.LinuxModernX64]: "linux-x64-glibc",
 };
+/**
+ * Dynamically linked against musl: what an addon needs on Alpine and iSH, where the static host
+ * cannot dlopen. Only built for the targets where musl is the system libc.
+ */
+const NATIVE_HOST_MUSL_DYNAMIC_BUILD_TARGET = {
+    [structures_1.TargetDevice.LinuxModernX64]: "linux-x64-musl-dyn",
+    [structures_1.TargetDevice.LinuxX86]: "linux-x86-musl-dyn",
+    [structures_1.TargetDevice.IosIshX86]: "linux-x86-musl-dyn",
+};
+function buildTargetFor(target, libc) {
+    const map = libc === "glibc"
+        ? NATIVE_HOST_GLIBC_BUILD_TARGET
+        : libc === "musl-dynamic"
+            ? NATIVE_HOST_MUSL_DYNAMIC_BUILD_TARGET
+            : NATIVE_HOST_BUILD_TARGET;
+    return map[target];
+}
 const PLATFORM_SUFFIX = /-(?:win32|linux|darwin|freebsd|openbsd|android)-.+$/;
 /**
  * Maps an addon's archive path to the package a developer actually depends on. Native packages
@@ -122,6 +139,7 @@ const RUNTIME_FILES = [
     "node-compat.js",
     "node-web.js",
     "node-misc.js",
+    "node-inspect.js",
     "segmenter.js",
     "segmenter-tables.js",
     "native-modules.js",
@@ -138,8 +156,8 @@ class QuickJsPackager {
      * property of static linking, not a limitation of the host's Node-API layer.
      */
     static loadsAddons(target, libc) {
-        const buildTarget = (libc === "glibc" ? NATIVE_HOST_GLIBC_BUILD_TARGET : NATIVE_HOST_BUILD_TARGET)[target];
-        return buildTarget !== undefined && (buildTarget.startsWith("win-") || buildTarget.endsWith("-glibc"));
+        const buildTarget = buildTargetFor(target, libc);
+        return buildTarget !== undefined && (buildTarget.startsWith("win-") || libc !== "musl");
     }
     /**
      * Builds (and caches) the `forgegraal-c` binary for a target by invoking
@@ -150,12 +168,12 @@ class QuickJsPackager {
      * directory convention as `NodeRuntime`.
      */
     static async ensureNativeHost(target, libc = "musl", onLog = () => { }) {
-        const map = libc === "glibc" ? NATIVE_HOST_GLIBC_BUILD_TARGET : NATIVE_HOST_BUILD_TARGET;
-        const buildTarget = map[target];
+        const buildTarget = buildTargetFor(target, libc);
         if (!buildTarget) {
-            if (libc === "glibc") {
-                throw new structures_1.RuntimeError(`No glibc native host build exists yet for ${target}. Only ${Object.keys(NATIVE_HOST_GLIBC_BUILD_TARGET).join(", ")} ` +
-                    "do. Drop --native-libc to use the static-musl default instead, which every native-host target has.");
+            if (libc !== "musl") {
+                const available = Object.keys(libc === "glibc" ? NATIVE_HOST_GLIBC_BUILD_TARGET : NATIVE_HOST_MUSL_DYNAMIC_BUILD_TARGET);
+                throw new structures_1.RuntimeError(`No ${libc} native host build exists yet for ${target}. Only ${available.join(", ")} do. ` +
+                    "Drop --native-libc to use the static-musl default instead, which every native-host target has.");
             }
             throw new structures_1.RuntimeError(`No native host build is wired up yet for ${target}. Only ${Object.keys(NATIVE_HOST_BUILD_TARGET).join(", ")} ` +
                 "are, because those are the ones this build can both compile and actually run.");
@@ -180,6 +198,24 @@ class QuickJsPackager {
         (0, node_fs_1.chmodSync)(exe, 0o755);
         (0, node_fs_1.writeFileSync)(marker, sourceHash);
         return exe;
+    }
+    /**
+     * Whether every one of these addon files is linked against musl rather than glibc, which decides
+     * which dynamic host fits them: a musl-linked addon cannot load into a glibc process, or the reverse.
+     */
+    static addonsAreMusl(entries, paths) {
+        const sources = paths
+            .map((p) => entries.find((e) => e.path === p)?.source)
+            .filter((s) => typeof s === "string");
+        // glibc-linked code carries GLIBC_x.y symbol-version strings; musl-linked code names musl's loader
+        // or its libc (Rust's musl targets say libc.musl-<arch>.so.1, musl's own toolchains just libc.so).
+        return (sources.length > 0 &&
+            sources.every((file) => {
+                const bytes = (0, node_fs_1.readFileSync)(file);
+                if (bytes.includes("GLIBC_"))
+                    return false;
+                return bytes.includes("libc.musl") || bytes.includes("ld-musl") || bytes.includes("libc.so\0");
+            }));
     }
     /** Hash of everything under `quickjs/native/` that ends up inside the host binary. */
     static nativeSourceHash(repoRoot) {

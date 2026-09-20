@@ -246,9 +246,9 @@ tls.connect body        : {"url":"wss://gateway.discord.gg"}
 `pnpm test` runs that same check when `FORGEGRAAL_C` points at a built binary, and skips it
 otherwise.
 
-**Still unverified:** the Windows builds have not been run on real Windows hardware. Linking clean
-and importing nothing too new is necessary, not sufficient — the next step for those targets is a
-real machine, the same bar already met for the `native` build above.
+**Windows:** the Windows hosts now run for real under Wine (see "Windows: what is verified" below), which
+found and fixed bugs that only exist there. What is still unverified is a real Windows 7 / Vista / XP
+machine: Wine implements the newer Windows APIs itself, so it cannot reproduce a Windows 7 load failure.
 
 ### Windows XP
 
@@ -310,8 +310,8 @@ every target where Node.js itself is the actual problem:
 - `win-xp-x86`, `win-vista-x86`, `win-vista-x64`, `win-legacy-x86`, `win-legacy-x64` — built and
   linked clean via `quickjs/native/build.sh {win-xp-x86,win-x86,win-x64}` (one binary per
   architecture/floor pair covers both the Vista and the "Legacy" Windows 7 target sharing it), and
-  checked structurally (right PE machine type, right bitness). **Not yet run on real Windows
-  hardware** — same caveat as the XP build above, now covering five targets instead of one.
+  checked structurally (right PE machine type, right bitness) and, for x64, run under Wine. **Not yet
+  run on a real Windows 7 machine** — see "Windows: what is verified" below.
 
 Still on Node.js, deliberately:
 
@@ -352,8 +352,8 @@ What follows from how it is built:
   not trigger any of this: their libraries fall back to JavaScript, so the portable static host is
   kept and the build warns.
 - **Windows hosts export the Node-API functions** (they are ordinary dynamic executables), and the
-  addon's own delay-load hook binds to them. This is built and checked (145 exported symbols), but
-  like everything Windows here, **not yet run on real Windows hardware**.
+  addon's own delay-load hook binds to them. Run for real under Wine: the fixture addon (async work,
+  thread-safe functions, promises) and real Windows prebuilds of better-sqlite3 and @napi-rs/canvas.
 - **The addon still has to run on the target's OS.** It is a native binary its authors built for
   some Windows or glibc; on a target older than that, loading fails with the system's own message
   (for example Windows error 127, which the host explains), and the build warns for legacy targets.
@@ -368,6 +368,50 @@ What follows from how it is built:
 - Async work runs on real OS threads, one per queued item, and finishes on the JavaScript thread
   through a timer that runs only while work is outstanding and backs off when idle. Weak references
   are real (`WeakRef`), and finalizers run at safe points, never inside the engine's GC.
+
+### Windows: what is verified, and what makes Windows 7 work
+
+Every earlier Windows claim was structural. Running the Windows host under Wine (a Docker image, see
+`test/win7Compat.test.ts`) found bugs that only exist there, all fixed: the engine's `os` module has no
+`getpid`/`exec`/`lstat` on Windows (`node-compat.js` failed at startup, so no Windows bot ever ran);
+the path module treated `C:` as a directory name; `mkdir -p` built `\C:\...`; and a backslashed launcher
+path made the engine fail to find `node-web.js` next to it. Now the compatibility selftest passes 26/26
+on the Windows host, its crypto/zlib/TLS selftest reaches Discord over Winsock + mbedTLS, the Node-API
+fixture output matches Node's, and real Windows prebuilds run: **better-sqlite3** (real SQLite) and
+**@napi-rs/canvas** (Skia, sync and async PNG encode).
+
+**Windows 7 and prebuilt addons.** An addon is a DLL whose imports the OS binds at load. Measuring the
+real Windows prebuilds of lmdb, better-sqlite3, msgpackr-extract, @napi-rs/canvas, davey, mediaplex and
+sharp, the whole gap to Windows 7 is five functions: `WaitOnAddress`, `WakeByAddressSingle/All`
+(Windows 8, in an API-set DLL Windows 7 lacks), `ProcessPrng` (Windows 10) and
+`GetSystemTimePreciseAsFileTime` (Windows 8). So instead of refusing these addons, `forgegraal compile`
+patches them for Vista/7 targets (`src/compiler/Win7Compat.ts`, in place, layout unchanged):
+
+- the API-set DLL and `bcryptprimitives.dll` imports are renamed to ForgeGraal's own `fgsynch.dll` /
+  `fgprng.dll` (`quickjs/native/win-compat/`), shipped beside the addon, where Windows looks first;
+  `fgsynch.dll` implements the three functions and forwards the rest of that API set to kernel32;
+- `GetSystemTimePreciseAsFileTime` is renamed to the signature-identical `GetSystemTimeAsFileTime`.
+
+Verified under Wine on the real Skia addon: with the shim DLL present it loads and renders, with it
+removed the patched addon fails to bind — so the redirect is real, and the shim's code runs. What Wine
+cannot show is Windows 7's own loader accepting the result.
+
+- **The Universal C Runtime** (`api-ms-win-crt-*`, which libvips/sharp link) is a Windows update on 7
+  (KB2999226), not something to reimplement. The build says so; `--ucrt-dir <Redist\ucrt\DLLs\arch>`
+  from a Windows SDK ships it app-local, which Microsoft permits.
+- The patcher only touches imports it knows how to satisfy and only when a whole import descriptor is
+  covered; anything else still fails with the system's own message.
+
+**Alpine and iSH.** A static host cannot `dlopen`, so there are dynamic musl hosts too
+(`linux-x64-musl-dyn`, `linux-x86-musl-dyn`), chosen automatically when the addon is musl-linked or the
+target is musl-only. Verified in real Alpine containers on x86-64 and on i386 (the iSH class): a
+musl-linked addon runs there with output identical to Node's. Dynamic hosts also no longer need
+`libatomic` on the target.
+
+**Console output.** The engine's `console.log` printed every object as `[object Object]`. The host now
+formats like Node (`quickjs/runtime/node-inspect.js`): compared against Node on a corpus of nested
+objects, classes, Map/Set, typed arrays, Buffers, errors, circular references, long numeric arrays, and
+`console.table`, stdout and stderr are byte-identical.
 
 ### Addons written against V8 or NAN
 
@@ -396,15 +440,20 @@ real hardware.
 
 What this cannot do, said plainly:
 
-- **A V8 binary with no source next to it cannot be rebuilt.** The build stops naming the package
-  ("ships only a prebuilt addon compiled against V8"), rather than shipping something that would fail at
-  runtime. Use a version that ships its source, or a Node-API build of it (`better-sqlite3` 13 is one).
+- **A V8 binary with no source next to it** is rebuilt from the source in its repository when it names
+  one: the GitHub tag for the installed version (`gitHead`, `v<version>`, `<version>`) is fetched into the
+  cache. Offline, or with no findable source, the build stops naming the package ("ships only a prebuilt
+  addon compiled against V8") rather than shipping something that would fail at runtime.
 - **The gyp reader is a subset.** A `binding.gyp` that needs something outside it (`actions`, unusual
   command expansions) stops the build and names it.
 - **It is the API addons use, not all of V8.** A call outside it is an ordinary compile error, so a gap
   shows at build time. Named and indexed property interceptors (`ObjectTemplate::SetHandler`) have no
-  Node-API equivalent and fail loudly at the call.
-- **A static host still cannot dlopen**, so this applies wherever the addon-loading (dynamic) host does.
+  Node-API equivalent, so an object whose template carries one is handed out behind a JavaScript Proxy
+  whose traps call the callbacks (get, set, query/`in`, delete, enumerate); a callback that sets no return
+  value declines and the access falls through to the plain object, as in V8. Not modelled: `kNonMasking`
+  and the definer/descriptor callbacks.
+- **A static host cannot dlopen**, so this applies wherever a dynamic host exists: glibc and musl on
+  Linux x64, musl on 32-bit Linux and iSH, and every Windows host.
 
 Getting these to run also fixed the runtime underneath: a stack-trace API (`Error.prepareStackTrace` and
 CallSite objects, which `bindings` uses to find the calling module) and real file names in stack frames

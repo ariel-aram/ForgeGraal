@@ -32,6 +32,8 @@ Compile options:
       --node-binary <path>   Node.js runtime to use instead of the target's default. Also opts a
                               native-host target (below) back onto Node.js
       --node-version <ver>   Official Node.js version to download (e.g. 22 or 22.11.0)
+      --ucrt-dir <dir>       Windows SDK Redist\\ucrt\\DLLs\\<arch> folder to ship app-local, for addons
+                             that need the Universal C Runtime on Windows 7 (sharp/libvips do)
       --native-libc <name>   musl (default) or glibc, for targets that build the ForgeGraal
                               native host. musl runs unmodified on both glibc and musl systems
                               (Alpine included); glibc is only wired up for linux-modern-x64
@@ -233,8 +235,8 @@ async function main() {
             if (!values.target)
                 fail("Please specify the target with --target <name>");
             const nativeLibc = values["native-libc"];
-            if (nativeLibc && nativeLibc !== "musl" && nativeLibc !== "glibc") {
-                fail(`--native-libc must be 'musl' or 'glibc', got '${nativeLibc}'`);
+            if (nativeLibc && nativeLibc !== "musl" && nativeLibc !== "glibc" && nativeLibc !== "musl-dynamic") {
+                fail(`--native-libc must be 'musl', 'musl-dynamic' or 'glibc', got '${nativeLibc}'`);
             }
             const result = await BinaryPackager_1.BinaryPackager.compile({
                 entrypoint: arg,
@@ -244,6 +246,7 @@ async function main() {
                 packageManager: values.pm,
                 nodeBinary: values["node-binary"],
                 nodeVersion: values["node-version"],
+                ucrtDir: values["ucrt-dir"],
                 nativeLibc: nativeLibc,
                 offline: values.offline,
                 includeDev: values["include-dev"],
@@ -281,6 +284,7 @@ function parse() {
             "node-binary": { type: "string" },
             "node-version": { type: "string" },
             "native-libc": { type: "string" },
+            "ucrt-dir": { type: "string" },
             offline: { type: "boolean" },
             "include-dev": { type: "boolean" },
             "include-env": { type: "boolean" },

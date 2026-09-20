@@ -83,6 +83,7 @@ class ArrayBufferView;
 class TypedArray;
 class Uint8Array;
 class Template;
+class PropertyDescriptor;
 class FunctionTemplate;
 class ObjectTemplate;
 class Signature;
@@ -1304,11 +1305,11 @@ private:
 
 template <class T> class PropertyCallbackInfo {
 public:
-    PropertyCallbackInfo(napi_value self, napi_value data) : this_(self), data_(data) {}
+    PropertyCallbackInfo(napi_value self, napi_value data, napi_value holder = nullptr) : this_(self), data_(data), holder_(holder) {}
     Isolate *GetIsolate() const { return Isolate::GetCurrent(); }
     Local<Value> Data() const { return Local<Value>(data_ ? data_ : internal::Undefined()); }
     Local<Object> This() const { return Local<Object>(this_); }
-    Local<Object> Holder() const { return Local<Object>(this_); }
+    Local<Object> Holder() const { return Local<Object>(holder_ ? holder_ : this_); }
     ReturnValue<T> GetReturnValue() const { return ReturnValue<T>(&rv_); }
     bool ShouldThrowOnError() const { return false; }
     napi_value result() const { return rv_; }
@@ -1316,6 +1317,7 @@ public:
 private:
     napi_value this_;
     napi_value data_;
+    napi_value holder_;
     mutable napi_value rv_ = nullptr;
 };
 
@@ -1850,11 +1852,91 @@ inline Maybe<bool> Promise::Resolver::Reject(Local<Context>, Local<v8::Value> va
     return Just(true);
 }
 
+/* Property interceptors. Node-API has no per-access hook, so an object whose template carries a handler
+   is handed out wrapped in a JavaScript Proxy whose traps call these callbacks (see Proxied() below). A
+   callback that sets no return value declines, and the access falls through to the ordinary property, as in V8. */
+typedef void (*GenericNamedPropertyGetterCallback)(Local<Name> property, const PropertyCallbackInfo<Value> &info);
+typedef void (*GenericNamedPropertySetterCallback)(Local<Name> property, Local<Value> value, const PropertyCallbackInfo<Value> &info);
+typedef void (*GenericNamedPropertyQueryCallback)(Local<Name> property, const PropertyCallbackInfo<Integer> &info);
+typedef void (*GenericNamedPropertyDeleterCallback)(Local<Name> property, const PropertyCallbackInfo<Boolean> &info);
+typedef void (*GenericNamedPropertyEnumeratorCallback)(const PropertyCallbackInfo<Array> &info);
+typedef void (*GenericNamedPropertyDescriptorCallback)(Local<Name> property, const PropertyCallbackInfo<Value> &info);
+typedef void (*GenericNamedPropertyDefinerCallback)(Local<Name> property, const PropertyDescriptor &desc, const PropertyCallbackInfo<Value> &info);
+typedef void (*IndexedPropertyGetterCallback)(uint32_t index, const PropertyCallbackInfo<Value> &info);
+typedef void (*IndexedPropertySetterCallback)(uint32_t index, Local<Value> value, const PropertyCallbackInfo<Value> &info);
+typedef void (*IndexedPropertyQueryCallback)(uint32_t index, const PropertyCallbackInfo<Integer> &info);
+typedef void (*IndexedPropertyDeleterCallback)(uint32_t index, const PropertyCallbackInfo<Boolean> &info);
+typedef void (*IndexedPropertyEnumeratorCallback)(const PropertyCallbackInfo<Array> &info);
+typedef void (*IndexedPropertyDescriptorCallback)(uint32_t index, const PropertyCallbackInfo<Value> &info);
+typedef void (*IndexedPropertyDefinerCallback)(uint32_t index, const PropertyDescriptor &desc, const PropertyCallbackInfo<Value> &info);
+
+enum class PropertyHandlerFlags { kNone = 0, kAllCanRead = 1, kNonMasking = 2, kOnlyInterceptStrings = 4, kHasNoSideEffect = 8 };
+inline PropertyHandlerFlags operator|(PropertyHandlerFlags a, PropertyHandlerFlags b)
+{
+    return static_cast<PropertyHandlerFlags>(static_cast<int>(a) | static_cast<int>(b));
+}
+
+/* One configuration type for both, holding the callbacks type-erased: which of the two it is decides how
+   the trap calls them. */
+struct PropertyHandlerConfigurationBase {
+    void *getter = nullptr;
+    void *setter = nullptr;
+    void *query = nullptr;
+    void *deleter = nullptr;
+    void *enumerator = nullptr;
+    Local<Value> data;
+    internal::Ref dataRef; /* `data` outlives its handle scope only as a reference */
+    PropertyHandlerFlags flags = PropertyHandlerFlags::kNone;
+    bool indexed = false;
+};
+struct NamedPropertyHandlerConfiguration : PropertyHandlerConfigurationBase {
+    NamedPropertyHandlerConfiguration(GenericNamedPropertyGetterCallback g, GenericNamedPropertySetterCallback s = nullptr,
+                                      GenericNamedPropertyQueryCallback q = nullptr, GenericNamedPropertyDeleterCallback d = nullptr,
+                                      GenericNamedPropertyEnumeratorCallback e = nullptr, Local<Value> data_ = Local<Value>(),
+                                      PropertyHandlerFlags f = PropertyHandlerFlags::kNone)
+    {
+        getter = reinterpret_cast<void *>(g);
+        setter = reinterpret_cast<void *>(s);
+        query = reinterpret_cast<void *>(q);
+        deleter = reinterpret_cast<void *>(d);
+        enumerator = reinterpret_cast<void *>(e);
+        data = data_;
+        flags = f;
+    }
+    NamedPropertyHandlerConfiguration(GenericNamedPropertyGetterCallback g, GenericNamedPropertySetterCallback s,
+                                      GenericNamedPropertyDescriptorCallback, GenericNamedPropertyDeleterCallback d,
+                                      GenericNamedPropertyEnumeratorCallback e, GenericNamedPropertyDefinerCallback,
+                                      Local<Value> data_ = Local<Value>(), PropertyHandlerFlags f = PropertyHandlerFlags::kNone)
+        : NamedPropertyHandlerConfiguration(g, s, nullptr, d, e, data_, f) {}
+};
+struct IndexedPropertyHandlerConfiguration : PropertyHandlerConfigurationBase {
+    IndexedPropertyHandlerConfiguration(IndexedPropertyGetterCallback g, IndexedPropertySetterCallback s = nullptr,
+                                        IndexedPropertyQueryCallback q = nullptr, IndexedPropertyDeleterCallback d = nullptr,
+                                        IndexedPropertyEnumeratorCallback e = nullptr, Local<Value> data_ = Local<Value>(),
+                                        PropertyHandlerFlags f = PropertyHandlerFlags::kNone)
+    {
+        getter = reinterpret_cast<void *>(g);
+        setter = reinterpret_cast<void *>(s);
+        query = reinterpret_cast<void *>(q);
+        deleter = reinterpret_cast<void *>(d);
+        enumerator = reinterpret_cast<void *>(e);
+        data = data_;
+        flags = f;
+        indexed = true;
+    }
+    IndexedPropertyHandlerConfiguration(IndexedPropertyGetterCallback g, IndexedPropertySetterCallback s,
+                                        IndexedPropertyDescriptorCallback, IndexedPropertyDeleterCallback d,
+                                        IndexedPropertyEnumeratorCallback e, IndexedPropertyDefinerCallback,
+                                        Local<Value> data_ = Local<Value>(), PropertyHandlerFlags f = PropertyHandlerFlags::kNone)
+        : IndexedPropertyHandlerConfiguration(g, s, nullptr, d, e, data_, f) {}
+};
+
 /* ---- templates ----------------------------------------------------------------------------- */
 
 namespace internal {
 
 struct TemplateData;
+struct HandlerSet;
 
 struct Prop {
     Ref name;
@@ -1878,6 +1960,17 @@ struct TemplateData {
     TemplateData *parent = nullptr;
     int internal_fields = 0;
     Ref cached;
+    struct HandlerSet *handlers = nullptr;
+};
+
+/* The interceptors of a template, and the Proxy handler built from them (once, on first use). */
+struct HandlerSet {
+    PropertyHandlerConfigurationBase named;
+    PropertyHandlerConfigurationBase indexed;
+    bool hasNamed = false;
+    bool hasIndexed = false;
+    Ref proxyHandler;
+    Ref sentinel;
 };
 
 inline const napi_type_tag &TemplateTag()
@@ -1907,6 +2000,143 @@ inline TemplateData *AsTemplate(napi_value v)
 }
 
 napi_value Instantiate(TemplateData *td);
+
+/* ---- property interceptors, as a Proxy ------------------------------------------------------ */
+
+inline bool CanonicalIndex(napi_value prop, uint32_t *out)
+{
+    napi_valuetype t;
+    if (napi_typeof(Env(), prop, &t) != napi_ok || t != napi_string) return false;
+    std::string text = ToStd(prop);
+    if (text.empty() || text.size() > 10 || (text.size() > 1 && text[0] == '0')) return false;
+    unsigned long long value = 0;
+    for (char c : text) {
+        if (c < '0' || c > '9') return false;
+        value = value * 10 + static_cast<unsigned>(c - '0');
+    }
+    if (value >= 4294967295ULL) return false;
+    *out = static_cast<uint32_t>(value);
+    return true;
+}
+
+/* Called by the Proxy's traps: (kind, target, property, value, receiver, NOT). Returns what the callback
+   produced, or NOT when it declined (set no return value), which sends the trap on to the plain object. */
+inline napi_value HookTramp(napi_env env, napi_callback_info cbinfo)
+{
+    EnvScope scope(env);
+    HandlerSet *hs = nullptr;
+    size_t argc = 6;
+    napi_value argv[6] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+    napi_get_cb_info(env, cbinfo, &argc, argv, nullptr, reinterpret_cast<void **>(&hs));
+    int32_t kind = 0;
+    napi_get_value_int32(env, argv[0], &kind);
+    napi_value target = argv[1], prop = argv[2], value = argv[3], receiver = argv[4] ? argv[4] : argv[1], NOT = argv[5];
+
+    if (kind == 4) {
+        napi_value list = nullptr;
+        uint32_t used = 0;
+        const PropertyHandlerConfigurationBase *cfgs[2] = {hs->hasNamed ? &hs->named : nullptr, hs->hasIndexed ? &hs->indexed : nullptr};
+        for (const PropertyHandlerConfigurationBase *cfg : cfgs) {
+            if (!cfg || !cfg->enumerator) continue;
+            PropertyCallbackInfo<Array> info(receiver, RefValue(cfg->dataRef), target);
+            if (cfg->indexed) reinterpret_cast<IndexedPropertyEnumeratorCallback>(cfg->enumerator)(info);
+            else reinterpret_cast<GenericNamedPropertyEnumeratorCallback>(cfg->enumerator)(info);
+            napi_value got = info.result();
+            uint32_t n = 0;
+            if (!got || napi_get_array_length(env, got, &n) != napi_ok) continue;
+            if (!list) napi_create_array_with_length(env, 0, &list);
+            for (uint32_t i = 0; i < n; i++) {
+                napi_value item;
+                napi_get_element(env, got, i, &item);
+                napi_set_element(env, list, used++, item);
+            }
+        }
+        return list ? list : NOT;
+    }
+
+    uint32_t index = 0;
+    const PropertyHandlerConfigurationBase *cfg = nullptr;
+    if (hs->hasIndexed && CanonicalIndex(prop, &index)) {
+        cfg = &hs->indexed;
+    } else if (hs->hasNamed) {
+        napi_valuetype t;
+        napi_typeof(env, prop, &t);
+        if (t == napi_string || !(static_cast<int>(hs->named.flags) & static_cast<int>(PropertyHandlerFlags::kOnlyInterceptStrings))) cfg = &hs->named;
+    }
+    if (!cfg) return NOT;
+    napi_value data = RefValue(cfg->dataRef);
+
+    switch (kind) {
+    case 0: {
+        if (!cfg->getter) return NOT;
+        PropertyCallbackInfo<Value> info(receiver, data, target);
+        if (cfg->indexed) reinterpret_cast<IndexedPropertyGetterCallback>(cfg->getter)(index, info);
+        else reinterpret_cast<GenericNamedPropertyGetterCallback>(cfg->getter)(Local<Name>(prop), info);
+        return info.result() ? info.result() : NOT;
+    }
+    case 1: {
+        if (!cfg->setter) return NOT;
+        PropertyCallbackInfo<Value> info(receiver, data, target);
+        if (cfg->indexed) reinterpret_cast<IndexedPropertySetterCallback>(cfg->setter)(index, Local<Value>(value), info);
+        else reinterpret_cast<GenericNamedPropertySetterCallback>(cfg->setter)(Local<Name>(prop), Local<Value>(value), info);
+        return info.result() ? info.result() : NOT;
+    }
+    case 2: {
+        if (!cfg->query) return NOT;
+        PropertyCallbackInfo<Integer> info(receiver, data, target);
+        if (cfg->indexed) reinterpret_cast<IndexedPropertyQueryCallback>(cfg->query)(index, info);
+        else reinterpret_cast<GenericNamedPropertyQueryCallback>(cfg->query)(Local<Name>(prop), info);
+        return info.result() ? info.result() : NOT;
+    }
+    case 3: {
+        if (!cfg->deleter) return NOT;
+        PropertyCallbackInfo<Boolean> info(receiver, data, target);
+        if (cfg->indexed) reinterpret_cast<IndexedPropertyDeleterCallback>(cfg->deleter)(index, info);
+        else reinterpret_cast<GenericNamedPropertyDeleterCallback>(cfg->deleter)(Local<Name>(prop), info);
+        return info.result() ? info.result() : NOT;
+    }
+    }
+    return NOT;
+}
+
+static const char kProxyHandlerSource[] =
+    "(function(hook,NOT){return{"
+    "get(t,p,r){const x=hook(0,t,p,undefined,r,NOT);return x===NOT?Reflect.get(t,p,r):x},"
+    "set(t,p,v,r){const x=hook(1,t,p,v,r,NOT);return x===NOT?Reflect.set(t,p,v,r):true},"
+    "has(t,p){const x=hook(2,t,p,undefined,t,NOT);return x===NOT?Reflect.has(t,p):true},"
+    "deleteProperty(t,p){const x=hook(3,t,p,undefined,t,NOT);return x===NOT?Reflect.deleteProperty(t,p):!!x},"
+    "ownKeys(t){const own=Reflect.ownKeys(t);const x=hook(4,t,undefined,undefined,t,NOT);if(x===NOT)return own;"
+    "const seen=new Set(own);for(let k of Array.from(x)){if(typeof k==='number')k=String(k);"
+    "if(!seen.has(k)){seen.add(k);own.push(k)}}return own},"
+    "getOwnPropertyDescriptor(t,p){const d=Reflect.getOwnPropertyDescriptor(t,p);if(d)return d;"
+    "const q=hook(2,t,p,undefined,t,NOT);const v=hook(0,t,p,undefined,t,NOT);"
+    "if(q===NOT&&v===NOT)return undefined;const a=typeof q==='number'?q:0;"
+    "return{value:v===NOT?undefined:v,writable:!(a&1),enumerable:!(a&2),configurable:true}}"
+    "}})";
+
+inline napi_value ProxyHandler(HandlerSet *hs)
+{
+    napi_value handler = RefValue(hs->proxyHandler);
+    if (handler) return handler;
+    napi_value sentinel, hook, factory, args[2];
+    napi_create_symbol(Env(), nullptr, &sentinel);
+    napi_create_function(Env(), "interceptor", NAPI_AUTO_LENGTH, HookTramp, hs, &hook);
+    napi_run_script(Env(), Str(kProxyHandlerSource), &factory);
+    args[0] = hook;
+    args[1] = sentinel;
+    napi_call_function(Env(), Global(), factory, 2, args, &handler);
+    hs->proxyHandler = KeepRef(handler);
+    hs->sentinel = KeepRef(sentinel);
+    return handler;
+}
+
+/* The object a template with interceptors hands out: the plain object behind a Proxy. */
+inline napi_value Proxied(napi_value target, HandlerSet *hs)
+{
+    napi_value ctor = PropGet(Global(), "Proxy"), args[2] = {target, ProxyHandler(hs)}, out = nullptr;
+    if (!args[1] || napi_new_instance(Env(), ctor, 2, args, &out) != napi_ok || !out) return target;
+    return out;
+}
 
 inline void ApplyProps(napi_value target, TemplateData *td)
 {
@@ -1953,6 +2183,7 @@ inline napi_value CtorTramp(napi_env env, napi_callback_info cbinfo)
         if (!construct) out = rv;
         else if (rv && napi_typeof(env, rv, &t) == napi_ok && (t == napi_object || t == napi_function)) out = rv;
     }
+    if (construct && out && td->instance && td->instance->handlers) out = Proxied(out, td->instance->handlers);
     return out;
 }
 
@@ -1967,7 +2198,7 @@ inline napi_value Instantiate(TemplateData *td)
         napi_create_object(Env(), &o);
         if (td->internal_fields > 0) InternalFields(o, true, static_cast<uint32_t>(td->internal_fields));
         ApplyProps(o, td);
-        return o;
+        return td->handlers ? Proxied(o, td->handlers) : o;
     }
     napi_value ctor;
     const char *name = td->class_name.empty() ? "" : td->class_name.c_str();
@@ -2004,22 +2235,6 @@ public:
     static Local<AccessorSignature> New(Isolate *, Local<FunctionTemplate> = Local<FunctionTemplate>()) { return Local<AccessorSignature>(); }
 };
 
-/* Interceptors need per-access hooks that Node-API has no equivalent of, so declaring them is allowed
-   (NAN's headers refer to them) and using one fails loudly at the call. */
-template <class Getter, class Setter> struct HandlerConfigurationBase {
-    HandlerConfigurationBase(Getter g = nullptr, Setter s = nullptr, void * = nullptr, void * = nullptr, void * = nullptr,
-                             void * = nullptr, Local<Value> data = Local<Value>(), int = 0)
-        : getter(g), setter(s), data(data) {}
-    Getter getter;
-    Setter setter;
-    Local<Value> data;
-};
-struct NamedPropertyHandlerConfiguration {
-    template <class... A> explicit NamedPropertyHandlerConfiguration(A...) {}
-};
-struct IndexedPropertyHandlerConfiguration {
-    template <class... A> explicit IndexedPropertyHandlerConfiguration(A...) {}
-};
 class Template : public Data {
 public:
     void Set(Local<Name> name, Local<Data> value, PropertyAttribute attributes = None)
@@ -2085,10 +2300,29 @@ public:
     {
         AddAccessor(name.raw(), reinterpret_cast<void *>(getter), reinterpret_cast<void *>(setter), true, data.raw(), attribute);
     }
-    void SetHandler(const NamedPropertyHandlerConfiguration &) { Unsupported("named property interceptors"); }
-    void SetHandler(const IndexedPropertyHandlerConfiguration &) { Unsupported("indexed property interceptors"); }
-    static void Unsupported(const char *what);
+    void SetHandler(const NamedPropertyHandlerConfiguration &config)
+    {
+        internal::HandlerSet *hs = Handlers();
+        hs->named = config;
+        hs->named.dataRef = internal::KeepRef(config.data.raw());
+        hs->hasNamed = true;
+    }
+    void SetHandler(const IndexedPropertyHandlerConfiguration &config)
+    {
+        internal::HandlerSet *hs = Handlers();
+        hs->indexed = config;
+        hs->indexed.dataRef = internal::KeepRef(config.data.raw());
+        hs->hasIndexed = true;
+    }
     void SetInternalFieldCount(int value) { internal::AsTemplate(internal::Raw(this))->internal_fields = value; }
+private:
+    internal::HandlerSet *Handlers()
+    {
+        internal::TemplateData *td = internal::AsTemplate(internal::Raw(this));
+        if (!td->handlers) td->handlers = new internal::HandlerSet();
+        return td->handlers;
+    }
+public:
     int InternalFieldCount() { return internal::AsTemplate(internal::Raw(this))->internal_fields; }
     void SetCallAsFunctionHandler(FunctionCallback, Local<Value> = Local<Value>()) {}
     void SetImmutableProto() {}
@@ -2152,13 +2386,6 @@ public:
     }
     template <class T> static FunctionTemplate *Cast(T *v) { return reinterpret_cast<FunctionTemplate *>(v); }
 };
-
-inline void ObjectTemplate::Unsupported(const char *what)
-{
-    std::string text = std::string("ForgeGraal's V8 layer does not support ") + what +
-                       ": Node-API has no per-property access hooks, so the addon cannot install them";
-    napi_throw_error(internal::Env(), "ERR_FORGEGRAAL_UNSUPPORTED", text.c_str());
-}
 
 inline void Template::SetAccessorProperty(Local<Name> name, Local<FunctionTemplate> getter, Local<FunctionTemplate> setter,
                                           PropertyAttribute attribute, AccessControl)
@@ -2876,7 +3103,6 @@ public:
 };
 inline Local<Script> UnboundScriptBind(Local<UnboundScript> u) { return Local<Script>(u.raw()); }
 
-enum class PropertyHandlerFlags { kNone = 0, kAllCanRead = 1, kNonMasking = 2, kOnlyInterceptStrings = 4 };
 
 }  // namespace v8
 

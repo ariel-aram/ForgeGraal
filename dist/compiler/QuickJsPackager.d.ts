@@ -1,6 +1,7 @@
 import { TargetDevice } from "../structures";
 import type { ArchiveEntry } from "./Archive";
-export type NativeHostLibc = "musl" | "glibc";
+/** "musl" is the static host, "musl-dynamic" and "glibc" the ones that can load native addons. */
+export type NativeHostLibc = "musl" | "musl-dynamic" | "glibc";
 /**
  * Maps an addon's archive path to the package a developer actually depends on. Native packages
  * usually ship as a per-platform sibling (`@lmdb/lmdb-win32-x64`, `mediaplex-win32-x64-msvc`), so
@@ -56,6 +57,11 @@ export declare class QuickJsPackager {
      * directory convention as `NodeRuntime`.
      */
     static ensureNativeHost(target: TargetDevice, libc?: NativeHostLibc, onLog?: (message: string) => void): Promise<string>;
+    /**
+     * Whether every one of these addon files is linked against musl rather than glibc, which decides
+     * which dynamic host fits them: a musl-linked addon cannot load into a glibc process, or the reverse.
+     */
+    static addonsAreMusl(entries: readonly ArchiveEntry[], paths: readonly string[]): boolean;
     /** Hash of everything under `quickjs/native/` that ends up inside the host binary. */
     private static nativeSourceHash;
     /**

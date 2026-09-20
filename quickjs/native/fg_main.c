@@ -63,6 +63,18 @@ int main(int argc, char **argv)
         return 2;
     }
 
+#ifdef _WIN32
+    /* The engine resolves a module's relative imports by splitting its name on '/'. A Windows launcher
+       naturally passes backslashes, under which `./node-web.js` next to `C:\\app\\node-compat.js` is never
+       found, so the script path is given forward slashes, which Windows accepts everywhere. */
+    {
+        char *c;
+        for (c = argv[1]; *c; c++) {
+            if (*c == '\\') *c = '/';
+        }
+    }
+#endif
+
     rt = JS_NewRuntime();
     if (!rt) {
         fprintf(stderr, "forgegraal: could not create the JavaScript runtime\n");

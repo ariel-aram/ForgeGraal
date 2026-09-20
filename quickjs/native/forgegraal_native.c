@@ -33,6 +33,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <wincrypt.h>
+#include <io.h>
 typedef int socklen_t;
 #define FG_CLOSE_SOCKET closesocket
 #define FG_SOCKET_ERRNO WSAGetLastError()
@@ -533,6 +534,195 @@ static JSValue fg_decode_utf8(JSContext *ctx, JSValueConst this_val, int argc, J
 
 /* ------------------------------------------------------------------ install */
 
+#ifdef _WIN32
+/* The engine's os module is POSIX-shaped and leaves out getpid and exec on Windows, which node-compat
+   and child_process need. These are the Win32 equivalents, with the same shapes. */
+static JSValue fg_getpid(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    return JS_NewInt32(ctx, (int) GetCurrentProcessId());
+}
+
+/* Quotes one argument the way CommandLineToArgvW will read it back. */
+static void fg_quote_arg(wchar_t **out, size_t *len, size_t *cap, const wchar_t *arg)
+{
+    size_t need = wcslen(arg) * 2 + 4 + *len + 1, i, backslashes = 0;
+    int quote = arg[0] == 0 || wcspbrk(arg, L" \t\n\v\"") != NULL;
+    if (need > *cap) {
+        *cap = need * 2;
+        *out = realloc(*out, *cap * sizeof(wchar_t));
+    }
+    if (*len) (*out)[(*len)++] = L' ';
+    if (quote) (*out)[(*len)++] = L'"';
+    for (i = 0; arg[i]; i++) {
+        if (arg[i] == L'\\') {
+            backslashes++;
+            continue;
+        }
+        if (arg[i] == L'"') {
+            while (backslashes--) (*out)[(*len)++] = L'\\';
+            (*out)[(*len)++] = L'\\';
+        } else {
+            while (backslashes--) (*out)[(*len)++] = L'\\';
+        }
+        backslashes = 0;
+        (*out)[(*len)++] = arg[i];
+    }
+    if (quote) {
+        while (backslashes--) (*out)[(*len)++] = L'\\';
+        (*out)[(*len)++] = L'"';
+    } else {
+        while (backslashes--) (*out)[(*len)++] = L'\\';
+    }
+    (*out)[*len] = 0;
+}
+
+static wchar_t *fg_utf8_to_wide(const char *s)
+{
+    int n = MultiByteToWideChar(CP_UTF8, 0, s, -1, NULL, 0);
+    wchar_t *w = malloc((size_t) n * sizeof(wchar_t));
+    if (w) MultiByteToWideChar(CP_UTF8, 0, s, -1, w, n);
+    return w;
+}
+
+/* exec(argv, { block, cwd, env, stdin, stdout, stderr }) -> exit status (block) or pid. The stdio
+   options are the C runtime descriptors os.open() hands out. */
+static JSValue fg_exec(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    wchar_t *cmd = NULL, *cwd = NULL, *envblock = NULL;
+    size_t len = 0, cap = 0, i, count;
+    STARTUPINFOW si;
+    PROCESS_INFORMATION pi;
+    JSValue arr, opt, v, result = JS_UNDEFINED;
+    int block = 1;
+    DWORD flags = CREATE_UNICODE_ENVIRONMENT;
+    BOOL ok;
+
+    if (argc < 1 || !JS_IsArray(argv[0])) return JS_ThrowTypeError(ctx, "exec(argv, options) expects an array");
+    arr = argv[0];
+    opt = argc > 1 ? argv[1] : JS_UNDEFINED;
+    {
+        JSValue l = JS_GetPropertyStr(ctx, arr, "length");
+        int64_t n = 0;
+        JS_ToInt64(ctx, &n, l);
+        JS_FreeValue(ctx, l);
+        count = (size_t) n;
+    }
+    for (i = 0; i < count; i++) {
+        JSValue item = JS_GetPropertyUint32(ctx, arr, (uint32_t) i);
+        const char *text = JS_ToCString(ctx, item);
+        wchar_t *wide;
+        JS_FreeValue(ctx, item);
+        if (!text) { free(cmd); return JS_EXCEPTION; }
+        wide = fg_utf8_to_wide(text);
+        JS_FreeCString(ctx, text);
+        fg_quote_arg(&cmd, &len, &cap, wide);
+        free(wide);
+    }
+
+    memset(&si, 0, sizeof(si));
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+    si.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+    if (JS_IsObject(opt)) {
+        static const char *const names[3] = { "stdin", "stdout", "stderr" };
+        HANDLE *targets[3];
+        int k;
+        targets[0] = &si.hStdInput; targets[1] = &si.hStdOutput; targets[2] = &si.hStdError;
+        for (k = 0; k < 3; k++) {
+            int32_t fd;
+            v = JS_GetPropertyStr(ctx, opt, names[k]);
+            if (JS_IsNumber(v) && JS_ToInt32(ctx, &fd, v) == 0 && fd >= 0) {
+                HANDLE h = (HANDLE) _get_osfhandle(fd);
+                if (h != INVALID_HANDLE_VALUE) {
+                    SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+                    *targets[k] = h;
+                }
+            }
+            JS_FreeValue(ctx, v);
+        }
+        v = JS_GetPropertyStr(ctx, opt, "block");
+        if (!JS_IsUndefined(v)) block = JS_ToBool(ctx, v);
+        JS_FreeValue(ctx, v);
+        v = JS_GetPropertyStr(ctx, opt, "cwd");
+        if (JS_IsString(v)) {
+            const char *text = JS_ToCString(ctx, v);
+            cwd = fg_utf8_to_wide(text);
+            JS_FreeCString(ctx, text);
+        }
+        JS_FreeValue(ctx, v);
+        v = JS_GetPropertyStr(ctx, opt, "env");
+        if (JS_IsObject(v)) {
+            JSPropertyEnum *tab;
+            uint32_t n, e;
+            size_t elen = 0, ecap = 1024;
+            envblock = malloc(ecap * sizeof(wchar_t));
+            if (JS_GetOwnPropertyNames(ctx, &tab, &n, v, JS_GPN_STRING_MASK | JS_GPN_ENUM_ONLY) == 0) {
+                for (e = 0; e < n; e++) {
+                    const char *key = JS_AtomToCString(ctx, tab[e].atom);
+                    JSValue val = JS_GetProperty(ctx, v, tab[e].atom);
+                    const char *value = JS_ToCString(ctx, val);
+                    if (key && value) {
+                        size_t need = strlen(key) + strlen(value) + 2 + elen + 2;
+                        wchar_t *wk = fg_utf8_to_wide(key), *wv = fg_utf8_to_wide(value);
+                        if (need > ecap) { ecap = need * 2; envblock = realloc(envblock, ecap * sizeof(wchar_t)); }
+                        wcscpy(envblock + elen, wk); elen += wcslen(wk);
+                        envblock[elen++] = L'=';
+                        wcscpy(envblock + elen, wv); elen += wcslen(wv);
+                        envblock[elen++] = 0;
+                        free(wk); free(wv);
+                    }
+                    if (key) JS_FreeCString(ctx, key);
+                    if (value) JS_FreeCString(ctx, value);
+                    JS_FreeValue(ctx, val);
+                }
+                js_free(ctx, tab);
+            }
+            envblock[elen] = 0;
+        }
+        JS_FreeValue(ctx, v);
+    }
+
+    memset(&pi, 0, sizeof(pi));
+    ok = CreateProcessW(NULL, cmd, NULL, NULL, TRUE, flags, envblock, cwd, &si, &pi);
+    free(cmd);
+    free(cwd);
+    free(envblock);
+    if (!ok) return JS_NewInt32(ctx, 127);
+    if (block) {
+        DWORD code = 0;
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        GetExitCodeProcess(pi.hProcess, &code);
+        result = JS_NewInt32(ctx, (int32_t) code);
+    } else {
+        result = JS_NewInt32(ctx, (int32_t) pi.dwProcessId);
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return result;
+}
+#else
+static JSValue fg_getpid(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    return JS_NewInt32(ctx, (int) getpid());
+}
+#endif
+
+/* promiseState(p) -> ["pending"] | ["fulfilled", value] | ["rejected", reason]: what util.inspect needs to
+   print a Promise, which script cannot read. */
+static JSValue fg_promise_state(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    JSValue out = JS_NewArray(ctx);
+    JSPromiseStateEnum state;
+    if (argc < 1) return out;
+    state = JS_PromiseState(ctx, argv[0]);
+    JS_SetPropertyUint32(ctx, out, 0,
+                         JS_NewString(ctx, state == JS_PROMISE_FULFILLED ? "fulfilled" : state == JS_PROMISE_REJECTED ? "rejected" : "pending"));
+    if (state == JS_PROMISE_FULFILLED || state == JS_PROMISE_REJECTED) JS_SetPropertyUint32(ctx, out, 1, JS_PromiseResult(ctx, argv[0]));
+    return out;
+}
+
 /* evalScript(source, filename): the engine's std.evalScript names every script "<evalScript>", which
    makes every stack frame anonymous. Loaded modules need their own file name, both for readable errors
    and for the packages (bindings, depd, ...) that read it back out of a stack trace. */
@@ -558,6 +748,11 @@ static JSValue fg_eval_script(JSContext *ctx, JSValueConst this_val, int argc, J
 
 static const JSCFunctionListEntry fg_native_funcs[] = {
     JS_CFUNC_DEF("evalScript", 2, fg_eval_script),
+    JS_CFUNC_DEF("promiseState", 1, fg_promise_state),
+    JS_CFUNC_DEF("getpid", 0, fg_getpid),
+#ifdef _WIN32
+    JS_CFUNC_DEF("exec", 2, fg_exec),
+#endif
     JS_CFUNC_DEF("connect", 3, fg_connect),
     JS_CFUNC_DEF("read", 1, fg_read),
     JS_CFUNC_DEF("write", 2, fg_write),

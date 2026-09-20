@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -166,6 +167,128 @@ test("a package that ships only a prebuilt V8 binary says exactly that, not a li
 		}),
 		/binary-only ships only a prebuilt addon compiled against V8/
 	);
+});
+
+test("a V8 addon that ships only its binary is rebuilt from the source in its repository", {
+	skip: !hasGxx && "g++ (native and x86_64-linux-gnu) is not installed",
+	timeout: 600_000,
+}, async () => {
+	const work = mkdtempSync(join(tmpdir(), "forgegraal-v8fetch-"));
+	compileFixture(join(fixtures, "raw.cc"), join(work, "oracle.node"));
+	writeFileSync(
+		join(work, "oracle.js"),
+		readFileSync(join(fixtures, "raw-run.js"), "utf-8").replace('"./raw.node"', '"./oracle.node"')
+	);
+	const expected = spawnSync(process.execPath, [join(work, "oracle.js")], { cwd: work, encoding: "utf-8" });
+	assert.equal(expected.status, 0, expected.stderr);
+
+	// The "repository": a tarball shaped like GitHub's, served from a local mirror.
+	const repo = join(work, "widget-1.0.0");
+	mkdirSync(repo);
+	writeFileSync(join(repo, "binding.gyp"), "{ 'targets': [ { 'target_name': 'raw_v8', 'sources': [ 'raw.cc' ] } ] }");
+	copyFileSync(join(fixtures, "raw.cc"), join(repo, "raw.cc"));
+	const tarball = join(work, "widget.tar.gz");
+	assert.equal(spawnSync("tar", ["-czf", tarball, "-C", work, "widget-1.0.0"]).status, 0);
+	// A fresh owner per run keeps a source cached by an earlier run from satisfying this one.
+	const owner = `acme${process.pid}${Date.now()}`;
+	const requested: string[] = [];
+	const server = createServer((req, res) => {
+		requested.push(req.url ?? "");
+		if (req.url === `/${owner}/widget/tar.gz/v1.0.0`) res.end(readFileSync(tarball));
+		else {
+			res.statusCode = 404;
+			res.end();
+		}
+	});
+	await new Promise<void>((done) => server.listen(0, "127.0.0.1", done));
+	const port = (server.address() as { port: number }).port;
+
+	try {
+		const root = mkdtempSync(join(tmpdir(), "forgegraal-v8fetch-project-"));
+		const pkg = join(root, "node_modules/widget");
+		mkdirSync(join(pkg, "build/Release"), { recursive: true });
+		writeFileSync(join(root, "package.json"), JSON.stringify({ name: "bot", dependencies: { widget: "1.0.0" } }));
+		writeFileSync(
+			join(pkg, "package.json"),
+			JSON.stringify({
+				name: "widget",
+				version: "1.0.0",
+				main: "index.js",
+				repository: { type: "git", url: `git+https://github.com/${owner}/widget.git` },
+			})
+		);
+		writeFileSync(join(pkg, "index.js"), 'module.exports = require("./build/Release/raw_v8.node");');
+		const elf = Buffer.alloc(64);
+		elf.write("\x7fELF", 0, "latin1");
+		elf[4] = 2;
+		elf[5] = 1;
+		elf.writeUInt16LE(3, 16);
+		elf.writeUInt16LE(0x3e, 18);
+		writeFileSync(
+			join(pkg, "build/Release/raw_v8.node"),
+			Buffer.concat([elf, Buffer.from("_ZN2v87Isolate10GetCurrentEv")])
+		);
+		writeFileSync(
+			join(root, "index.js"),
+			readFileSync(join(fixtures, "raw-run.js"), "utf-8").replace('require("./raw.node")', 'require("widget")')
+		);
+
+		const offline = await BinaryPackager.compile({
+			entrypoint: join(root, "index.js"),
+			target: TargetDevice.LinuxModernX64,
+			packageManager: "npm",
+			offline: true,
+		}).then(
+			() => "built",
+			(err: Error) => err.message
+		);
+		assert.match(offline, /ships only a prebuilt addon compiled against V8/, "offline, nothing may be fetched");
+		assert.deepEqual(requested, []);
+
+		const result = await BinaryPackager.compile({
+			entrypoint: join(root, "index.js"),
+			target: TargetDevice.LinuxModernX64,
+			packageManager: "npm",
+			v8SourceMirror: `http://127.0.0.1:${port}`,
+		});
+		assert.ok(requested.includes(`/${owner}/widget/tar.gz/v1.0.0`));
+		const run = spawnSync(result.launcherPath, [], { cwd: result.outputPath, encoding: "utf-8", timeout: 60_000 });
+		assert.equal(run.status, 0, run.stderr);
+		assert.equal(run.stdout.trim(), expected.stdout.trim());
+	} finally {
+		server.close();
+	}
+});
+
+test("V8 property interceptors work, as a Proxy over the plain object", {
+	skip: !hasGxx && "g++ (native and x86_64-linux-gnu) is not installed",
+	timeout: 300_000,
+}, async () => {
+	// The interceptors of a template have no Node-API equivalent, so the object is handed out behind a
+	// Proxy whose traps call them. Expectations are V8's documented semantics: a callback that sets no
+	// return value declines and the access falls through to the plain object.
+	const work = mkdtempSync(join(tmpdir(), "forgegraal-interceptors-"));
+	compileFixture(join(fixtures, "interceptors.cc"), join(work, "interceptors.node"));
+	copyFileSync(join(fixtures, "interceptors-run.js"), join(work, "run.js"));
+
+	const { QuickJsPackager } = await import("../dist/index.js");
+	const host = await QuickJsPackager.ensureNativeHost(TargetDevice.LinuxModernX64, "glibc");
+	const run = spawnSync(host, [join(process.cwd(), "quickjs/runtime/node-compat.js"), join(work, "run.js")], {
+		cwd: work,
+		encoding: "utf-8",
+		timeout: 60_000,
+	});
+	assert.equal(run.status, 0, run.stderr);
+	assert.deepEqual(JSON.parse(run.stdout), {
+		get: ["bar", "3", null],
+		has: [true, false],
+		keys: ["count", "foo"],
+		declined: ["declined", true, 2],
+		index: [9, 81, null],
+		delete: [true, false, null, 1],
+		proto: [true, "function", true],
+		json: '{"_plain":"declined","count":"3"}',
+	});
 });
 
 // NAN itself is not a dependency of this repository, so this runs only where it is installed

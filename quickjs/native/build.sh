@@ -24,6 +24,10 @@
 #                opt-in for glibc rather than the default (see ForgeGraal's --native-libc flag),
 #                using the x86_64-linux-gnu triple rather than plain cc so it stays a named,
 #                reproducible target independent of what the build host happens to be.
+#   linux-x64-musl-dyn, linux-x86-musl-dyn
+#                dynamically linked against musl: for Alpine (and iSH), where a native addon is a
+#                musl-linked shared library. A static executable cannot dlopen, so these exist for
+#                the bots that need one. They need the musl loader on the target, which Alpine has.
 #   native       the host platform, using whatever compiler and libc the host provides. For
 #                quick local iteration only -- not what any TargetDevice actually builds against.
 #
@@ -43,7 +47,7 @@ MBEDTLS_VERSION="${MBEDTLS_VERSION:-v3.6.2}"
 MINIZ_VERSION="${MINIZ_VERSION:-3.0.2}"
 
 if [ -z "$TARGET" ]; then
-	echo "usage: $0 <win-xp-x86|win-x86|win-x64|linux-x86|linux-x64|linux-x64-glibc|native> [output-dir]" >&2
+	echo "usage: $0 <win-xp-x86|win-x86|win-x64|linux-x86|linux-x64|linux-x64-glibc|linux-x64-musl-dyn|linux-x86-musl-dyn|native> [output-dir]" >&2
 	exit 2
 fi
 
@@ -59,6 +63,8 @@ case "$TARGET" in
 	linux-x86)          CC=i686-linux-musl-gcc; AR=i686-linux-musl-ar; CROSS=1 ;;
 	linux-x64)          CC=x86_64-linux-musl-gcc; AR=x86_64-linux-musl-ar; CROSS=1 ;;
 	linux-x64-glibc)    CC=x86_64-linux-gnu-gcc; AR=x86_64-linux-gnu-ar; CROSS=1; STATIC=0 ;;
+	linux-x64-musl-dyn) CC=x86_64-linux-musl-gcc; AR=x86_64-linux-musl-ar; CROSS=1; STATIC=0 ;;
+	linux-x86-musl-dyn) CC=i686-linux-musl-gcc; AR=i686-linux-musl-ar; CROSS=1; STATIC=0 ;;
 	native)             CC="${CC:-cc}"; AR="${AR:-ar}"; CROSS=0; STATIC=0 ;;
 	*) echo "error: unknown target '$TARGET'" >&2; exit 2 ;;
 esac
@@ -173,8 +179,9 @@ fi
 	quickjs-ng/dtoa.c quickjs-ng/quickjs-libc.c \
 	quickjs-ng/gen/repl.c quickjs-ng/gen/standalone.c \
 	-L "$MBEDTLS_BUILD/library" -lmbedtls -lmbedx509 -lmbedcrypto \
-	$WIN_LIBS -lm $([ "$WINDOWS" = "1" ] || echo "-ldl -lpthread -latomic") \
+	$WIN_LIBS -lm $([ "$WINDOWS" = "1" ] || echo "-ldl -lpthread") \
 	$NAPI_LDFLAGS \
+	$([ "$WINDOWS" = "1" ] || { [ "$STATIC" = "1" ] && echo "-latomic" || echo "-Wl,-Bstatic -latomic -Wl,-Bdynamic -static-libgcc"; }) \
 	$([ "$STATIC" = "1" ] && echo "-static-libgcc -static")
 
 echo "[build] built $OUT_DIR/$EXE"

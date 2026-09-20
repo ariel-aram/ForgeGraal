@@ -23,9 +23,28 @@ import * as os from "qjs:os";
 import * as std from "qjs:std";
 import * as web from "./node-web.js";
 import * as misc from "./node-misc.js";
+import { createConsole, format as inspectFormat, inspect as inspectValue, setPromiseStateReader } from "./node-inspect.js";
 import { Segmenter } from "./segmenter.js";
 
 const globalObject = globalThis;
+
+// The engine's console prints every object as "[object Object]"; this one formats like Node's.
+{
+	const promiseState = globalThis.__forgegraal_native?.promiseState;
+	if (promiseState) setPromiseStateReader(promiseState);
+	globalObject.console = createConsole(
+		(text) => {
+			std.out.puts(text);
+			std.out.flush();
+		},
+		(text) => {
+			std.out.flush();
+			std.err.puts(text);
+			std.err.flush();
+		},
+		() => os.now()
+	);
+}
 
 /*
  * Timers. The stock `qjs` binary puts these on the global object; the ForgeGraal host embeds only the
@@ -586,7 +605,16 @@ EventEmitter.defaultMaxListeners = 10;
 const isWindows = os.platform === "win32";
 
 function makePath(sep) {
-	const isAbsolute = (p) => (sep === "\\" ? /^([a-zA-Z]:)?[\\/]/.test(p) : p.startsWith("/"));
+	const windows = sep === "\\";
+	// A Windows path's root is a drive ("C:\\", or "C:" alone), a bare separator, or a UNC prefix; a POSIX
+	// path's is "/". Treating "C:" as an ordinary segment (as this once did) mangles every absolute path.
+	const rootOf = (p) => {
+		if (!windows) return p.startsWith("/") ? "/" : "";
+		const m = /^(?:([a-zA-Z]:)([\\/])?|([\\/]))/.exec(p);
+		if (!m) return "";
+		return m[1] ? m[1] + (m[2] ? "\\" : "") : "\\";
+	};
+	const isAbsolute = (p) => (windows ? /^([a-zA-Z]:[\\/]|[\\/])/.test(p) : p.startsWith("/"));
 
 	function normalizeParts(parts, allowAboveRoot) {
 		const out = [];
@@ -604,15 +632,16 @@ function makePath(sep) {
 
 	const path = {
 		sep,
-		delimiter: sep === "\\" ? ";" : ":",
+		delimiter: windows ? ";" : ":",
 		isAbsolute,
 		normalize(p) {
+			const root = rootOf(p);
 			const absolute = isAbsolute(p);
-			const trailing = /[\\/]$/.test(p);
-			let result = normalizeParts(p.split(/[\\/]+/), !absolute).join(sep);
-			if (!result && !absolute) result = ".";
+			const trailing = /[\\/]$/.test(p) && p.length > root.length;
+			let result = normalizeParts(p.slice(root.length).split(/[\\/]+/), !absolute).join(sep);
+			if (!result && !absolute && !root) result = ".";
 			if (result && trailing) result += sep;
-			return absolute ? sep + result : result;
+			return root + result;
 		},
 		join(...parts) {
 			const joined = parts.filter((p) => p !== "" && p !== undefined).join(sep);
@@ -627,17 +656,21 @@ function makePath(sep) {
 				if (isAbsolute(part)) break;
 			}
 			if (!isAbsolute(resolved)) resolved = `${os.getcwd()[0]}${sep}${resolved}`;
-			return path.normalize(resolved).replace(/[\\/]$/, "") || sep;
+			// "\\dir" has no drive of its own: it belongs to the current one.
+			if (windows && /^[\\/]/.test(resolved)) resolved = os.getcwd()[0].slice(0, 2) + resolved;
+			const out = path.normalize(resolved);
+			const root = rootOf(out);
+			return out.length > root.length ? out.replace(/[\\/]$/, "") : out;
 		},
 		dirname(p) {
-			const parts = p.split(/[\\/]/);
-			parts.pop();
-			const head = parts.join(sep);
-			if (!head) return isAbsolute(p) ? sep : ".";
-			return head;
+			const root = rootOf(p);
+			const body = p.slice(root.length).replace(/[\\/]+$/, "");
+			const at = Math.max(body.lastIndexOf("/"), windows ? body.lastIndexOf("\\") : -1);
+			if (at < 0) return root || ".";
+			return root + body.slice(0, at);
 		},
 		basename(p, ext) {
-			const base = p.split(/[\\/]/).pop() ?? "";
+			const base = p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
 			return ext && base.endsWith(ext) ? base.slice(0, -ext.length) : base;
 		},
 		extname(p) {
@@ -646,9 +679,13 @@ function makePath(sep) {
 			return dot > 0 ? base.slice(dot) : "";
 		},
 		relative(from, to) {
-			const fromParts = path.resolve(from).split(/[\\/]/);
-			const toParts = path.resolve(to).split(/[\\/]/);
-			while (fromParts.length && toParts.length && fromParts[0] === toParts[0]) {
+			const a = path.resolve(from);
+			const b = path.resolve(to);
+			if (windows && rootOf(a).toLowerCase() !== rootOf(b).toLowerCase()) return b;
+			const fromParts = a.slice(rootOf(a).length).split(/[\\/]/).filter(Boolean);
+			const toParts = b.slice(rootOf(b).length).split(/[\\/]/).filter(Boolean);
+			const same = (x, y) => (windows ? x.toLowerCase() === y.toLowerCase() : x === y);
+			while (fromParts.length && toParts.length && same(fromParts[0], toParts[0])) {
 				fromParts.shift();
 				toParts.shift();
 			}
@@ -658,7 +695,7 @@ function makePath(sep) {
 			const dir = path.dirname(p);
 			const base = path.basename(p);
 			const ext = path.extname(p);
-			return { root: isAbsolute(p) ? sep : "", dir, base, ext, name: ext ? base.slice(0, -ext.length) : base };
+			return { root: rootOf(p), dir, base, ext, name: ext ? base.slice(0, -ext.length) : base };
 		},
 		format(obj) {
 			return path.join(obj.dir || obj.root || "", obj.base || `${obj.name || ""}${obj.ext || ""}`);
@@ -725,7 +762,7 @@ const fs = {
 		return fs._toStats(info);
 	},
 	lstatSync(file) {
-		const [info, errno] = os.lstat(file);
+		const [info, errno] = (os.lstat ?? os.stat)(file);
 		if (errno !== 0) throw throwErrno(errno, "lstat", file);
 		return fs._toStats(info);
 	},
@@ -753,11 +790,13 @@ const fs = {
 	},
 	mkdirSync(dir, options) {
 		if (options?.recursive) {
-			const parts = pathModule.resolve(dir).split(/[\\/]/);
-			let current = pathModule.isAbsolute(dir) ? pathModule.sep : "";
-			for (const part of parts) {
+			// Built up from the root (a drive on Windows) so no prefix is mistaken for a directory name.
+			const full = pathModule.resolve(dir);
+			const root = pathModule.parse(full).root;
+			let current = root;
+			for (const part of full.slice(root.length).split(/[\\/]/)) {
 				if (!part) continue;
-				current = current === pathModule.sep ? pathModule.sep + part : current ? current + pathModule.sep + part : part;
+				current = !current || current.endsWith(pathModule.sep) ? current + part : current + pathModule.sep + part;
 				if (!fs.existsSync(current)) os.mkdir(current);
 			}
 			return;
@@ -804,7 +843,7 @@ Object.assign(processModule, {
 	arch: globalThis.__forgegraal_native?.arch ?? "ia32",
 	version: "v18.0.0-forgegraal-quickjs",
 	versions: { node: "18.0.0", quickjs: "0.16.2" },
-	pid: os.getpid(),
+	pid: os.getpid?.() ?? globalThis.__forgegraal_native?.getpid?.() ?? 0,
 	execPath: os.exePath?.()[0] ?? "qjs",
 	cwd: () => os.getcwd()[0],
 	chdir: (dir) => os.chdir(dir),
@@ -844,32 +883,8 @@ const util = {
 			fn(...args).then((value) => cb(null, value), cb);
 		};
 	},
-	format(...args) {
-		if (typeof args[0] !== "string") return args.map((a) => util.inspect(a)).join(" ");
-		let index = 1;
-		const formatted = args[0].replace(/%[sdifjoO%]/g, (token) => {
-			if (token === "%%") return "%";
-			if (index >= args.length) return token;
-			const value = args[index++];
-			if (token === "%s") return String(value);
-			if (token === "%d" || token === "%i") return String(Number.parseInt(value, 10));
-			if (token === "%f") return String(Number.parseFloat(value));
-			if (token === "%j") return JSON.stringify(value);
-			return util.inspect(value);
-		});
-		return [formatted, ...args.slice(index).map((a) => (typeof a === "string" ? a : util.inspect(a)))].join(" ");
-	},
-	inspect(value, _options) {
-		if (typeof value === "string") return `'${value}'`;
-		if (typeof value === "bigint") return `${value}n`;
-		if (value instanceof Error) return value.stack ?? String(value);
-		if (value === null || typeof value !== "object") return String(value);
-		try {
-			return JSON.stringify(value, (_k, v) => (typeof v === "bigint" ? `${v}n` : v)) ?? String(value);
-		} catch {
-			return String(value);
-		}
-	},
+	format: inspectFormat,
+	inspect: inspectValue,
 	isDeepStrictEqual(a, b) {
 		return deepEqual(a, b);
 	},
@@ -1635,7 +1650,8 @@ const builtins = {
 		misc.createWorkerThreads(os.Worker, EventEmitter) ??
 		notImplemented("worker_threads", "This engine build has no Worker implementation."),
 	child_process:
-		misc.createChildProcess(os, EventEmitter, {
+		// The engine's os module has no exec on Windows; the host supplies one there.
+		misc.createChildProcess(os.exec ? os : { ...os, exec: nativeLayer?.exec, getpid: nativeLayer?.getpid }, EventEmitter, {
 			Buffer,
 			readText: (path) => std.loadFile(path),
 			tmpdir: () => std.getenv("TMPDIR") ?? std.getenv("TEMP") ?? "/tmp",

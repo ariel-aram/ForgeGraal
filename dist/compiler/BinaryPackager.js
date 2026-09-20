@@ -1,6 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.BinaryPackager = exports.DEFAULT_OUTPUT_DIR = exports.MIN_TRANSPILABLE_NODE_MAJOR = exports.MIN_MODERN_API_NODE_MAJOR = void 0;
+const node_crypto_1 = require("node:crypto");
 const node_fs_1 = require("node:fs");
 const node_path_1 = require("node:path");
 const ForgeDBIntegration_1 = require("../integrations/ForgeDBIntegration");
@@ -20,6 +21,7 @@ const QuickJsPackager_1 = require("./QuickJsPackager");
 const RuntimeRegistry_1 = require("./RuntimeRegistry");
 const SeaPackager_1 = require("./SeaPackager");
 const V8AddonBuilder_1 = require("./V8AddonBuilder");
+const Win7Compat_1 = require("./Win7Compat");
 const YarnPnpCompat_1 = require("./YarnPnpCompat");
 /**
  * Runtimes below this major need their bundled code lowered and the modern platform APIs
@@ -36,6 +38,12 @@ exports.MIN_MODERN_API_NODE_MAJOR = 20;
  */
 exports.MIN_TRANSPILABLE_NODE_MAJOR = 6;
 exports.DEFAULT_OUTPUT_DIR = "forgegraal-out";
+const WIN7_COMPAT_TARGETS = {
+    [structures_1.TargetDevice.WinVistaX64]: "x64",
+    [structures_1.TargetDevice.WinLegacyX64]: "x64",
+    [structures_1.TargetDevice.WinVistaX86]: "ia32",
+    [structures_1.TargetDevice.WinLegacyX86]: "ia32",
+};
 class BinaryPackager {
     /**
      * Builds a ForgeScript bot into a Node.js Single Executable Application when the target
@@ -117,22 +125,26 @@ class BinaryPackager {
                 // Node-API is implemented by the host itself (quickjs/native/napi.c), so a native addon is
                 // not an obstacle here: it loads the way it would under Node.js, provided it was built for
                 // this target's architecture and the host can dlopen at all.
-                BinaryPackager.rebuildV8Addons(project, target, options, warnings, log);
-                BinaryPackager.checkNativeAddons(project.nativeAddons, target, options, warnings, "native");
                 const { required, optional } = (0, QuickJsPackager_1.classifyNativeAddons)(project.nativeAddons.map((a) => a.path));
                 let nativeLibc = options.nativeLibc;
                 if (required.size && !QuickJsPackager_1.QuickJsPackager.loadsAddons(target, nativeLibc ?? "musl")) {
                     const names = [...required.keys()].join(", ");
                     if (nativeLibc === "musl") {
                         throw new structures_1.RuntimeError(`${names} ship native addons, but --native-libc musl builds a statically linked host, and a ` +
-                            "static executable has no dynamic loader to load them with. Use --native-libc glibc, or drop the flag " +
-                            "and let ForgeGraal pick the dynamically linked host itself.");
+                            "static executable has no dynamic loader to load them with. Use --native-libc glibc or musl-dynamic, or drop " +
+                            "the flag and let ForgeGraal pick the dynamically linked host itself.");
                     }
-                    if (!nativeLibc && QuickJsPackager_1.QuickJsPackager.loadsAddons(target, "glibc")) {
-                        nativeLibc = "glibc";
+                    const musl = QuickJsPackager_1.QuickJsPackager.loadsAddons(target, "musl-dynamic");
+                    const glibc = QuickJsPackager_1.QuickJsPackager.loadsAddons(target, "glibc");
+                    const requiredPaths = [...required.values()].flat();
+                    // A musl-linked addon cannot load into a glibc process (or the reverse), so the addon's own
+                    // libc picks the host when both exist; where only one does, that is the one.
+                    const preferMusl = musl && (!glibc || QuickJsPackager_1.QuickJsPackager.addonsAreMusl(project.entries, requiredPaths));
+                    if (!nativeLibc && (preferMusl || glibc)) {
+                        nativeLibc = preferMusl ? "musl-dynamic" : "glibc";
                         warnings.push(`${names} ship native addons, which a static executable cannot load, so this build uses the ` +
-                            "dynamically linked glibc host instead of the default static musl one. It runs on glibc systems " +
-                            "(most Linux distributions) but not on Alpine; pass --native-libc musl only for a bot without addons.");
+                            `dynamically linked ${nativeLibc === "glibc" ? "glibc host, which runs on glibc systems (most Linux distributions) but not on Alpine" : "musl host, which runs on musl systems such as Alpine and iSH but not on glibc ones"} ` +
+                            "instead of the default static one.");
                     }
                     else {
                         throw new structures_1.RuntimeError(`${names} ship native addons, but ${meta.name} only has a statically linked host, and a static ` +
@@ -143,6 +155,10 @@ class BinaryPackager {
                     warnings.push(`${[...optional.keys()].join(", ")} ship native addons that this static host cannot load; ` +
                         "their libraries fall back to pure JavaScript on their own.");
                 }
+                // With the host settled, addons built against V8 are rebuilt for it, then the bundle is checked.
+                await BinaryPackager.rebuildV8Addons(project, target, { ...options, nativeLibc }, warnings, log);
+                BinaryPackager.applyWin7Compat(project, target, options, warnings, log);
+                BinaryPackager.checkNativeAddons(project.nativeAddons, target, options, warnings, "native");
                 log(`Packaging for the ForgeGraal native host on ${meta.name} (no Node.js runtime bundled)`);
                 const nativeHostBinary = await QuickJsPackager_1.QuickJsPackager.ensureNativeHost(target, nativeLibc ?? "musl", log);
                 const outputPath = (0, node_path_1.resolve)(options.output ?? (0, node_path_1.join)(defaultOutDir, `${project.name}-${target}`));
@@ -364,7 +380,7 @@ class BinaryPackager {
      * Packages that are only optional accelerators, with a host that cannot load addons anyway, are
      * left alone: building them would produce something the host then could not use.
      */
-    static rebuildV8Addons(project, target, options, warnings, log) {
+    static async rebuildV8Addons(project, target, options, warnings, log) {
         const packages = V8AddonBuilder_1.V8AddonBuilder.find(project.entries);
         if (!packages.length)
             return;
@@ -373,7 +389,16 @@ class BinaryPackager {
         if (!hostLoadsAddons && !needsHost && options.nativeLibc !== "glibc")
             return;
         for (const pkg of packages) {
-            const built = V8AddonBuilder_1.V8AddonBuilder.build({ pkg, target, onLog: log });
+            if (!(0, node_fs_1.existsSync)((0, node_path_1.join)(pkg.packageDir, "binding.gyp"))) {
+                const sourceDir = await V8AddonBuilder_1.V8AddonBuilder.fetchSource(pkg, {
+                    offline: options.offline,
+                    mirror: options.v8SourceMirror,
+                    onLog: log,
+                });
+                if (sourceDir)
+                    pkg.sourceDir = sourceDir;
+            }
+            const built = V8AddonBuilder_1.V8AddonBuilder.build({ pkg, target, libc: options.nativeLibc, onLog: log });
             const dir = V8AddonBuilder_1.V8AddonBuilder.archiveDirOf(pkg.addonPaths[0]);
             V8AddonBuilder_1.V8AddonBuilder.replace(project.entries, pkg, built, dir);
             project.nativeAddons = project.nativeAddons.filter((a) => !pkg.addonPaths.includes(a.path));
@@ -382,6 +407,88 @@ class BinaryPackager {
             warnings.push(`${pkg.name} was compiled against V8, which only Node.js has, so it was rebuilt from source against ForgeGraal's ` +
                 `V8 layer for ${target}. The prebuilt binary it shipped was not used.`);
         }
+    }
+    /**
+     * On Windows Vista and 7, redirects the few imports a prebuilt addon (or a DLL it ships) needs that
+     * those systems lack, to compatibility DLLs shipped beside it. See Win7Compat.
+     */
+    static applyWin7Compat(project, target, options, warnings, log) {
+        const arch = WIN7_COMPAT_TARGETS[target];
+        if (!arch)
+            return;
+        const patchedDirs = new Set();
+        const ucrtDirs = new Set();
+        const cache = (0, node_path_1.join)(NodeRuntime_1.NodeRuntime.cacheDir(), "win7-patched");
+        for (const entry of project.entries) {
+            if (typeof entry.source !== "string" || !/\.(node|dll)$/i.test(entry.path))
+                continue;
+            let patch;
+            try {
+                const bytes = (0, node_fs_1.readFileSync)(entry.source);
+                if (Win7Compat_1.Win7Compat.needsUcrt(bytes))
+                    ucrtDirs.add(node_path_1.posix.dirname(entry.path));
+                patch = Win7Compat_1.Win7Compat.patch(bytes);
+            }
+            catch {
+                continue;
+            }
+            if (!patch)
+                continue;
+            if (patch.unresolved.length) {
+                warnings.push(`${entry.path} imports things Windows 7 does not have that ForgeGraal cannot supply: ${patch.unresolved.join("; ")}. ` +
+                    "It will fail to load there with the system's own message.");
+            }
+            if (!patch.changes.length)
+                continue;
+            const digest = (0, node_crypto_1.createHash)("sha256").update(patch.buffer).digest("hex").slice(0, 24);
+            const patched = (0, node_path_1.join)(cache, `${digest}-${(0, node_path_1.basename)(entry.path)}`);
+            if (!(0, node_fs_1.existsSync)(patched)) {
+                (0, node_fs_1.mkdirSync)(cache, { recursive: true });
+                (0, node_fs_1.writeFileSync)(patched, patch.buffer);
+            }
+            entry.source = patched;
+            patchedDirs.add(node_path_1.posix.dirname(entry.path));
+            log(`Windows 7: ${entry.path}: ${patch.changes.join(", ")}`);
+        }
+        BinaryPackager.bundleUcrt(project, ucrtDirs, options, warnings, log);
+        if (!patchedDirs.size)
+            return;
+        const shimDir = Win7Compat_1.Win7Compat.ensureShims(arch);
+        for (const dir of patchedDirs) {
+            for (const name of Win7Compat_1.Win7Compat.shimNames()) {
+                const path = `${dir}/${name}`;
+                if (!project.entries.some((e) => e.path === path))
+                    project.entries.push({ path, source: (0, node_path_1.join)(shimDir, name), mode: 0o755 });
+            }
+        }
+        warnings.push("Some addons import Windows functions that Windows Vista and 7 lack (WaitOnAddress, ProcessPrng, " +
+            "GetSystemTimePreciseAsFileTime). They were redirected to ForgeGraal's compatibility DLLs, which ship beside them.");
+    }
+    /**
+     * Some addons and DLLs (libvips, for sharp) link the Universal C Runtime. Windows 7 has it only with
+     * update KB2999226. Microsoft allows shipping it app-local, so when a directory of those DLLs is
+     * given (the `Redist\\ucrt\\DLLs\\<arch>` folder of a Windows SDK) they are copied beside the file
+     * that needs them; without one, the build says what will happen.
+     */
+    static bundleUcrt(project, dirs, options, warnings, log) {
+        if (!dirs.size)
+            return;
+        const source = options.ucrtDir ?? process.env.FORGEGRAAL_UCRT_DIR;
+        if (!source || !(0, node_fs_1.existsSync)(source)) {
+            warnings.push(`${[...dirs].join(", ")} need the Universal C Runtime, which Windows 7 has only with update KB2999226. ` +
+                "Install that update on the target, or pass --ucrt-dir <Windows SDK Redist\\ucrt\\DLLs\\<arch>> to ship the " +
+                "runtime app-local (Microsoft permits redistributing it).");
+            return;
+        }
+        const files = (0, node_fs_1.readdirSync)(source).filter((f) => /^(ucrtbase|api-ms-win-crt-.*)\.dll$/i.test(f));
+        for (const dir of dirs) {
+            for (const f of files) {
+                const path = `${dir}/${f}`;
+                if (!project.entries.some((e) => e.path === path))
+                    project.entries.push({ path, source: (0, node_path_1.join)(source, f), mode: 0o755 });
+            }
+        }
+        log(`Bundled the Universal C Runtime (${files.length} DLLs) beside ${[...dirs].join(", ")}`);
     }
     static checkNativeAddons(addons, target, options, warnings, host = "node") {
         // Prebuilt packages often ship addons for several platforms: a package is fine

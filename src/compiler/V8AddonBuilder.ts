@@ -277,6 +277,31 @@ const TOOLCHAINS: Partial<Record<TargetDevice, Toolchain>> = {
 	},
 };
 
+/** Where the host is musl-based (Alpine, iSH), addons are musl-linked, and are built with musl.cc's toolchains. */
+const MUSL_TOOLCHAINS: Partial<Record<TargetDevice, Toolchain>> = {
+	[TargetDevice.LinuxModernX64]: {
+		cc: "x86_64-linux-musl-gcc",
+		cxx: "x86_64-linux-musl-g++",
+		windows: false,
+		os: "linux",
+		arch: "x64",
+	},
+	[TargetDevice.LinuxX86]: {
+		cc: "i686-linux-musl-gcc",
+		cxx: "i686-linux-musl-g++",
+		windows: false,
+		os: "linux",
+		arch: "ia32",
+	},
+	[TargetDevice.IosIshX86]: {
+		cc: "i686-linux-musl-gcc",
+		cxx: "i686-linux-musl-g++",
+		windows: false,
+		os: "linux",
+		arch: "ia32",
+	},
+};
+
 function hasTool(tool: string): boolean {
 	return spawnSync("sh", ["-c", `command -v ${tool}`], { encoding: "utf-8" }).status === 0;
 }
@@ -286,6 +311,8 @@ function hasTool(tool: string): boolean {
 export interface V8AddonPackage {
 	/** Absolute directory of the package that owns the addon. */
 	packageDir: string;
+	/** Where the source to build lives, when it is not next to the addon (fetched from the package's repository). */
+	sourceDir?: string;
 	/** Package name as it appears under node_modules. */
 	name: string;
 	/** Archive paths of that package's V8 `.node` files. */
@@ -303,8 +330,8 @@ const HOST_EXE_NAME = "forgegraal-c.exe";
 
 export class V8AddonBuilder {
 	/** Whether V8 addons can be built for this target at all (needs the target's cross toolchain). */
-	public static supports(target: TargetDevice): boolean {
-		return target in TOOLCHAINS;
+	public static supports(target: TargetDevice, libc?: "musl-dynamic" | string): boolean {
+		return libc === "musl-dynamic" ? target in MUSL_TOOLCHAINS : target in TOOLCHAINS;
 	}
 
 	/** Groups the project's V8 addons by owning package. `entries` are what the archive will contain. */
@@ -327,6 +354,67 @@ export class V8AddonBuilder {
 		return [...packages.values()];
 	}
 
+	/**
+	 * A package that ships only its prebuilt binary usually still names its repository, and the tag for
+	 * the version installed holds the source. This fetches that (from GitHub, or `mirror`, which serves
+	 * codeload.github.com's paths) into the cache and returns the directory holding `binding.gyp`.
+	 */
+	public static async fetchSource(
+		pkg: V8AddonPackage,
+		options: { offline?: boolean; mirror?: string; onLog?: (message: string) => void } = {}
+	): Promise<string | null> {
+		if (options.offline) return null;
+		let manifest: {
+			name?: string;
+			version?: string;
+			gitHead?: string;
+			repository?: string | { url?: string; directory?: string };
+		};
+		try {
+			manifest = JSON.parse(readFileSync(join(pkg.packageDir, "package.json"), "utf-8"));
+		} catch {
+			return null;
+		}
+		const repo = typeof manifest.repository === "string" ? manifest.repository : manifest.repository?.url;
+		const directory = typeof manifest.repository === "object" ? (manifest.repository?.directory ?? "") : "";
+		const match =
+			/(?:github(?:\.com)?[:/])([\w.-]+)\/([\w.-]+?)(?:\.git)?(?:[#/].*)?$/i.exec(repo ?? "") ??
+			/^([\w.-]+)\/([\w.-]+)$/.exec(repo ?? "");
+		if (!match || !manifest.version) return null;
+		const [, owner, name] = match;
+		const cache = join(NodeRuntime.cacheDir(), "v8-sources", `${owner}-${name}-${manifest.version}`);
+		const found = (dir: string) => (existsSync(join(dir, "binding.gyp")) ? dir : null);
+		if (existsSync(cache)) return found(join(cache, directory));
+
+		const base = (options.mirror ?? "https://codeload.github.com").replace(/\/$/, "");
+		const refs = [manifest.gitHead, `v${manifest.version}`, manifest.version].filter((r): r is string => Boolean(r));
+		for (const ref of refs) {
+			let response: Response;
+			try {
+				response = await fetch(`${base}/${owner}/${name}/tar.gz/${ref}`);
+			} catch {
+				continue;
+			}
+			if (!response.ok) continue;
+			options.onLog?.(`${pkg.name} ships no source: fetching ${owner}/${name}@${ref} from its repository`);
+			const work = mkdtempSync(join(tmpdir(), "forgegraal-v8src-"));
+			try {
+				const archive = join(work, "source.tar.gz");
+				writeFileSync(archive, Buffer.from(await response.arrayBuffer()));
+				mkdirSync(cache, { recursive: true });
+				const extract = spawnSync("tar", ["-xzf", archive, "-C", cache, "--strip-components=1"], { encoding: "utf-8" });
+				if (extract.status !== 0) {
+					rmSync(cache, { recursive: true, force: true });
+					continue;
+				}
+			} finally {
+				rmSync(work, { recursive: true, force: true });
+			}
+			return found(join(cache, directory));
+		}
+		return null;
+	}
+
 	private static packageDirOf(file: string): string | null {
 		let dir = dirname(file);
 		for (let depth = 0; depth < 8; depth++) {
@@ -342,11 +430,13 @@ export class V8AddonBuilder {
 	public static build(options: {
 		pkg: V8AddonPackage;
 		target: TargetDevice;
+		/** "musl-dynamic" builds for a musl host (Alpine, iSH); anything else uses the target's default. */
+		libc?: string;
 		onLog?: (message: string) => void;
 	}): V8BuildResult {
 		const { pkg, target } = options;
 		const log = options.onLog ?? (() => {});
-		const toolchain = TOOLCHAINS[target];
+		const toolchain = options.libc === "musl-dynamic" ? MUSL_TOOLCHAINS[target] : TOOLCHAINS[target];
 		const meta = TARGET_METADATA_MAP[target];
 		if (!toolchain) {
 			throw new RuntimeError(
@@ -354,12 +444,14 @@ export class V8AddonBuilder {
 					`target's own C++ toolchain, which is not wired up for ${meta.name} yet.`
 			);
 		}
-		const gypFile = join(pkg.packageDir, "binding.gyp");
+		const root = pkg.sourceDir ?? pkg.packageDir;
+		const gypFile = join(root, "binding.gyp");
 		if (!existsSync(gypFile)) {
 			throw new RuntimeError(
 				`${pkg.name} ships only a prebuilt addon compiled against V8 -- there is no binding.gyp or source next to it -- ` +
-					"and a V8 binary cannot load outside Node.js. Use a version of the package that ships its source, or a " +
-					"Node-API build of it."
+					"and a V8 binary cannot load outside Node.js. ForgeGraal looks for the source in the package's " +
+					"repository too (a GitHub tag matching its version); that found nothing or was not allowed (offline). " +
+					"Use a version of the package that ships its source, or a Node-API build of it."
 			);
 		}
 		for (const tool of [toolchain.cc, toolchain.cxx, ...(toolchain.dlltool ? [toolchain.dlltool] : [])]) {
@@ -375,7 +467,7 @@ export class V8AddonBuilder {
 		const vars: Vars = {
 			OS: toolchain.os,
 			target_arch: toolchain.arch,
-			module_root_dir: pkg.packageDir,
+			module_root_dir: root,
 			node_root_dir: shimDir,
 			library: "static_library",
 			...V8AddonBuilder.topLevelVariables(gyp),
@@ -391,7 +483,7 @@ export class V8AddonBuilder {
 		}
 
 		const settings = V8AddonBuilder.resolveTarget(main, gypFile, vars, pkg.packageDir);
-		const cacheKey = V8AddonBuilder.cacheKey(pkg.packageDir, settings, target, shimDir);
+		const cacheKey = V8AddonBuilder.cacheKey(pkg.packageDir, settings, `${target}:${options.libc ?? ""}`, shimDir);
 		const cacheDir = join(NodeRuntime.cacheDir(), "v8-addons", cacheKey);
 		const outFile = join(cacheDir, `${settings.name}.node`);
 		const relativePath = `build/Release/${settings.name}.node`;
@@ -448,7 +540,7 @@ export class V8AddonBuilder {
 					const res = spawnSync(cxx ? toolchain.cxx : toolchain.cc, filtered, { encoding: "utf-8" });
 					if (res.status !== 0) {
 						throw new RuntimeError(
-							`Compiling ${relative(pkg.packageDir, source)} of ${pkg.name} for ${meta.name} failed:\n${(res.stderr || res.stdout).trim().split("\n").slice(0, 25).join("\n")}`
+							`Compiling ${relative(root, source)} of ${pkg.name} for ${meta.name} failed:\n${(res.stderr || res.stdout).trim().split("\n").slice(0, 25).join("\n")}`
 						);
 					}
 					objects.push(object);
@@ -535,7 +627,7 @@ export class V8AddonBuilder {
 			}
 		);
 		out = out.replace(/<\(([A-Za-z_]+)\)/g, (_m, name: string) => {
-			if (name === "module_root_dir") return packageDir;
+			if (name === "module_root_dir") return vars.module_root_dir ?? packageDir;
 			if (name === "DEPTH") return gypDir;
 			if (name in vars) return vars[name];
 			throw new RuntimeError(
@@ -579,7 +671,7 @@ export class V8AddonBuilder {
 	/** `deps/zlib.gyp:zlib` -> the settings of that target in that file. */
 	private static resolveDependency(spec: string, packageDir: string, vars: Vars): GypTargetSettings {
 		const [file, name] = spec.split(":");
-		const gypFile = resolve(packageDir, file);
+		const gypFile = resolve(vars.module_root_dir ?? packageDir, file);
 		if (!existsSync(gypFile)) throw new RuntimeError(`binding.gyp depends on '${spec}', but ${file} does not exist.`);
 		const gyp = parseGyp(readFileSync(gypFile, "utf-8"));
 		const merged: Vars = { ...vars, ...V8AddonBuilder.topLevelVariables(gyp) };
@@ -623,12 +715,7 @@ export class V8AddonBuilder {
 		return lib;
 	}
 
-	private static cacheKey(
-		packageDir: string,
-		settings: GypTargetSettings,
-		target: TargetDevice,
-		shimDir: string
-	): string {
+	private static cacheKey(packageDir: string, settings: GypTargetSettings, target: string, shimDir: string): string {
 		const hash = createHash("sha256");
 		hash.update(target);
 		const addFiles = (dir: string) => {
