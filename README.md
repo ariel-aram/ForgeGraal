@@ -650,7 +650,7 @@ pnpm typecheck && pnpm build && pnpm test && pnpm check
 
 <h3 align="center">Credits</h3><hr>
 
-- [ForgeScript](https://github.com/tryforge/ForgeScript) by the TryForge team.
+- [ForgeScript](https://github.com/tryforge/ForgeScript) by the BotForge team.
 - [quickjs-ng](https://github.com/quickjs-ng/quickjs), [mbedTLS](https://github.com/Mbed-TLS/mbedtls) and
   [miniz](https://github.com/richgel999/miniz) power the native host.
 
