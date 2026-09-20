@@ -4,7 +4,7 @@
 <p align="center">
 <a href="https://github.com/ariel-aram/ForgeGraal/"><img src="https://img.shields.io/github/package-json/v/ariel-aram/ForgeGraal/main?label=forgegraal&color=5c16d4" alt="forgegraal"></a>
 <a href="https://github.com/tryforge/ForgeScript/"><img src="https://img.shields.io/github/package-json/v/tryforge/ForgeScript/main?label=@tryforge/forgescript&color=5c16d4" alt="@tryforge/forgescript"></a>
-<a href="https://discord.gg/hcJgjzPvqb"><img src="https://img.shields.io/discord/739934735387721768?logo=discord" alt="Discord"></a>
+<a href="https://discord.gg/bTnyngvYh7"><img src="https://img.shields.io/discord/739934735387721768?logo=discord" alt="Discord"></a>
 </p>
 <h2 align="center">Contents</h2>
 
