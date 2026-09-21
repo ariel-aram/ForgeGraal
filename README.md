@@ -1,9 +1,8 @@
-<p align="center"><img src="https://raw.githubusercontent.com/ariel-aram/ForgeGraal/main/assets/logo.webp" alt="Graak logo" width="256"></p>
+<p align="center"><img src="https://raw.githubusercontent.com/ariel-aram/graak/main/assets/logo.webp" alt="Graak logo" width="256"></p>
 <h1 align="center">Graak</h1><p align="center">Turn a JavaScript or TypeScript program into one standalone executable that runs on every device, legacy Windows included, with no Node.js installed on the device.</p>
 
 <p align="center">
-<a href="https://github.com/ariel-aram/ForgeGraal/"><img src="https://img.shields.io/github/package-json/v/ariel-aram/ForgeGraal/main?label=graak&color=5c16d4" alt="graak"></a>
-<a href="https://discord.gg/bTnyngvYh7"><img src="https://img.shields.io/discord/739934735387721768?logo=discord" alt="Discord"></a>
+<a href="https://github.com/ariel-aram/graak/"><img src="https://img.shields.io/github/package-json/v/ariel-aram/graak/main?label=graak&color=3893d9" alt="graak"></a>
 </p>
 <h2 align="center">Contents</h2>
 
