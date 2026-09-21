@@ -24,6 +24,8 @@ export interface CollectedProject {
     /** Highest `engines.node` lower bound across the bundle, if any. */
     minNode: string | null;
     usesBunApis: string[];
+    /** The subset of usesBunApis that reach past `bun:sqlite`, which the native host provides. */
+    usesBunGlobals: string[];
     packages: number;
 }
 /** Entry extensions only the native host can run: it converts them at build time. Node.js targets need built JavaScript. */
@@ -46,6 +48,7 @@ export declare class ProjectCollector {
     private readonly entries;
     private readonly nativeAddons;
     private readonly usesBunApis;
+    private readonly usesBunGlobals;
     private minNode;
     /** Destination package dir (e.g. "node_modules/a/node_modules/b") -> real source dir. */
     private readonly placed;

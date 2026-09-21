@@ -46,6 +46,10 @@ QUICKJS_VERSION="${QUICKJS_VERSION:-v0.16.2}"
 MBEDTLS_VERSION="${MBEDTLS_VERSION:-v3.6.2}"
 MINIZ_VERSION="${MINIZ_VERSION:-3.0.2}"
 WASM3_VERSION="${WASM3_VERSION:-v0.5.0}"
+SQLITE_VERSION="${SQLITE_VERSION:-3460100}"
+SQLITE_YEAR="${SQLITE_YEAR:-2024}"
+LIBFFI_VERSION="${LIBFFI_VERSION:-3.4.6}"
+LIBUV_VERSION="${LIBUV_VERSION:-1.48.0}"
 
 if [ -z "$TARGET" ]; then
 	echo "usage: $0 <win-xp-x86|win-x86|win-x64|linux-x86|linux-x64|linux-x64-glibc|linux-x64-musl-dyn|linux-x86-musl-dyn|native> [output-dir]" >&2
@@ -109,6 +113,33 @@ if [ ! -d wasm3 ]; then
 	git clone -q --depth 1 --branch "$WASM3_VERSION" https://github.com/wasm3/wasm3.git wasm3
 fi
 
+if [ ! -f sqlite/sqlite3.c ]; then
+	echo "[build] fetching the SQLite amalgamation $SQLITE_VERSION"
+	mkdir -p sqlite
+	(cd sqlite && curl -sL -o sqlite.zip "https://www.sqlite.org/$SQLITE_YEAR/sqlite-amalgamation-$SQLITE_VERSION.zip" \
+		&& (unzip -oqj sqlite.zip || python3 -c "
+import zipfile
+z = zipfile.ZipFile('sqlite.zip')
+for n in z.namelist():
+    if n.endswith(('.c', '.h')):
+        open(n.split('/')[-1], 'wb').write(z.read(n))
+"))
+fi
+if [ ! -f libffi/configure ]; then
+	echo "[build] fetching libffi $LIBFFI_VERSION"
+	mkdir -p libffi
+	(cd libffi && curl -sL -o libffi.tar.gz "https://github.com/libffi/libffi/releases/download/v$LIBFFI_VERSION/libffi-$LIBFFI_VERSION.tar.gz" \
+		&& tar -xzf libffi.tar.gz --strip-components=1)
+fi
+
+if [ ! -f libuv/include/uv.h ]; then
+	# Headers only: an addon that calls libuv directly lays its requests out by them (see napi.c).
+	echo "[build] fetching the libuv $LIBUV_VERSION headers"
+	mkdir -p libuv
+	(cd libuv && curl -sL -o libuv.tar.gz "https://github.com/libuv/libuv/archive/refs/tags/v$LIBUV_VERSION.tar.gz" \
+		&& tar -xzf libuv.tar.gz --strip-components=1 "libuv-$LIBUV_VERSION/include")
+fi
+
 # ---- patches -------------------------------------------------------------------------------
 
 XP_FLAGS=""
@@ -144,6 +175,26 @@ if [ ! -f "$MBEDTLS_BUILD/library/libmbedtls.a" ]; then
 	cmake --build "$MBEDTLS_BUILD" -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)" >/dev/null
 fi
 
+# ---- libffi --------------------------------------------------------------------------------
+
+LIBFFI_BUILD="libffi/build-$TARGET"
+if [ ! -f "$LIBFFI_BUILD/.libs/libffi.a" ]; then
+	echo "[build] building libffi"
+	mkdir -p "$LIBFFI_BUILD"
+	FFI_HOST=""
+	case "$TARGET" in
+		win-xp-x86|win-x86) FFI_HOST="--host=i686-w64-mingw32" ;;
+		win-x64)            FFI_HOST="--host=x86_64-w64-mingw32" ;;
+		linux-x86|linux-x86-musl-dyn) FFI_HOST="--host=i686-linux-musl" ;;
+		linux-x64|linux-x64-musl-dyn) FFI_HOST="--host=x86_64-linux-musl" ;;
+		linux-x64-glibc)    FFI_HOST="--host=x86_64-linux-gnu" ;;
+	esac
+	(cd "$LIBFFI_BUILD" && CC="$CC" AR="$AR" CFLAGS="-O2 $XP_FLAGS" ../configure $FFI_HOST --disable-shared --enable-static \
+		--disable-docs --disable-multi-os-directory --disable-exec-static-tramp >/dev/null 2>&1 \
+		&& make -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)" >/dev/null 2>&1) \
+		|| { echo "error: building libffi for $TARGET failed" >&2; exit 1; }
+fi
+
 # ---- CA bundle -----------------------------------------------------------------------------
 
 if [ ! -f "$SCRIPT_DIR/ca_bundle.c" ]; then
@@ -173,23 +224,27 @@ fi
 # -DMINIZ_NO_TIME keeps miniz off time() APIs that differ across the old Windows CRTs.
 "$CC" -O2 -DNDEBUG -std=gnu11 -w $XP_FLAGS \
 	-D_GNU_SOURCE -DMINIZ_NO_TIME -DMINIZ_NO_STDIO \
+	-DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_RTREE -DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_USE_URI=1 \
 	$NAPI_CFLAGS \
-	-I quickjs-ng -I mbedtls/include -I miniz -I wasm3/source -I "$SCRIPT_DIR" -I "$SCRIPT_DIR/include" \
+	-I quickjs-ng -I mbedtls/include -I miniz -I wasm3/source -I sqlite -I libuv/include -I "$LIBFFI_BUILD/include" -I "$SCRIPT_DIR" -I "$SCRIPT_DIR/include" \
 	-o "$EXE" \
 	"$SCRIPT_DIR/fg_main.c" \
 	"$SCRIPT_DIR/fg_sea.c" \
 	"$SCRIPT_DIR/graak_native.c" \
 	"$SCRIPT_DIR/napi.c" \
 	"$SCRIPT_DIR/fg_wasm.c" \
+	"$SCRIPT_DIR/fg_sqlite.c" \
+	"$SCRIPT_DIR/fg_ffi.c" \
 	wasm3/source/m3_bind.c wasm3/source/m3_code.c wasm3/source/m3_compile.c wasm3/source/m3_core.c \
 	wasm3/source/m3_emit.c wasm3/source/m3_env.c wasm3/source/m3_exec.c wasm3/source/m3_function.c \
 	wasm3/source/m3_info.c wasm3/source/m3_module.c wasm3/source/m3_optimize.c wasm3/source/m3_parse.c \
 	"$SCRIPT_DIR/ca_bundle.c" \
 	miniz/miniz.c \
+	sqlite/sqlite3.c \
 	quickjs-ng/quickjs.c quickjs-ng/libregexp.c quickjs-ng/libunicode.c \
 	quickjs-ng/dtoa.c quickjs-ng/quickjs-libc.c \
 	quickjs-ng/gen/repl.c quickjs-ng/gen/standalone.c \
-	-L "$MBEDTLS_BUILD/library" -lmbedtls -lmbedx509 -lmbedcrypto \
+	-L "$MBEDTLS_BUILD/library" -lmbedtls -lmbedx509 -lmbedcrypto "$LIBFFI_BUILD/.libs/libffi.a" \
 	$WIN_LIBS -lm $([ "$WINDOWS" = "1" ] || echo "-ldl -lpthread") \
 	$NAPI_LDFLAGS \
 	$([ "$WINDOWS" = "1" ] || { [ "$STATIC" = "1" ] && echo "-latomic" || echo "-Wl,-Bstatic -latomic -Wl,-Bdynamic -static-libgcc"; }) \

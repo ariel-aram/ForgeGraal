@@ -156,6 +156,8 @@ const RUNTIME_FILES = [
 	"node-system.js",
 	"node-wasm.js",
 	"node-crypto.js",
+	"node-sqlite.js",
+	"node-websocket.js",
 	"node-fetch.js",
 	"node-buffer.js",
 	"node-misc.js",

@@ -41,10 +41,16 @@
 #ifdef _WIN32
 #include <windows.h>
 #else
+#include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #ifndef FG_NO_DLOPEN
 #include <dlfcn.h>
 #endif
+/* libuv's public types: an addon that talks to libuv directly lays its requests out by these headers. */
+#include <uv.h>
 #endif
 
 /* ---- platform ---------------------------------------------------------------------------- */
@@ -158,7 +164,7 @@ typedef struct fg_fin {
 
 typedef struct fg_task {
     struct fg_task *next;
-    int kind; /* 0 async-work complete, 1 tsf call, 2 tsf close */
+    int kind; /* 0 async-work complete, 1 tsf call, 2 tsf close, 3 libuv work complete, 4 libuv fs complete */
     void *target;
     void *data;
 } fg_task;
@@ -1773,12 +1779,23 @@ napi_status node_api_get_module_file_name(napi_env benv, const char **result)
     CHECK_ENV(env); CHECK_ARG(env, result);
     *result = env->filename ? env->filename : ""; OK(env);
 }
+#ifndef _WIN32
+/* The loop an addon is handed is never used to run anything: the functions below that take one queue their work
+   here and finish it on the JavaScript thread, so a zeroed loop of the right size is all it has to be. */
+static uv_loop_t g_uv_loop;
+#endif
 napi_status napi_get_uv_event_loop(napi_env benv, struct uv_loop_s **loop)
 {
     napi_env env = (napi_env) benv;
     CHECK_ENV(env);
+#ifndef _WIN32
+    CHECK_ARG(env, loop);
+    *loop = &g_uv_loop;
+    OK(env);
+#else
     (void) loop;
     FAIL(env, napi_generic_failure);
+#endif
 }
 
 /* ---- promises ---------------------------------------------------------------------------- */
@@ -2516,6 +2533,220 @@ static JSValue fg_dlopen(JSContext *ctx, JSValueConst this_val, int argc, JSValu
     return out;
 }
 
+
+/* ---- libuv subset ------------------------------------------------------------------------ */
+
+#ifndef _WIN32
+/*
+ * Addons in the Holepunch family (rocksdb-native, and others built on the same toolkit) call libuv directly, next to
+ * Node-API: they queue work on its thread pool and do file I/O through uv_fs_*. The host exports the part of libuv's
+ * ABI they use, so their prebuilt binaries bind to it as they bind to Node's own libuv:
+ *
+ *   uv_queue_work, uv_fs_open/close/read/write/mkdir/req_cleanup, uv_buf_init, uv_err_name, uv_strerror.
+ *
+ * Work runs on an operating-system thread and its completion callback is delivered on the JavaScript thread by the
+ * same pump as Node-API async work. A request without a callback runs at once, as libuv's synchronous mode does.
+ * Requests are laid out by libuv's own headers (uv.h), so the fields an addon reads are where it expects them.
+ * Not provided: the rest of libuv (handles, timers, sockets); an addon that needs those fails to bind, naming them.
+ */
+
+uv_buf_t uv_buf_init(char *base, unsigned int len)
+{
+    uv_buf_t buf;
+    buf.base = base;
+    buf.len = len;
+    return buf;
+}
+
+const char *uv_err_name(int err)
+{
+    switch (err) {
+    case UV_ENOENT: return "ENOENT";
+    case UV_EEXIST: return "EEXIST";
+    case UV_EACCES: return "EACCES";
+    case UV_EPERM: return "EPERM";
+    case UV_EINVAL: return "EINVAL";
+    case UV_EIO: return "EIO";
+    case UV_ENOSPC: return "ENOSPC";
+    case UV_EBADF: return "EBADF";
+    case UV_EISDIR: return "EISDIR";
+    case UV_ENOTDIR: return "ENOTDIR";
+    case UV_ENOTEMPTY: return "ENOTEMPTY";
+    case UV_EMFILE: return "EMFILE";
+    case UV_EAGAIN: return "EAGAIN";
+    case UV_ENOMEM: return "ENOMEM";
+    case UV_EBUSY: return "EBUSY";
+    case UV_EROFS: return "EROFS";
+    case UV_ENAMETOOLONG: return "ENAMETOOLONG";
+    default: return "UNKNOWN";
+    }
+}
+
+const char *uv_strerror(int err)
+{
+    return err < 0 ? strerror(-err) : "success";
+}
+
+static void uv_work_thread(void *arg)
+{
+    uv_work_t *req = arg;
+    req->work_cb(req);
+    post_task(3, req, NULL);
+}
+
+int uv_queue_work(uv_loop_t *loop, uv_work_t *req, uv_work_cb work_cb, uv_after_work_cb after_work_cb)
+{
+    if (!req || !work_cb) return UV_EINVAL;
+    req->type = UV_WORK;
+    req->loop = loop;
+    req->work_cb = work_cb;
+    req->after_work_cb = after_work_cb;
+    live_inc();
+    if (fg_thread_start(uv_work_thread, req) != 0) {
+        live_dec();
+        return UV_ENOMEM;
+    }
+    return 0;
+}
+
+/* Runs the operation a uv_fs_t describes and stores its result (a count or descriptor, or a negative errno). */
+static void uv_fs_execute(uv_fs_t *req)
+{
+    ssize_t r = 0;
+    switch (req->fs_type) {
+    case UV_FS_OPEN:
+        r = open(req->path, req->flags, req->mode);
+        break;
+    case UV_FS_CLOSE:
+        r = close(req->file);
+        break;
+    case UV_FS_MKDIR:
+        r = mkdir(req->path, (mode_t) req->mode);
+        break;
+    case UV_FS_READ:
+    case UV_FS_WRITE: {
+        int is_read = req->fs_type == UV_FS_READ;
+        off_t at = req->off;
+        ssize_t total = 0;
+        for (unsigned int i = 0; i < req->nbufs && r >= 0; i++) {
+            char *base = req->bufs[i].base;
+            size_t left = req->bufs[i].len;
+            while (left > 0) {
+                ssize_t n;
+                if (at < 0) n = is_read ? read(req->file, base, left) : write(req->file, base, left);
+                else n = is_read ? pread(req->file, base, left, at + total) : pwrite(req->file, base, left, at + total);
+                if (n < 0) {
+                    if (errno == EINTR) continue;
+                    r = -1;
+                    break;
+                }
+                if (n == 0) break;
+                base += n;
+                left -= (size_t) n;
+                total += n;
+            }
+            if (left > 0) break; /* a short read: the file ended */
+        }
+        if (r >= 0) r = total;
+        break;
+    }
+    default:
+        r = -1;
+        errno = ENOSYS;
+    }
+    req->result = r < 0 ? -errno : r;
+}
+
+static void uv_fs_thread(void *arg)
+{
+    uv_fs_t *req = arg;
+    uv_fs_execute(req);
+    post_task(4, req, NULL);
+}
+
+/* Fills the request, then runs it now (no callback) or on a thread with the callback delivered later. */
+static int uv_fs_submit(uv_loop_t *loop, uv_fs_t *req, uv_fs_type type, uv_fs_cb cb)
+{
+    req->type = UV_FS;
+    req->fs_type = type;
+    req->loop = loop;
+    req->cb = cb;
+    req->result = 0;
+    req->ptr = NULL;
+    if (!cb) {
+        uv_fs_execute(req);
+        return (int) req->result;
+    }
+    live_inc();
+    if (fg_thread_start(uv_fs_thread, req) != 0) {
+        live_dec();
+        return UV_ENOMEM;
+    }
+    return 0;
+}
+
+int uv_fs_open(uv_loop_t *loop, uv_fs_t *req, const char *path, int flags, int mode, uv_fs_cb cb)
+{
+    req->path = strdup(path);
+    req->flags = flags;
+    req->mode = mode;
+    return uv_fs_submit(loop, req, UV_FS_OPEN, cb);
+}
+
+int uv_fs_close(uv_loop_t *loop, uv_fs_t *req, uv_file file, uv_fs_cb cb)
+{
+    req->path = NULL;
+    req->file = file;
+    return uv_fs_submit(loop, req, UV_FS_CLOSE, cb);
+}
+
+int uv_fs_mkdir(uv_loop_t *loop, uv_fs_t *req, const char *path, int mode, uv_fs_cb cb)
+{
+    req->path = strdup(path);
+    req->mode = mode;
+    return uv_fs_submit(loop, req, UV_FS_MKDIR, cb);
+}
+
+static int uv_fs_transfer(uv_loop_t *loop, uv_fs_t *req, uv_fs_type type, uv_file file, const uv_buf_t bufs[],
+                          unsigned int nbufs, int64_t offset, uv_fs_cb cb)
+{
+    req->path = NULL;
+    req->file = file;
+    req->nbufs = nbufs;
+    /* The addon's array may be a stack variable that is gone when a threaded request runs: keep a copy. */
+    req->bufs = malloc(sizeof(uv_buf_t) * (nbufs ? nbufs : 1));
+    if (!req->bufs) return UV_ENOMEM;
+    memcpy(req->bufs, bufs, sizeof(uv_buf_t) * nbufs);
+    req->off = (off_t) offset;
+    return uv_fs_submit(loop, req, type, cb);
+}
+
+int uv_fs_read(uv_loop_t *loop, uv_fs_t *req, uv_file file, const uv_buf_t bufs[], unsigned int nbufs, int64_t offset,
+               uv_fs_cb cb)
+{
+    return uv_fs_transfer(loop, req, UV_FS_READ, file, bufs, nbufs, offset, cb);
+}
+
+int uv_fs_write(uv_loop_t *loop, uv_fs_t *req, uv_file file, const uv_buf_t bufs[], unsigned int nbufs, int64_t offset,
+                uv_fs_cb cb)
+{
+    return uv_fs_transfer(loop, req, UV_FS_WRITE, file, bufs, nbufs, offset, cb);
+}
+
+void uv_fs_req_cleanup(uv_fs_t *req)
+{
+    if (!req) return;
+    if (req->path) {
+        free((void *) req->path);
+        req->path = NULL;
+    }
+    if ((req->fs_type == UV_FS_READ || req->fs_type == UV_FS_WRITE) && req->bufs) {
+        free(req->bufs);
+        req->bufs = NULL;
+    }
+}
+#endif /* !_WIN32 */
+
 /* ---- pump -------------------------------------------------------------------------------- */
 
 static void report_uncaught(napi_env env)
@@ -2564,6 +2795,16 @@ static JSValue fg_drain(JSContext *ctx, JSValueConst this_val, int argc, JSValue
             if (w->complete) w->complete(env, napi_ok, w->data);
             live_dec();
             if (env->has_pending) report_uncaught(env);
+#ifndef _WIN32
+        } else if (t->kind == 3) {
+            uv_work_t *w = t->target;
+            if (w->after_work_cb) w->after_work_cb(w, 0);
+            live_dec();
+        } else if (t->kind == 4) {
+            uv_fs_t *f = t->target;
+            if (f->cb) f->cb(f);
+            live_dec();
+#endif
         } else if (t->kind == 1) {
             napi_threadsafe_function f = t->target;
             napi_env env = f->env;

@@ -21,6 +21,7 @@
    - [Compatibility layer](#compatibility-layer)
    - [Native host](#native-host)
    - [Prebuilt hosts and build speed](#prebuilt-hosts-and-build-speed)
+   - [Databases](#databases)
    - [Native addons (Node-API)](#native-addons-node-api)
    - [Addons written against V8 or NAN](#addons-written-against-v8-or-nan)
    - [Windows 7, Vista and XP](#windows-7-vista-and-xp)
@@ -40,7 +41,7 @@ anything that runs on Node.js) into an executable for a chosen target device. It
 
 - **The Graak engine** (default for legacy Windows, iSH, 32-bit Linux and 64-bit Linux): its own C host,
   `graak-c`, embedding [quickjs-ng](https://github.com/quickjs-ng/quickjs) and a Node.js-shaped standard library.
-  **No Node.js is shipped or needed on the device.** The host is about 3 MB and imports only what Windows XP already
+  **No Node.js is shipped or needed on the device.** The host is about 4.5 MB (it carries TLS, WebAssembly, SQLite and libffi) and imports only what Windows XP already
   has, so the result runs where Node.js itself cannot.
 - **Node.js**: a downloaded, SHA-256 verified Node.js runtime, packaged as a Single Executable Application or a
   portable folder. Used for the targets Node.js serves well, and available everywhere as `--engine node`.
@@ -51,7 +52,7 @@ adapter that exposes a few of Graak's helpers as `$functions`.
 
 **Graak works beside Bun and Deno rather than against them.** Both have a built-in `compile` command that makes a
 binary for a modern 64-bit desktop, and both need their own runtime on the device's CPU and OS. Graak takes what they
-cannot: Windows XP, Vista and 7, 32-bit Windows and Linux, iSH, ARMv7 and FreeBSD, and a single 3 MB file with no Bun
+cannot: Windows XP, Vista and 7, 32-bit Windows and Linux, iSH, ARMv7 and FreeBSD, and a single file of about 5 MB with no Bun
 or Deno on the device. Bun and Deno stay the place a project is written and resolved; Graak reads what they resolved
 and builds it. See [Package managers](#package-managers).
 
@@ -166,6 +167,10 @@ on Node.js and on the packaged host and compares the output byte for byte.
 | `Buffer`, `events`, `zlib`, `string_decoder` | Complete `Buffer`, an `EventEmitter` that tolerates being mixed into plain objects, gzip/deflate/raw in sync, callback and stream forms. |
 | `os`, `process`, `vm`, `module`, `url`, `worker_threads`, `readline`, `punycode` | Provided. `process` has real standard streams, `exitCode`, `beforeExit`/`exit` and signals; `vm` contexts are sandbox objects in one realm, not a security boundary. |
 | `child_process` | `spawnSync`, `execSync`, `execFileSync`, `exec`, `execFile` and `spawn`, with byte-exact output, `input`, `ENOENT` for a missing program, and `signal` for a killed one. A child runs to completion: what a `spawn`ed child's stdin is given is fed to it at once, and its output arrives as 'data' events when it ends, so an interactive back-and-forth with a running child is not possible. `fork` (no IPC channel) is not provided. |
+| `dgram`, `net` over a path | UDP sockets (`createSocket('udp4'/'udp6')`, `bind`, `send`, `message`, broadcast, TTL, multicast membership) and unix-domain sockets (`listen(path)`, `connect(path)`). Windows before 10 has no AF_UNIX, so there a socket path is a file that names a loopback TCP port: programs built with Graak reach each other that way, but a program that is not one of them cannot connect. |
+| `node:sqlite`, `bun:sqlite` | SQLite compiled into the host: `DatabaseSync` and `StatementSync` as Node documents them (null-prototype rows, named parameters with or without their prefix, `readBigInts`, `changes` and `lastInsertRowid`, error codes) and Bun's `Database`, `query`, `prepare`, `transaction`. Same database file format on every target. User-defined functions, extensions and `backup()` are not available. |
+| `WebSocket`, `MessageEvent`, `CloseEvent` | The browser's client on RFC 6455 framing over the host's own HTTP upgrade (Node 22 has one; the host and older Node.js did not). Messages, `binaryType`, ping/pong, close codes and the events arrive as they do in Node's. |
+| `fs.watch` | A file or a directory, recursive or not: an appearing or disappearing name is a `rename`, a changed one a `change`. The engine has no change notifications, so the tree is compared with a snapshot at an interval that grows with its size. |
 | `WebAssembly` | [wasm3](https://github.com/wasm3/wasm3), compiled into the host, behind the standard API (`Module`, `Instance`, `Memory`, `Global`, `Table`, `instantiate`, `compile`, `validate`, `i64` as `BigInt`). It interprets, so there is no SIMD, threads or exception handling, and a module that *imports* a memory, table or global is refused with a `LinkError`. This is what lets undici (Node's `fetch` and the HTTP client of discord.js) load. |
 | `Intl.Segmenter` | Grapheme and word granularity per UAX #29, passing Unicode's own conformance files in full. Sentence granularity throws rather than guessing a locale. |
 
@@ -174,8 +179,7 @@ served from a packaged `linux-modern-x64` build; **`ws`** as a WebSocket server 
 binary frames; **discord.js 14** with **ForgeScript**, whose REST client makes a real request to Discord; and native
 addons such as **@napi-rs/canvas**, **sharp** and **better-sqlite3**.
 
-Not provided, and said so when used: HTTP/2, Brotli, unix-domain sockets, UDP (`dgram`), `cluster`, `inspector`, `repl`,
-`wasi`, and in `crypto` key generation, Diffie-Hellman, RSA-OAEP/PSS and key objects other than secret keys. An
+Not provided, and said so when used: HTTP/2, Brotli, `cluster`, `inspector`, `repl`, `wasi`, and in `crypto` key generation, Diffie-Hellman, RSA-OAEP/PSS and key objects other than secret keys. An
 exception nothing catches is handled as Node handles it: `process.on("uncaughtException")` gets it, otherwise it is
 printed and the process exits with status 1. A server binds IPv4 unless told otherwise (`listen(port)` is `0.0.0.0`).
 
@@ -224,8 +228,8 @@ Server-rendered frameworks are programs, not sites: package their server entry f
 `--engine native --strategy sea` writes **one executable** instead of a folder. The application (the compatibility layer,
 your program and its `node_modules`, deflated) is appended to a copy of the host, and on first start the host unpacks it
 next to itself (`<name>.graak`, or the temp directory when that folder is read-only) and runs it. Later starts find the
-unpacked copy by the payload's SHA-256 and skip straight to running. The host is about 3 MB, so a small program or a
-static site is a **single file of about 3 MB**, and an Express application is about 6 MB.
+unpacked copy by the payload's SHA-256 and skip straight to running. The host is about 4.5 MB, so a small program or a
+static site is a **single file of about 5 MB**, and an Express application is about 8 MB.
 
 ```sh
 graak compile dist/index.js --target win-legacy-x64 --engine native --strategy sea --output app.exe
@@ -265,9 +269,10 @@ only Winsock 2 and CryptoAPI on Windows, both present since the 1990s:
 - **TCP and TLS** (mbedTLS). Sockets stay on the native side and reach JavaScript as integer ids, so a JavaScript bug
   cannot produce a use-after-free. Certificates verify against a CA bundle compiled into the binary, not the OS store,
   which is what lets an old machine reach modern HTTPS hosts at all.
-- **Hashing, HMAC, secure randomness** (mbedTLS), **compression** (miniz), **WebAssembly** (wasm3), **timers,
-  filesystem and process**.
-- **Node-API** for native addons, and **self-unpacking single files**.
+- **Hashing, HMAC, secure randomness** (mbedTLS), **compression** (miniz), **WebAssembly** (wasm3), **SQLite** (the amalgamation),
+  **foreign function calls** (libffi), **UDP and unix-domain sockets**, **timers, filesystem and process**.
+- **Node-API** for native addons (plus the part of libuv's ABI that addons such as rocksdb-native call), and
+  **self-unpacking single files**.
 
 One source tree serves every target; only the cross-compiler differs.
 
@@ -284,7 +289,7 @@ quickjs/native/build.sh native           # the build machine's own platform, for
 Linux hosts are static musl so one binary runs on glibc and musl systems (Alpine included) unmodified. The XP build
 applies `winxp-compat.patch` to the engine's four Vista-era threading calls and `patch-mbedtls-xp.py` to swap
 `BCryptGenRandom` for `CryptGenRandom`, then **verifies the result imports nothing newer than XP and fails if it does**.
-Result: a self-contained Windows executable of about 3 MB importing only `KERNEL32`, `msvcrt`, `ADVAPI32` and `WS2_32`.
+Result: a self-contained Windows executable of about 4.5 MB importing only `KERNEL32`, `msvcrt`, `ADVAPI32` and `WS2_32`.
 
 `native-selftest.js` (crypto vectors, deflate, a live TLS request) passes on the native Linux build and on the Windows
 hosts under Wine. Not yet run on real Windows XP, Vista or 7 hardware: Wine implements the newer Windows APIs itself, so
@@ -303,6 +308,24 @@ compiling, and `test/prebuilt.test.ts` fails until the prebuilts are regenerated
 
 Other things that keep repeat builds fast: converted ES modules and TypeScript files are cached by content, work is
 limited to a bounded number of files at once, and patched Windows 7 addons are cached by digest.
+
+### Databases
+
+Embedded databases come in three kinds, and all three run:
+
+- **SQLite is built in.** `node:sqlite`, `bun:sqlite` and Deno KV work on every target with nothing to install, XP included
+  (see the table above). The amalgamation is compiled into the host, single-threaded.
+- **Databases that are Node-API addons** load on the dynamically linked host, like any addon. Verified by running the same
+  program under Node.js and on the Graak engine and comparing what it prints: **LevelDB** (`classic-level`), **LMDB**
+  (`lmdb`), **RocksDB** (`rocksdb-native`) and **SurrealDB**, embedded (`surrealdb` with `@surrealdb/node`, the Rust engine),
+  on its in-memory, **RocksDB** (`rocksdb://`) and **SurrealKV** (`surrealkv://`) storage engines.
+- **Databases you connect to** (Postgres, MySQL, MongoDB, Redis, a SurrealDB server) are clients over `net`, `tls`, `crypto` and, for
+  SurrealDB's remote protocol, the global `WebSocket`.
+
+`rocksdb-native` and its relatives call libuv directly, next to Node-API. The host therefore exports the part of libuv's ABI they
+use, laid out by libuv's own headers: `uv_queue_work`, `uv_fs_open/close/read/write/mkdir/req_cleanup`, `uv_buf_init`,
+`uv_err_name`, `uv_strerror`. Work runs on OS threads and completes on the JavaScript thread. Another addon that needs more of libuv
+(handles, timers, sockets) fails to bind, naming what it lacks. This subset exists on Linux; a Windows host does not export it yet.
 
 ### Native addons (Node-API)
 
@@ -393,12 +416,28 @@ point, with every module's cached file and every npm package's directory, and Gr
   `Deno.Command` and `ChildProcess`, `Deno.permissions` (everything is granted, as with `deno compile -A`), signals,
   `Deno.errors` with Deno's classes and codes and the same message shape, and `Deno.build`/`version` matching the Deno used to build.
   Verified by running the same programs under real Deno and under Graak and comparing what they print: file system,
-  environment, HTTP server and client, TCP, subprocesses and WebSocket corpora are identical, and a project with an
+  environment, HTTP server and client, TCP, unix and UDP sockets, subprocesses, WebSocket, Deno KV, FFI and `Deno.test` corpora are identical, and a project with an
   import map, `jsr:`, `npm:`, a JSON import, top-level `await` and a file read beside the program runs identically on
   the Graak engine, on Node.js and as one Windows 7 `.exe` (under Wine).
-- **Not provided, and throws `Deno.errors.NotSupported` naming the API** (the build warns when the program uses one):
-  Deno KV (`Deno.openKv`), `Deno.cron`, FFI (`Deno.dlopen`), `Deno.watchFs`, `Deno.test` and `Deno.bench`, and
-  non-TCP sockets. `console.log` prints objects the way Node.js does (single-quoted strings), not the way Deno does.
+- **The parts of Deno that need more than a file or a socket are provided too.** `Deno.openKv` is Deno KV on SQLite: keys in
+  Deno's order (bytes, strings, bigints, numbers, booleans), values that round-trip Date, Map, Set, RegExp, typed arrays, BigInt,
+  errors and cycles, `list` with prefix, range, `reverse`, `limit`, `cursor` and `batchSize`, `atomic()` with `check`, `set`,
+  `delete`, `sum`, `min`, `max` and `enqueue`, `expireIn`, `KvU64`, versionstamps, `enqueue` with `delay`, `backoffSchedule` and
+  `keysIfUndelivered`, `listenQueue`, `watch`. It writes an ordinary SQLite file that `node:sqlite` opens (the default location is
+  `~/.graak/kv/`; a URL to a remote database is not reachable). `Deno.dlopen` is FFI on libffi: scalars, 64-bit integers as bigints,
+  buffers, pointers as opaque objects, `UnsafePointer`, `UnsafePointerView`, `UnsafeFnPointer`, callbacks (`UnsafeCallback`),
+  structs passed and returned by value and static data; a program that calls it gets the dynamically linked host, because a
+  static one cannot load a library. `Deno.cron` runs UTC schedules in cron syntax (steps, ranges, lists, month and weekday
+  names, Deno's object form) with `backoffSchedule` and `signal`. `Deno.watchFs`, `Deno.listen`/`connect` with
+  `transport: "unix"`, `Deno.listenDatagram` (UDP), and `Deno.test` and `Deno.bench` complete it: the tests and benchmarks a
+  program registers run after its main module and print what `deno test` and `deno bench` print (steps, `ignore`, `only`, the
+  ERRORS and FAILURES sections, the summary, exit code 1 on failure), except where a failure is located, since a packaged program
+  is one bundle.
+- **Not the same as Deno:** FFI runs on the Graak engine only (a Node.js build gets `Deno.errors.NotSupported`, since Node.js has no
+  foreign function interface); a `nonblocking` FFI symbol returns a promise but the call itself blocks the event loop while it
+  runs, and a callback invoked from another thread is not delivered; `unixpacket` sockets are not available; an expired KV entry is
+  hidden at once (Deno's local database hides it when its cleanup runs); `console.log` prints objects the way Node.js does
+  (single-quoted strings), not the way Deno does.
 - **Which targets Deno covers.** `graak info <target>` and `graak targets` say whether `deno compile` builds a target
   itself (`$canPackageOnDeno` says it from a bot). For those five, either tool works; for the others Graak is the only
   way to a Deno program on that device.
@@ -412,8 +451,7 @@ graak compile main.ts --target win-xp-x86 --engine native --strategy sea --outpu
 on the device. Graak builds every target for Bun projects, `linux-armv7` included. TypeScript and JSX entrypoints are
 transpiled automatically: on the Graak engine by Graak itself, on the Node.js engine with `bun build --target=node
 --format=cjs --packages=external`, so the installed `node_modules` your lockfile pinned are what ships (`bun` is needed
-at build time only). The Graak engine does not provide `Bun.*` or `bun:sqlite`: use `node:` APIs or a portable database
-driver. On Node.js targets `bun:sqlite` (over `node:sqlite`), `Bun.env/file/write/sleep/which/nanoseconds` and
+at build time only). The Graak engine provides `bun:sqlite` (SQLite is built into the host) but not the rest of Bun (`Bun.*`, other `bun:` modules): use `node:` APIs. On Node.js targets `bun:sqlite` (over `node:sqlite`), `Bun.env/file/write/sleep/which/nanoseconds` and
 `Bun.serve` are polyfilled; `Bun.password`, `Bun.hash`, `Bun.spawn` and FFI throw at the point of use rather than
 substituting a different algorithm.
 
@@ -481,7 +519,7 @@ leaves a program that looks healthy while losing data or its security guarantees
 graak compile dist/index.js --target linux-modern-x64      # Graak engine, no Node.js in the output
 graak compile dist/index.js --target ios-ish-x86           # Graak engine, static musl
 graak compile dist/index.js --target win-legacy-x64        # Graak engine, Windows 7 patches applied
-graak compile dist/index.js --target win-legacy-x64 --engine native --strategy sea   # one .exe of about 3 MB
+graak compile dist/index.js --target win-legacy-x64 --engine native --strategy sea   # one .exe of about 5 MB
 graak compile ./dist --target linux-modern-x64 --spa --port 8080                     # a built website
 graak compile dist/index.js --target win-modern-x64        # sea, official Node.js
 graak compile dist/index.js --target win-vista-x86 --node-binary ./node-5.12.0/node.exe

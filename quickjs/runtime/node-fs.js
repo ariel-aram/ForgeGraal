@@ -706,28 +706,88 @@ function createFs({ os, std, Buffer, path, stream, EventEmitter, native, platfor
 		}
 		watchers.set(target, listener ? entries.filter((entry) => entry.listener !== listener) : []);
 	}
+	/**
+	 * `fs.watch` on a file or a directory, recursive or not. The engine has no change notifications, so the watched
+	 * tree is compared with a snapshot of itself: a name that appears or disappears is a 'rename' and one whose size
+	 * or modification time changed a 'change', the two events Node reports. The interval grows with the cost of
+	 * a snapshot, so watching a large tree cannot starve the program of its own time.
+	 */
 	function watch(file, options, listener) {
 		if (typeof options === "function") {
 			listener = options;
 			options = {};
 		}
+		options = options ?? {};
 		const target = toPath(file);
 		const emitter = new EventEmitter();
 		if (listener) emitter.on("change", listener);
-		let previous = statSync(target, { throwIfNoEntry: false });
-		const timer = globalThis.setInterval(() => {
-			const current = statSync(target, { throwIfNoEntry: false });
-			if (!current !== !previous || (current && (current.mtimeMs !== previous.mtimeMs || current.size !== previous.size))) {
-				emitter.emit("change", current ? "change" : "rename", path.basename(target));
-				previous = current;
+		const first = statSync(target, { throwIfNoEntry: false });
+		if (!first) throw fsError(-2, "watch", target);
+		const isDir = first.isDirectory();
+		const recursive = isDir && options.recursive === true;
+
+		const take = () => {
+			const found = new Map();
+			const visit = (dir, prefix) => {
+				let names;
+				try {
+					names = readdirSync(dir);
+				} catch {
+					return;
+				}
+				for (const name of names) {
+					const full = `${dir}/${name}`;
+					const info = statSync(full, { throwIfNoEntry: false });
+					if (!info) continue;
+					const key = prefix ? `${prefix}/${name}` : name;
+					found.set(key, `${info.size}:${info.mtimeMs}:${info.isDirectory() ? "d" : "f"}`);
+					if (recursive && info.isDirectory()) visit(full, key);
+				}
+			};
+			if (isDir) visit(target, "");
+			else {
+				const info = statSync(target, { throwIfNoEntry: false });
+				if (info) found.set(path.basename(target), `${info.size}:${info.mtimeMs}:f`);
 			}
-		}, 250);
+			return found;
+		};
+
+		let previous = take();
+		let closed = false;
+		let interval = 100;
+		let timer = null;
+		const tick = () => {
+			if (closed) return;
+			const started = Date.now();
+			const current = take();
+			for (const [name, signature] of current) {
+				if (!previous.has(name)) emitter.emit("change", "rename", name);
+				else if (previous.get(name) !== signature) emitter.emit("change", "change", name);
+			}
+			for (const name of previous.keys()) if (!current.has(name)) emitter.emit("change", "rename", name);
+			previous = current;
+			interval = Math.max(100, (Date.now() - started) * 4);
+			timer = globalThis.setTimeout(tick, interval);
+		};
+		timer = globalThis.setTimeout(tick, interval);
 		emitter.close = () => {
-			globalThis.clearInterval(timer);
+			if (closed) return;
+			closed = true;
+			globalThis.clearTimeout(timer);
 			emitter.emit("close");
 		};
-		emitter.ref = () => emitter;
-		emitter.unref = () => emitter;
+		emitter.ref = () => {
+			timer?.ref?.();
+			return emitter;
+		};
+		emitter.unref = () => {
+			timer?.unref?.();
+			return emitter;
+		};
+		if (options.signal) {
+			if (options.signal.aborted) emitter.close();
+			else options.signal.addEventListener("abort", () => emitter.close(), { once: true });
+		}
 		return emitter;
 	}
 

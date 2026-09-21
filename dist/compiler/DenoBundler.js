@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DenoBundler = void 0;
+exports.DenoBundler = exports.DENO_SHIM_FILES = void 0;
 exports.parseNpmSpecifier = parseNpmSpecifier;
 const node_child_process_1 = require("node:child_process");
 const node_fs_1 = require("node:fs");
@@ -35,6 +35,8 @@ const DenoProject_1 = require("./DenoProject");
  * Deno is needed at build time only, never on the device.
  */
 const MIN_DENO_MAJOR = 2;
+/** The files of the Deno namespace, in the order they are inlined ahead of the program. */
+exports.DENO_SHIM_FILES = ["deno-shim.js", "deno-test.js", "deno-ffi.js", "deno-kv.js"];
 const LOADERS = {
     TypeScript: "ts",
     Mts: "ts",
@@ -49,14 +51,13 @@ const LOADERS = {
     Jsx: "jsx",
     Json: "json",
 };
-/** APIs of the Deno namespace that the shim answers with an explanatory error, worded for a warning. */
-const UNSUPPORTED_DENO_APIS = [
-    [/\bDeno\.openKv\b/, "Deno.openKv (Deno KV)"],
-    [/\bDeno\.cron\b/, "Deno.cron"],
-    [/\bDeno\.dlopen\b/, "Deno.dlopen (FFI)"],
-    [/\bDeno\.watchFs\b/, "Deno.watchFs"],
-    [/\bDeno\.(test|bench)\b/, "Deno.test / Deno.bench"],
-];
+/**
+ * What the Deno namespace answers with an explanatory error, worded for a warning. Everything Deno offers is
+ * provided on the Graak engine; FFI is the one thing Node.js has no way to do, so it matters only for a Node.js build.
+ */
+const UNSUPPORTED_DENO_APIS = [];
+/** Deno's foreign function interface, which needs a host that can load shared libraries. */
+const FFI_PATTERN = /\bDeno\.(dlopen|UnsafeCallback|UnsafeFnPointer)\b/;
 /** Runs a command and returns stdout, or throws with everything the command said. */
 function run(command, args, cwd, env) {
     try {
@@ -259,6 +260,7 @@ class DenoBundler {
             if (unsupported.size) {
                 warnings.push(`The program uses ${[...unsupported].join(", ")}, which Graak does not provide: calling it throws Deno.errors.NotSupported.`);
             }
+            const usesFfi = [...localSources.values()].some((source) => FFI_PATTERN.test(source));
             const remote = [...modules.values()].filter((m) => m.kind === "esm" && !m.specifier.startsWith("file:")).length;
             log(`Bundled ${localSources.size} local and ${remote} remote modules; ${npmNames.direct.size} npm package(s) ` +
                 `(${npmNames.total} with dependencies) laid out under node_modules`);
@@ -268,6 +270,7 @@ class DenoBundler {
                 bundled: [...localSources.keys()].map((abs) => (0, node_path_1.join)(temp, (0, node_path_1.relative)(projectRoot, abs))),
                 npmPackages: [...npmNames.direct.values()],
                 warnings,
+                usesFfi,
                 deno,
                 cleanup,
             };
@@ -472,7 +475,20 @@ class DenoBundler {
      * async function keeps `await` legal, and the entry's exports, if any, become `module.exports`.
      */
     static wrap(bundle, entryRel, deno) {
-        const shim = (0, node_fs_1.readFileSync)((0, node_path_1.join)((0, node_path_1.dirname)(require.resolve("../../package.json")), "quickjs/runtime/deno-shim.js"), "utf-8")
+        const runtime = (0, node_path_1.join)((0, node_path_1.dirname)(require.resolve("../../package.json")), "quickjs/runtime");
+        // The WebSocket module is shared with the runtime layer: its source is inlined here, minus the ES module export.
+        const websocket = (0, node_fs_1.readFileSync)((0, node_path_1.join)(runtime, "node-websocket.js"), "utf-8").replace(/\nexport \{[^}]*\};?\s*$/, "\n");
+        const websocketSetup = `${websocket}
+(function installWebSocket(global) {
+	if (global[Symbol.for("graak.websocket")]) return;
+	const ws = createWebSocket({ http: require("http"), https: require("https"), crypto: require("crypto"), Buffer, CloseEvent: global.CloseEvent, MessageEvent: global.MessageEvent });
+	Object.defineProperty(global, Symbol.for("graak.websocket"), { value: ws, enumerable: false });
+	for (const name of ["WebSocket", "CloseEvent", "MessageEvent"]) {
+		if (typeof global[name] === "undefined") Object.defineProperty(global, name, { value: ws[name], writable: true, configurable: true });
+	}
+})(globalThis);`;
+        const shim = [websocketSetup, ...exports.DENO_SHIM_FILES.map((file) => (0, node_fs_1.readFileSync)((0, node_path_1.join)(runtime, file), "utf-8"))]
+            .join("\n")
             .replace("__GRAAK_DENO_VERSION__", deno.deno)
             .replace("__GRAAK_V8_VERSION__", deno.v8)
             .replace("__GRAAK_TS_VERSION__", deno.typescript);
@@ -501,10 +517,12 @@ class DenoBundler {
             "const __graak_resolve = (rel, spec) => /^\\.{0,2}\\//.test(spec)",
             "\t? __graak_urls.pathToFileURL(__graak_path.resolve(__graak_dirname(rel), spec)).href",
             "\t: spec;",
+            `Deno.mainModule = __graak_url(${q});`,
+            `Object.defineProperty(Deno, Symbol.for("graak.entry"), { value: ${q}, enumerable: false });`,
             `const __graak_meta = { url: __graak_url(${q}), dirname: __graak_dirname(${q}), filename: __graak_file(${q}), main: true, resolve: (spec) => __graak_resolve(${q}, spec) };`,
             "(async () => {",
             '"use strict";',
-        ].join("\n")}\n${body}${exportsCode}\n})();\n`;
+        ].join("\n")}\n${body}${exportsCode}\n})().then(() => Deno[Symbol.for("graak.afterMain")]?.());\n`;
     }
 }
 exports.DenoBundler = DenoBundler;

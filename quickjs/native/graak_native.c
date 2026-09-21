@@ -40,6 +40,12 @@
 #include <wincrypt.h>
 #include <io.h>
 typedef int socklen_t;
+/* Windows 10 has AF_UNIX; older headers and systems do not, so the address type is spelled out here. */
+struct fg_sockaddr_un {
+    unsigned short sun_family;
+    char sun_path[108];
+};
+#define FG_AF_UNIX 1
 #define FG_CLOSE_SOCKET closesocket
 #define FG_SOCKET_ERRNO WSAGetLastError()
 #else
@@ -50,11 +56,14 @@ typedef int socklen_t;
 #include <netinet/tcp.h>
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/un.h>
 #include <unistd.h>
 #define FG_CLOSE_SOCKET close
 #define FG_SOCKET_ERRNO errno
 typedef int SOCKET;
 #define INVALID_SOCKET (-1)
+#define fg_sockaddr_un sockaddr_un
+#define FG_AF_UNIX AF_UNIX
 #endif
 
 #include "mbedtls/cipher.h"
@@ -75,6 +84,12 @@ typedef int SOCKET;
 extern const char graak_ca_bundle[];
 
 /* ------------------------------------------------------------------ sockets */
+
+#ifdef _WIN32
+#define FG_EADDRNOTAVAIL WSAEADDRNOTAVAIL
+#else
+#define FG_EADDRNOTAVAIL EADDRNOTAVAIL
+#endif
 
 #define FG_MAX_SOCKETS 256
 
@@ -831,6 +846,14 @@ static JSValue fg_address(JSContext *ctx, JSValueConst this_val, int argc, JSVal
     if ((peer ? getpeername(sock->net.fd, (struct sockaddr *) &ss, &sl)
               : getsockname(sock->net.fd, (struct sockaddr *) &ss, &sl)) != 0) {
         return JS_NULL;
+    }
+    if (ss.ss_family == FG_AF_UNIX) {
+        struct fg_sockaddr_un *un = (struct fg_sockaddr_un *) &ss;
+        arr = JS_NewArray(ctx);
+        JS_SetPropertyUint32(ctx, arr, 0, JS_NewString(ctx, un->sun_path));
+        JS_SetPropertyUint32(ctx, arr, 1, JS_NewInt32(ctx, 0));
+        JS_SetPropertyUint32(ctx, arr, 2, JS_NewString(ctx, "unix"));
+        return arr;
     }
     if (getnameinfo((struct sockaddr *) &ss, sl, host, sizeof(host), serv, sizeof(serv),
                     NI_NUMERICHOST | NI_NUMERICSERV) != 0) {
@@ -1876,6 +1899,396 @@ static JSValue fg_eval_script(JSContext *ctx, JSValueConst this_val, int argc, J
     return result;
 }
 
+
+/* ------------------------------------------------ unix-domain sockets and UDP */
+
+/* The errno name a program branches on (ENOENT, EADDRINUSE, ...), from the platform's own error number. */
+static const char *fg_errno_name(int e)
+{
+#ifdef _WIN32
+    switch (e) {
+    case WSAEADDRINUSE: return "EADDRINUSE";
+    case WSAECONNREFUSED: return "ECONNREFUSED";
+    case WSAEACCES: return "EACCES";
+    case WSAEAFNOSUPPORT: return "EAFNOSUPPORT";
+    case WSAEADDRNOTAVAIL: return "EADDRNOTAVAIL";
+    case WSAENETUNREACH: return "ENETUNREACH";
+    case WSAEHOSTUNREACH: return "EHOSTUNREACH";
+    case WSAEMSGSIZE: return "EMSGSIZE";
+    case WSAECONNRESET: return "ECONNRESET";
+    case WSAEINVAL: return "EINVAL";
+    case WSAEWOULDBLOCK: return "EAGAIN";
+    case ERROR_FILE_NOT_FOUND: case ERROR_PATH_NOT_FOUND: return "ENOENT";
+    default: return "EIO";
+    }
+#else
+    switch (e) {
+    case EADDRINUSE: return "EADDRINUSE";
+    case ECONNREFUSED: return "ECONNREFUSED";
+    case EACCES: return "EACCES";
+    case EPERM: return "EPERM";
+    case ENOENT: return "ENOENT";
+    case EAFNOSUPPORT: return "EAFNOSUPPORT";
+    case EADDRNOTAVAIL: return "EADDRNOTAVAIL";
+    case ENETUNREACH: return "ENETUNREACH";
+    case EHOSTUNREACH: return "EHOSTUNREACH";
+    case EMSGSIZE: return "EMSGSIZE";
+    case ECONNRESET: return "ECONNRESET";
+    case EINVAL: return "EINVAL";
+    case ENOTDIR: return "ENOTDIR";
+    case ENAMETOOLONG: return "ENAMETOOLONG";
+    case EAGAIN: return "EAGAIN";
+    default: return "EIO";
+    }
+#endif
+}
+
+static JSValue fg_throw_errno(JSContext *ctx, const char *what, const char *detail, int e)
+{
+    JSValue err = JS_NewError(ctx);
+    char message[512];
+    const char *name = fg_errno_name(e);
+    snprintf(message, sizeof(message), "%s %s%s%s", what, name, detail ? " " : "", detail ? detail : "");
+    JS_SetPropertyStr(ctx, err, "message", JS_NewString(ctx, message));
+    JS_SetPropertyStr(ctx, err, "code", JS_NewString(ctx, name));
+    JS_SetPropertyStr(ctx, err, "errno", JS_NewInt32(ctx, e));
+    JS_SetPropertyStr(ctx, err, "syscall", JS_NewString(ctx, what));
+    return JS_Throw(ctx, err);
+}
+
+static int fg_unix_address(struct fg_sockaddr_un *addr, const char *path)
+{
+    memset(addr, 0, sizeof(*addr));
+    addr->sun_family = FG_AF_UNIX;
+    if (strlen(path) >= sizeof(addr->sun_path)) {
+        return -1;
+    }
+    strcpy(addr->sun_path, path);
+    return 0;
+}
+
+/* listenUnix(path, backlog) -> id. The socket file must not exist yet (a stale one is the caller's to remove, as
+   with bind(2)). On a Windows without AF_UNIX it throws EAFNOSUPPORT, which the JavaScript layer answers with a
+   loopback emulation. */
+static JSValue fg_listen_unix(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    const char *path = JS_ToCString(ctx, argv[0]);
+    int32_t backlog = 128;
+    struct fg_sockaddr_un addr;
+    int id, e;
+    SOCKET fd;
+    fg_socket *sock;
+    JSValue result;
+
+    if (!path) {
+        return JS_EXCEPTION;
+    }
+    if (argc > 1) {
+        JS_ToInt32(ctx, &backlog, argv[1]);
+    }
+    if (fg_unix_address(&addr, path) != 0) {
+        result = JS_ThrowRangeError(ctx, "the socket path is too long");
+        JS_FreeCString(ctx, path);
+        return result;
+    }
+    id = fg_alloc_socket();
+    if (id < 0) {
+        JS_FreeCString(ctx, path);
+        return JS_ThrowInternalError(ctx, "too many open sockets (limit is %d)", FG_MAX_SOCKETS);
+    }
+    fd = socket(FG_AF_UNIX, SOCK_STREAM, 0);
+    if (fd == INVALID_SOCKET) {
+        e = FG_SOCKET_ERRNO;
+        result = fg_throw_errno(ctx, "listen", path, e);
+        JS_FreeCString(ctx, path);
+        return result;
+    }
+    if (bind(fd, (struct sockaddr *) &addr, sizeof(addr)) != 0 || listen(fd, backlog) != 0) {
+        e = FG_SOCKET_ERRNO;
+        FG_CLOSE_SOCKET(fd);
+        result = fg_throw_errno(ctx, "listen", path, e);
+        JS_FreeCString(ctx, path);
+        return result;
+    }
+    JS_FreeCString(ctx, path);
+    sock = &fg_sockets[id];
+    memset(sock, 0, sizeof(*sock));
+    mbedtls_net_init(&sock->net);
+    sock->net.fd = (int) fd;
+    mbedtls_net_set_nonblock(&sock->net);
+    sock->is_listener = 1;
+    sock->in_use = 1;
+    return JS_NewInt32(ctx, id);
+}
+
+/* connectUnix(path) -> id. A local connect completes at once, so this does not need the two-step start/status. */
+static JSValue fg_connect_unix(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    const char *path = JS_ToCString(ctx, argv[0]);
+    struct fg_sockaddr_un addr;
+    int id, e;
+    SOCKET fd;
+    fg_socket *sock;
+    JSValue result;
+
+    if (!path) {
+        return JS_EXCEPTION;
+    }
+    if (fg_unix_address(&addr, path) != 0) {
+        JS_FreeCString(ctx, path);
+        return JS_ThrowRangeError(ctx, "the socket path is too long");
+    }
+    id = fg_alloc_socket();
+    if (id < 0) {
+        JS_FreeCString(ctx, path);
+        return JS_ThrowInternalError(ctx, "too many open sockets (limit is %d)", FG_MAX_SOCKETS);
+    }
+    fd = socket(FG_AF_UNIX, SOCK_STREAM, 0);
+    if (fd == INVALID_SOCKET) {
+        e = FG_SOCKET_ERRNO;
+        result = fg_throw_errno(ctx, "connect", path, e);
+        JS_FreeCString(ctx, path);
+        return result;
+    }
+    if (connect(fd, (struct sockaddr *) &addr, sizeof(addr)) != 0) {
+        e = FG_SOCKET_ERRNO;
+        FG_CLOSE_SOCKET(fd);
+        result = fg_throw_errno(ctx, "connect", path, e);
+        JS_FreeCString(ctx, path);
+        return result;
+    }
+    JS_FreeCString(ctx, path);
+    sock = &fg_sockets[id];
+    memset(sock, 0, sizeof(*sock));
+    mbedtls_net_init(&sock->net);
+    sock->net.fd = (int) fd;
+    mbedtls_net_set_nonblock(&sock->net);
+    sock->in_use = 1;
+    return JS_NewInt32(ctx, id);
+}
+
+/* udpBind(host, port) -> id. host may be an IPv4 or IPv6 literal or a name; null means every IPv4 interface. */
+static JSValue fg_udp_bind(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    const char *host = NULL;
+    char port_str[16];
+    int32_t port = 0;
+    int id, ret;
+    fg_socket *sock;
+
+    if (argc > 0 && JS_IsString(argv[0])) {
+        host = JS_ToCString(ctx, argv[0]);
+        if (!host) {
+            return JS_EXCEPTION;
+        }
+    }
+    if (argc > 1) {
+        JS_ToInt32(ctx, &port, argv[1]);
+    }
+    id = fg_alloc_socket();
+    if (id < 0) {
+        if (host) JS_FreeCString(ctx, host);
+        return JS_ThrowInternalError(ctx, "too many open sockets (limit is %d)", FG_MAX_SOCKETS);
+    }
+    sock = &fg_sockets[id];
+    memset(sock, 0, sizeof(*sock));
+    mbedtls_net_init(&sock->net);
+    snprintf(port_str, sizeof(port_str), "%d", (int) port);
+    ret = mbedtls_net_bind(&sock->net, (host && host[0]) ? host : "0.0.0.0", port_str, MBEDTLS_NET_PROTO_UDP);
+    if (host) JS_FreeCString(ctx, host);
+    if (ret != 0) {
+        int e = FG_SOCKET_ERRNO;
+        mbedtls_net_free(&sock->net);
+        return fg_throw_errno(ctx, "bind", NULL, ret == MBEDTLS_ERR_NET_BIND_FAILED ? e : FG_EADDRNOTAVAIL);
+    }
+    mbedtls_net_set_nonblock(&sock->net);
+    sock->in_use = 1;
+    return JS_NewInt32(ctx, id);
+}
+
+/* udpSend(id, bytes, offset, length, host, port) -> bytes sent, or -1 when the socket's buffer is full. */
+static JSValue fg_udp_send(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    int32_t id, port = 0;
+    uint32_t offset = 0, length = 0;
+    fg_socket *sock;
+    size_t len = 0;
+    uint8_t *data;
+    const char *host;
+    char port_str[16];
+    struct addrinfo hints, *res = NULL, *ai;
+    struct sockaddr_storage local;
+    socklen_t local_len = sizeof(local);
+    int rc, sent = -1, e = 0;
+
+    if (JS_ToInt32(ctx, &id, argv[0])) {
+        return JS_EXCEPTION;
+    }
+    sock = fg_socket_get(ctx, id);
+    if (!sock) {
+        return JS_EXCEPTION;
+    }
+    data = JS_GetUint8Array(ctx, &len, argv[1]);
+    if (!data) {
+        return JS_EXCEPTION;
+    }
+    JS_ToUint32(ctx, &offset, argv[2]);
+    JS_ToUint32(ctx, &length, argv[3]);
+    if ((size_t) offset + length > len) {
+        return JS_ThrowRangeError(ctx, "offset and length are outside the buffer");
+    }
+    host = JS_ToCString(ctx, argv[4]);
+    if (!host) {
+        return JS_EXCEPTION;
+    }
+    JS_ToInt32(ctx, &port, argv[5]);
+    snprintf(port_str, sizeof(port_str), "%d", (int) port);
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_socktype = SOCK_DGRAM;
+    memset(&local, 0, sizeof(local));
+    getsockname(sock->net.fd, (struct sockaddr *) &local, &local_len);
+    hints.ai_family = local.ss_family == AF_INET6 ? AF_INET6 : AF_INET;
+    rc = getaddrinfo(host, port_str, &hints, &res);
+    JS_FreeCString(ctx, host);
+    if (rc != 0 || !res) {
+        return fg_throw_errno(ctx, "send", "getaddrinfo", FG_EADDRNOTAVAIL);
+    }
+    for (ai = res; ai; ai = ai->ai_next) {
+        sent = (int) sendto(sock->net.fd, (const char *) data + offset, (int) length, 0, ai->ai_addr, (int) ai->ai_addrlen);
+        if (sent >= 0) {
+            break;
+        }
+        e = FG_SOCKET_ERRNO;
+    }
+    freeaddrinfo(res);
+    if (sent < 0) {
+#ifdef _WIN32
+        if (e == WSAEWOULDBLOCK) return JS_NewInt32(ctx, -1);
+#else
+        if (e == EAGAIN || e == EWOULDBLOCK) return JS_NewInt32(ctx, -1);
+#endif
+        return fg_throw_errno(ctx, "send", NULL, e);
+    }
+    return JS_NewInt32(ctx, sent);
+}
+
+/* udpRecv(id, maxLength) -> [bytes, address, port, family] for one datagram, or null when none is waiting. */
+static JSValue fg_udp_recv(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    int32_t id, max = 65535;
+    fg_socket *sock;
+    struct sockaddr_storage from;
+    socklen_t from_len = sizeof(from);
+    char host[64], serv[16];
+    uint8_t *buf;
+    int n;
+    JSValue arr, bytes, global, ctor;
+
+    if (JS_ToInt32(ctx, &id, argv[0])) {
+        return JS_EXCEPTION;
+    }
+    sock = fg_socket_get(ctx, id);
+    if (!sock) {
+        return JS_EXCEPTION;
+    }
+    if (argc > 1) {
+        JS_ToInt32(ctx, &max, argv[1]);
+    }
+    if (max < 1 || max > 65535) {
+        max = 65535;
+    }
+    buf = malloc((size_t) max);
+    if (!buf) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    n = (int) recvfrom(sock->net.fd, (char *) buf, max, 0, (struct sockaddr *) &from, &from_len);
+    if (n < 0) {
+        int e = FG_SOCKET_ERRNO;
+        free(buf);
+#ifdef _WIN32
+        if (e == WSAEWOULDBLOCK) return JS_NULL;
+        if (e == WSAECONNRESET) return JS_NULL; /* an ICMP port-unreachable from an earlier send, not a failure */
+#else
+        if (e == EAGAIN || e == EWOULDBLOCK) return JS_NULL;
+#endif
+        return fg_throw_errno(ctx, "recv", NULL, e);
+    }
+    if (getnameinfo((struct sockaddr *) &from, from_len, host, sizeof(host), serv, sizeof(serv),
+                    NI_NUMERICHOST | NI_NUMERICSERV) != 0) {
+        host[0] = 0;
+        serv[0] = '0';
+        serv[1] = 0;
+    }
+    bytes = JS_NewArrayBufferCopy(ctx, buf, (size_t) n);
+    free(buf);
+    global = JS_GetGlobalObject(ctx);
+    ctor = JS_GetPropertyStr(ctx, global, "Uint8Array");
+    arr = JS_NewArray(ctx);
+    JS_SetPropertyUint32(ctx, arr, 0, JS_CallConstructor(ctx, ctor, 1, (JSValueConst[]) {bytes}));
+    JS_SetPropertyUint32(ctx, arr, 1, JS_NewString(ctx, host));
+    JS_SetPropertyUint32(ctx, arr, 2, JS_NewInt32(ctx, atoi(serv)));
+    JS_SetPropertyUint32(ctx, arr, 3, JS_NewString(ctx, from.ss_family == AF_INET6 ? "IPv6" : "IPv4"));
+    JS_FreeValue(ctx, bytes);
+    JS_FreeValue(ctx, ctor);
+    JS_FreeValue(ctx, global);
+    return arr;
+}
+
+/* udpOption(id, name, value, extra): broadcast, ttl, multicastTtl, multicastLoopback, addMembership,
+   dropMembership (value = group, extra = interface address), recvBufferSize, sendBufferSize. */
+static JSValue fg_udp_option(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    int32_t id, num = 0;
+    fg_socket *sock;
+    const char *name;
+    int rc = -1;
+    SOCKET fd;
+
+    if (JS_ToInt32(ctx, &id, argv[0])) {
+        return JS_EXCEPTION;
+    }
+    sock = fg_socket_get(ctx, id);
+    if (!sock) {
+        return JS_EXCEPTION;
+    }
+    fd = (SOCKET) sock->net.fd;
+    name = JS_ToCString(ctx, argv[1]);
+    if (!name) {
+        return JS_EXCEPTION;
+    }
+    if (!strcmp(name, "addMembership") || !strcmp(name, "dropMembership")) {
+        struct ip_mreq mreq;
+        const char *group = JS_ToCString(ctx, argv[2]);
+        const char *iface = argc > 3 && JS_IsString(argv[3]) ? JS_ToCString(ctx, argv[3]) : NULL;
+        memset(&mreq, 0, sizeof(mreq));
+        if (group) {
+            mreq.imr_multiaddr.s_addr = inet_addr(group);
+            mreq.imr_interface.s_addr = iface ? inet_addr(iface) : htonl(INADDR_ANY);
+            rc = setsockopt(fd, IPPROTO_IP, name[0] == 'a' ? IP_ADD_MEMBERSHIP : IP_DROP_MEMBERSHIP,
+                            (const char *) &mreq, sizeof(mreq));
+        }
+        if (group) JS_FreeCString(ctx, group);
+        if (iface) JS_FreeCString(ctx, iface);
+    } else {
+        int value;
+        JS_ToInt32(ctx, &num, argv[2]);
+        value = num;
+        if (!strcmp(name, "broadcast")) rc = setsockopt(fd, SOL_SOCKET, SO_BROADCAST, (const char *) &value, sizeof(value));
+        else if (!strcmp(name, "ttl")) rc = setsockopt(fd, IPPROTO_IP, IP_TTL, (const char *) &value, sizeof(value));
+        else if (!strcmp(name, "multicastTtl")) rc = setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, (const char *) &value, sizeof(value));
+        else if (!strcmp(name, "multicastLoopback")) rc = setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, (const char *) &value, sizeof(value));
+        else if (!strcmp(name, "recvBufferSize")) rc = setsockopt(fd, SOL_SOCKET, SO_RCVBUF, (const char *) &value, sizeof(value));
+        else if (!strcmp(name, "sendBufferSize")) rc = setsockopt(fd, SOL_SOCKET, SO_SNDBUF, (const char *) &value, sizeof(value));
+    }
+    JS_FreeCString(ctx, name);
+    if (rc != 0) {
+        return fg_throw_errno(ctx, "setsockopt", NULL, FG_SOCKET_ERRNO);
+    }
+    return JS_UNDEFINED;
+}
+
+/* Mixed in below so the socket functions above see it. */
+
 static const JSCFunctionListEntry fg_native_funcs[] = {
     JS_CFUNC_DEF("evalScript", 2, fg_eval_script),
     JS_CFUNC_DEF("promiseState", 1, fg_promise_state),
@@ -1898,6 +2311,12 @@ static const JSCFunctionListEntry fg_native_funcs[] = {
     JS_CFUNC_DEF("connectStatus", 1, fg_connect_status),
     JS_CFUNC_DEF("accept", 1, fg_accept),
     JS_CFUNC_DEF("poll", 3, fg_poll),
+    JS_CFUNC_DEF("listenUnix", 2, fg_listen_unix),
+    JS_CFUNC_DEF("connectUnix", 1, fg_connect_unix),
+    JS_CFUNC_DEF("udpBind", 2, fg_udp_bind),
+    JS_CFUNC_DEF("udpSend", 6, fg_udp_send),
+    JS_CFUNC_DEF("udpRecv", 2, fg_udp_recv),
+    JS_CFUNC_DEF("udpOption", 4, fg_udp_option),
     JS_CFUNC_DEF("address", 2, fg_address),
     JS_CFUNC_DEF("hash", 2, fg_hash),
     JS_CFUNC_DEF("hmac", 3, fg_hmac),
@@ -1918,6 +2337,10 @@ extern const JSCFunctionListEntry graak_napi_funcs[];
 extern const size_t graak_napi_funcs_count;
 extern const JSCFunctionListEntry graak_wasm_funcs[];
 extern const size_t graak_wasm_funcs_count;
+extern const JSCFunctionListEntry graak_sqlite_funcs[];
+extern const size_t graak_sqlite_funcs_count;
+extern const JSCFunctionListEntry graak_ffi_funcs[];
+extern const size_t graak_ffi_funcs_count;
 
 void graak_native_init(JSContext *ctx)
 {
@@ -1938,6 +2361,9 @@ void graak_native_init(JSContext *ctx)
     JS_SetPropertyFunctionList(ctx, native, graak_napi_funcs, (int) graak_napi_funcs_count);
     /* WebAssembly (wasm3): instantiate, call exports, linear memory. node-wasm.js builds the WebAssembly API on it. */
     JS_SetPropertyFunctionList(ctx, native, graak_wasm_funcs, (int) graak_wasm_funcs_count);
+    /* SQLite (amalgamation compiled in) and libffi: node:sqlite, Deno KV and Deno.dlopen are built on these. */
+    JS_SetPropertyFunctionList(ctx, native, graak_sqlite_funcs, (int) graak_sqlite_funcs_count);
+    JS_SetPropertyFunctionList(ctx, native, graak_ffi_funcs, (int) graak_ffi_funcs_count);
     JS_SetPropertyStr(ctx, native, "backend", JS_NewString(ctx, "c"));
 #ifdef _WIN32
     JS_SetPropertyStr(ctx, native, "platform", JS_NewString(ctx, "win32"));

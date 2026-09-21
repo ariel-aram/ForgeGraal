@@ -370,6 +370,56 @@ function withCode(err, host, port) {
  * the next _read()), writes are queued until the host takes them, and end() half-closes the connection. Libraries
  * that treat a socket as a stream -- undici reads it with `socket.read()` -- see one.
  */
+
+/* ------------------------------------------------ unix-domain sockets */
+
+/*
+ * Real AF_UNIX sockets where the system has them (every POSIX system, Windows 10 and later). Older Windows has
+ * none, so there a "unix socket" is a loopback TCP listener and the socket path is an ordinary file that names its
+ * port: programs written against this host reach each other the same way, though a program that is not one of
+ * them cannot connect to it.
+ */
+const EMULATION_MARK = "graak-unix-socket 127.0.0.1 ";
+let unixFs = null;
+
+function unixListen(path, backlog) {
+	try {
+		return native.listenUnix(path, backlog);
+	} catch (err) {
+		if (err?.code !== "EAFNOSUPPORT" || !unixFs) throw err;
+		if (unixFs.existsSync(path)) throw Object.assign(new Error(`listen EADDRINUSE: address already in use ${path}`), { code: "EADDRINUSE", syscall: "listen", address: path });
+		const id = native.listen("127.0.0.1", 0, backlog);
+		unixFs.writeFileSync(path, `${EMULATION_MARK}${native.address(id, false)[1]}`);
+		return id;
+	}
+}
+
+function unixConnect(path) {
+	try {
+		return native.connectUnix(path);
+	} catch (err) {
+		if (err?.code !== "EAFNOSUPPORT" || !unixFs) throw err;
+		let text = "";
+		try {
+			text = String(unixFs.readFileSync(path, "utf8"));
+		} catch {
+			throw Object.assign(new Error(`connect ENOENT ${path}`), { code: "ENOENT", syscall: "connect", address: path });
+		}
+		if (!text.startsWith(EMULATION_MARK)) throw Object.assign(new Error(`connect ECONNREFUSED ${path}`), { code: "ECONNREFUSED", syscall: "connect", address: path });
+		const id = native.connectStart("127.0.0.1", Number(text.slice(EMULATION_MARK.length)), false, false);
+		for (let i = 0; i < 5000 && !native.connectStatus(id); i++) native.poll([id], 2, [id]);
+		return id;
+	}
+}
+
+function unixRemove(path) {
+	try {
+		unixFs?.unlinkSync(path);
+	} catch {
+		// Already gone.
+	}
+}
+
 function createSocketClass(Duplex) {
 	return class Socket extends Duplex {
 		constructor(options = {}) {
@@ -450,6 +500,10 @@ function createSocketClass(Duplex) {
 			const a = this._address(false);
 			return a ? { address: a[0], family: a[2], port: a[1] } : {};
 		}
+		get remoteAddress() {
+			if (this._unixPath) return undefined;
+			return (this._peer ??= this._address(true))?.[0];
+		}
 
 		connect(options, port, listener) {
 			if (typeof options !== "object" || options === null) {
@@ -460,10 +514,10 @@ function createSocketClass(Duplex) {
 			} else if (typeof port === "function") {
 				listener = port;
 			}
-			const { host = "localhost", port: portNumber, tls = false } = options;
+			let { host = "localhost", port: portNumber, tls = false } = options;
 			// NODE_TLS_REJECT_UNAUTHORIZED=0 turns verification off for the whole process, as in Node.
 			const rejectUnauthorized = options.rejectUnauthorized ?? globalThis.process?.env?.NODE_TLS_REJECT_UNAUTHORIZED !== "0";
-			if (options.path) throw new Error("net: local (unix socket) paths are not supported by the Graak native host");
+			if (options.path) return this._connectUnix(options.path, listener);
 			if (listener) this.once(tls ? "secureConnect" : "connect", listener);
 			this.connecting = true;
 			this._tls = tls;
@@ -515,6 +569,32 @@ function createSocketClass(Duplex) {
 				watch(id, step);
 				watchWrite(id, step);
 				step();
+			});
+			return this;
+		}
+
+		/* A local (unix-domain) connection: the host connects at once, so this only has to announce it. */
+		_connectUnix(path, listener) {
+			if (listener) this.once("connect", listener);
+			this.connecting = true;
+			this._unixPath = path;
+			queueMicrotask(() => {
+				if (this.destroyed) return;
+				let id;
+				try {
+					id = unixConnect(path);
+				} catch (err) {
+					this.connecting = false;
+					this.destroy(toError(err));
+					return;
+				}
+				this._adopt(id);
+				this.connecting = false;
+				this.emit("connect");
+				this.emit("ready");
+				const pending = this._pendingWrite;
+				this._pendingWrite = null;
+				if (pending) this._writeNow(pending.chunk, pending.callback);
 			});
 			return this;
 		}
@@ -696,6 +776,8 @@ function createServerClass(EventEmitter, Socket, tlsServer) {
 		listen(...args) {
 			let callback = typeof args[args.length - 1] === "function" ? args.pop() : undefined;
 			let options = args[0];
+			// listen(path[, backlog][, callback]): a string that is not a number is a unix-domain socket path.
+			if (typeof options === "string" && Number.isNaN(Number(options))) options = { path: options, backlog: typeof args[1] === "number" ? args[1] : undefined };
 			if (typeof options !== "object" || options === null) {
 				const [port, second, third] = args;
 				options = { port };
@@ -704,8 +786,21 @@ function createServerClass(EventEmitter, Socket, tlsServer) {
 				if (typeof third === "number") options.backlog = third;
 				if (typeof second === "string" && typeof third === "number") options.backlog = third;
 			}
-			if (options.path) throw new Error("net: local (unix socket) paths are not supported by the Graak native host");
 			if (callback) this.once("listening", callback);
+			if (options.path) {
+				try {
+					this.id = unixListen(options.path, options.backlog ?? 511);
+				} catch (err) {
+					const error = toError(err);
+					queueMicrotask(() => this.emit("error", error));
+					return this;
+				}
+				this._unixPath = options.path;
+				this.listening = true;
+				watch(this.id, () => this._accept());
+				queueMicrotask(() => this.emit("listening"));
+				return this;
+			}
 			const port = options.port === undefined || options.port === null ? 0 : Number(options.port);
 			try {
 				this.id = native.listen(
@@ -755,6 +850,7 @@ function createServerClass(EventEmitter, Socket, tlsServer) {
 
 		address() {
 			if (this.id === null) return null;
+			if (this._unixPath) return this._unixPath;
 			const a = native.address(this.id, false);
 			return a ? { port: a[1], family: a[2], address: a[0] } : null;
 		}
@@ -776,6 +872,10 @@ function createServerClass(EventEmitter, Socket, tlsServer) {
 					// Already closed.
 				}
 				this.id = null;
+			}
+			if (this._unixPath) {
+				unixRemove(this._unixPath);
+				this._unixPath = null;
 			}
 			this.listening = false;
 			this._closing = true;
@@ -799,12 +899,229 @@ function createServerClass(EventEmitter, Socket, tlsServer) {
 	};
 }
 
-function createNetModules(EventEmitter, Duplex) {
+
+/* ------------------------------------------------ dgram */
+
+function createDgram(EventEmitter) {
+	class Socket extends EventEmitter {
+		constructor(options, listener) {
+			super();
+			const type = typeof options === "string" ? options : options?.type;
+			if (type !== "udp4" && type !== "udp6") {
+				throw Object.assign(new TypeError(`Bad socket type specified. Valid types are: udp4, udp6`), { code: "ERR_SOCKET_BAD_TYPE" });
+			}
+			this.type = type;
+			this._options = typeof options === "object" ? options : {};
+			this.id = null;
+			this._bound = false;
+			this._binding = false;
+			this._closed = false;
+			this._sends = [];
+			this._connected = null;
+			if (listener) this.on("message", listener);
+		}
+
+		_family() {
+			return this.type === "udp6" ? "IPv6" : "IPv4";
+		}
+
+		bind(port, address, callback) {
+			if (this._bound || this._binding) throw Object.assign(new Error("Socket is already bound"), { code: "ERR_SOCKET_ALREADY_BOUND" });
+			if (typeof port === "object" && port !== null) {
+				callback = typeof address === "function" ? address : callback;
+				address = port.address;
+				port = port.port;
+			} else if (typeof port === "function") {
+				callback = port;
+				port = 0;
+				address = undefined;
+			} else if (typeof address === "function") {
+				callback = address;
+				address = undefined;
+			}
+			if (callback) this.once("listening", callback);
+			this._binding = true;
+			const host = address ?? (this.type === "udp6" ? "::" : "0.0.0.0");
+			try {
+				this.id = native.udpBind(host, Number(port ?? 0));
+			} catch (err) {
+				this._binding = false;
+				const error = toError(err);
+				queueMicrotask(() => this.emit("error", error));
+				return this;
+			}
+			this._binding = false;
+			this._bound = true;
+			watch(this.id, () => this._receive());
+			queueMicrotask(() => this.emit("listening"));
+			return this;
+		}
+
+		_receive() {
+			while (this.id !== null) {
+				let got;
+				try {
+					got = native.udpRecv(this.id, this._options.recvBufferSize ? 65535 : 65535);
+				} catch (err) {
+					this.emit("error", toError(err));
+					return;
+				}
+				if (got === null) return;
+				const [bytes, address, port, family] = got;
+				this.emit("message", typeof Buffer !== "undefined" ? Buffer.from(bytes) : bytes, { address, family, port, size: bytes.length });
+			}
+		}
+
+		send(msg, offset, length, port, address, callback) {
+			if (this._closed) throw Object.assign(new Error("Not running"), { code: "ERR_SOCKET_DGRAM_NOT_RUNNING" });
+			if (Array.isArray(msg)) msg = typeof Buffer !== "undefined" ? Buffer.concat(msg.map((m) => Buffer.from(m))) : msg;
+			const bytes = toBytes(msg);
+			// send(msg, port[, address][, callback]) and send(msg, offset, length, port[, address][, callback])
+			if (typeof offset === "number" && typeof length !== "number" || typeof length === "function" || typeof length === "string" || length === undefined) {
+				callback = typeof port === "function" ? port : typeof address === "function" ? address : callback;
+				if (typeof length === "function") callback = length;
+				const dest = typeof length === "string" ? length : typeof port === "string" ? port : typeof address === "string" ? address : undefined;
+				port = offset ?? this._connected?.port;
+				address = dest ?? this._connected?.address;
+				offset = 0;
+				length = bytes.length;
+			} else if (typeof address === "function") {
+				callback = address;
+				address = undefined;
+			}
+			address = address ?? this._connected?.address ?? (this.type === "udp6" ? "::1" : "127.0.0.1");
+			port = port ?? this._connected?.port;
+			if (!this._bound && !this._binding) this.bind(0);
+			const job = { bytes, offset, length, port: Number(port), address, callback };
+			this._sends.push(job);
+			this._flush();
+		}
+
+		_flush() {
+			while (this._sends.length && this.id !== null) {
+				const job = this._sends[0];
+				let sent;
+				try {
+					sent = native.udpSend(this.id, job.bytes, job.offset, job.length, job.address, job.port);
+				} catch (err) {
+					this._sends.shift();
+					const error = toError(err);
+					if (job.callback) job.callback(error);
+					else this.emit("error", error);
+					continue;
+				}
+				if (sent < 0) {
+					watchWrite(this.id, () => this._flush());
+					return;
+				}
+				this._sends.shift();
+				if (job.callback) queueMicrotask(() => job.callback(null, sent));
+			}
+			if (this.id !== null) unwatchWrite(this.id);
+		}
+
+		connect(port, address, callback) {
+			if (typeof address === "function") {
+				callback = address;
+				address = undefined;
+			}
+			this._connected = { port: Number(port), address: address ?? (this.type === "udp6" ? "::1" : "127.0.0.1") };
+			if (!this._bound) this.bind(0);
+			if (callback) this.once("connect", callback);
+			queueMicrotask(() => this.emit("connect"));
+		}
+		disconnect() {
+			this._connected = null;
+		}
+		remoteAddress() {
+			if (!this._connected) throw Object.assign(new Error("Not connected"), { code: "ERR_SOCKET_DGRAM_NOT_CONNECTED" });
+			return { address: this._connected.address, family: this._family(), port: this._connected.port };
+		}
+
+		address() {
+			if (this.id === null) throw Object.assign(new Error("getsockname EBADF"), { code: "EBADF" });
+			const a = native.address(this.id, false);
+			return { address: a[0], family: a[2], port: a[1] };
+		}
+
+		close(callback) {
+			if (this._closed) return this;
+			this._closed = true;
+			if (callback) this.once("close", callback);
+			if (this.id !== null) {
+				unwatch(this.id);
+				unwatchWrite(this.id);
+				try {
+					native.close(this.id);
+				} catch {
+					// Already closed.
+				}
+				this.id = null;
+			}
+			queueMicrotask(() => this.emit("close"));
+			return this;
+		}
+
+		_option(name, value, extra) {
+			if (this.id === null) throw Object.assign(new Error(`${name} EBADF`), { code: "EBADF" });
+			native.udpOption(this.id, name, value, extra);
+		}
+		setBroadcast(flag) {
+			this._option("broadcast", flag ? 1 : 0);
+		}
+		setTTL(ttl) {
+			this._option("ttl", ttl);
+			return ttl;
+		}
+		setMulticastTTL(ttl) {
+			this._option("multicastTtl", ttl);
+			return ttl;
+		}
+		setMulticastLoopback(flag) {
+			this._option("multicastLoopback", flag ? 1 : 0);
+			return flag;
+		}
+		addMembership(group, iface) {
+			this._option("addMembership", group, iface);
+		}
+		dropMembership(group, iface) {
+			this._option("dropMembership", group, iface);
+		}
+		setRecvBufferSize(size) {
+			this._option("recvBufferSize", size);
+		}
+		setSendBufferSize(size) {
+			this._option("sendBufferSize", size);
+		}
+		getRecvBufferSize() {
+			return 212992;
+		}
+		getSendBufferSize() {
+			return 212992;
+		}
+		ref() {
+			return this;
+		}
+		unref() {
+			return this;
+		}
+		[Symbol.asyncDispose]() {
+			return new Promise((resolve) => this.close(resolve));
+		}
+	}
+
+	return { createSocket: (options, listener) => new Socket(options, listener), Socket };
+}
+
+function createNetModules(EventEmitter, Duplex, options = {}) {
+	unixFs = options.fs ?? unixFs;
 	const Socket = createSocketClass(Duplex);
 	const Server = createServerClass(EventEmitter, Socket, false);
 	const TlsServer = createServerClass(EventEmitter, Socket, true);
 
 	const connect = (...args) => {
+		// net.connect(path[, listener])
+		if (typeof args[0] === "string" && Number.isNaN(Number(args[0]))) args[0] = { path: args[0] };
 		const socket = new Socket();
 		// Returned synchronously, like Node: callers attach listeners before it is connected.
 		socket.connect(...args);
@@ -851,7 +1168,7 @@ function createNetModules(EventEmitter, Duplex) {
 		DEFAULT_MAX_VERSION: "TLSv1.3",
 	};
 
-	return { net, tls };
+	return { net, tls, dgram: createDgram(EventEmitter) };
 }
 
 export { zlib, createNetModules, createSocketClass, toBytes };

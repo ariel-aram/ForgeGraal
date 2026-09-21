@@ -744,7 +744,7 @@ Object.assign(processModule, {
 	platform: os.platform === "win32" ? "win32" : os.platform,
 	arch: globalThis.__graak_native?.arch ?? "ia32",
 	version: "v20.18.0",
-	versions: { node: "20.18.0", v8: "0.0.0-quickjs-ng", quickjs: "0.16.2", uv: "1.48.0", modules: "115", napi: "10", openssl: "mbedtls-3.6.2", zlib: "miniz-3.0.2" },
+	versions: { node: "20.18.0", v8: "0.0.0-quickjs-ng", quickjs: "0.16.2", uv: "1.48.0", modules: "0", napi: "10", openssl: "mbedtls-3.6.2", zlib: "miniz-3.0.2" },
 	release: { name: "node", lts: "Iron" },
 	config: { target_defaults: {}, variables: {} },
 	features: { inspector: false, debug: false, uv: true, ipv6: true, tls_alpn: false, tls_sni: true, tls_ocsp: false, tls: true },
@@ -1448,10 +1448,32 @@ const nativeLayer = globalThis.__graak_native ?? null;
 let nativeModules = null;
 if (nativeLayer) {
 	const nm = await import("./native-modules.js");
-	const { net, tls } = nm.createNetModules(EventEmitter, streamModule.Duplex);
+	const { net, tls, dgram } = nm.createNetModules(EventEmitter, streamModule.Duplex, { fs });
 	const { http, https } = (await import("./node-http.js")).createHttpModules({ net, tls }, EventEmitter, streamModule, Buffer);
 	const fetch = fetchApi.makeFetch({ http, https }, nm.zlib);
-	nativeModules = { net, tls, http, https, fetch, crypto: createCrypto({ native: nativeLayer, Buffer, stream: streamModule, toBytes: nm.toBytes }), zlib: nm.zlib };
+	const sqlite = (await import("./node-sqlite.js")).createSqlite({ native: nativeLayer, Buffer });
+	const websocketModule = await import("./node-websocket.js");
+	nativeModules = { net, tls, dgram, sqlite, http, https, fetch, crypto: createCrypto({ native: nativeLayer, Buffer, stream: streamModule, toBytes: nm.toBytes }), zlib: nm.zlib };
+
+	// WebSocket, MessageEvent and CloseEvent are built on first use, so a program that never opens one pays nothing.
+	{
+		let built = null;
+		// The events a runtime already has are kept; the getters installed below must not be asked for them.
+		const present = { CloseEvent: globalThis.CloseEvent, MessageEvent: globalThis.MessageEvent };
+		const build = () => (built ??= websocketModule.createWebSocket({ http, https, crypto: nativeModules.crypto, Buffer, ...present }));
+		Object.defineProperty(globalThis, Symbol.for("graak.websocket"), { get: build, configurable: true, enumerable: false });
+		for (const name of ["WebSocket", "CloseEvent", "MessageEvent"]) {
+			if (typeof globalThis[name] !== "undefined") continue;
+			Object.defineProperty(globalThis, name, {
+				get: () => build()[name],
+				set(value) {
+					Object.defineProperty(globalThis, name, { value, writable: true, configurable: true, enumerable: false });
+				},
+				configurable: true,
+				enumerable: false,
+			});
+		}
+	}
 
 	// Loaders for native addons choose between glibc and musl prebuilts by reading this, exactly as
 	// they do under Node.js.
@@ -1677,6 +1699,9 @@ const builtins = {
 	punycode: createPunycode(),
 	constants: { ...osModule.constants.errno, ...osModule.constants.signals, ...fs.constants },
 	...createUnavailable(CallableEventEmitter),
+	// Present only where the host has them; these replace the "unavailable" answer of the same name.
+	...(nativeModules?.dgram ? { dgram: nativeModules.dgram } : {}),
+	...(nativeModules?.sqlite ? { sqlite: nativeModules.sqlite.node, "bun:sqlite": nativeModules.sqlite.bun } : {}),
 };
 
 

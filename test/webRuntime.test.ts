@@ -46,10 +46,21 @@ const DIFFERENTIAL: Array<[string, string[]]> = [
 	["wasm-corpus.cjs", []],
 	["child-corpus.cjs", []],
 	["crypto-corpus.cjs", CERTS],
+	["dgram-corpus.cjs", []],
+	["unix-corpus.cjs", []],
+	["watch-corpus.cjs", []],
+	["sqlite-corpus.cjs", []],
+	["websocket-corpus.cjs", []],
 ];
 
+// node:sqlite arrived in Node.js 22.5; the baseline for that corpus needs it.
+const hasNodeSqlite = spawnSync(process.execPath, ["-e", "require('node:sqlite')"]).status === 0;
+
 for (const [fixture, extra] of DIFFERENTIAL) {
-	test(`${fixture} prints exactly what Node.js prints`, { timeout: 300_000 }, async () => {
+	test(`${fixture} prints exactly what Node.js prints`, {
+		timeout: 300_000,
+		skip: fixture === "sqlite-corpus.cjs" && !hasNodeSqlite && "this Node.js has no node:sqlite",
+	}, async () => {
 		const root = project([fixture, ...extra]);
 		const onNode = spawnSync(process.execPath, [join(root, fixture)], { encoding: "utf-8", timeout: 60_000 });
 		assert.equal(onNode.status, 0, `Node baseline failed:\n${onNode.stdout}${onNode.stderr}`);

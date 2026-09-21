@@ -30,6 +30,8 @@ export interface CollectedProject {
 	/** Highest `engines.node` lower bound across the bundle, if any. */
 	minNode: string | null;
 	usesBunApis: string[];
+	/** The subset of usesBunApis that reach past `bun:sqlite`, which the native host provides. */
+	usesBunGlobals: string[];
 	packages: number;
 }
 
@@ -54,6 +56,8 @@ const SUPPORTED_ENTRY_EXTENSIONS = new Set([".js", ".cjs", ".mjs", ".ts", ".mts"
 export const NATIVE_ONLY_ENTRY_EXTENSIONS = new Set([".ts", ".mts", ".cts", ".tsx", ".jsx"]);
 const SOURCE_EXTENSIONS = new Set([".js", ".cjs", ".mjs"]);
 const BUN_API_PATTERN = /\bBun\.[a-zA-Z]|["']bun:[a-z]/;
+/** What of Bun the native host does not provide: everything but `bun:sqlite`. */
+const BUN_GLOBALS_PATTERN = /\bBun\.[a-zA-Z]|["']bun:(?!sqlite["'])[a-z]/;
 
 function toPosix(p: string): string {
 	return p.split(sep).join("/");
@@ -167,6 +171,7 @@ export class ProjectCollector {
 			nativeAddons: collector.nativeAddons,
 			minNode: collector.minNode,
 			usesBunApis: collector.usesBunApis,
+			usesBunGlobals: collector.usesBunGlobals,
 			packages: collector.placed.size,
 		};
 	}
@@ -174,6 +179,7 @@ export class ProjectCollector {
 	private readonly entries: ArchiveEntry[] = [];
 	private readonly nativeAddons: NativeAddon[] = [];
 	private readonly usesBunApis: string[] = [];
+	private readonly usesBunGlobals: string[] = [];
 	private minNode: string | null = null;
 
 	/** Destination package dir (e.g. "node_modules/a/node_modules/b") -> real source dir. */
@@ -196,6 +202,7 @@ export class ProjectCollector {
 	}
 
 	private addFile(abs: string, dest: string, stats: Stats, isProjectFile: boolean) {
+		let text = "";
 		this.entries.push({ path: dest, source: abs, mode: stats.mode });
 
 		if (dest.endsWith(".node")) {
@@ -210,9 +217,10 @@ export class ProjectCollector {
 			isProjectFile &&
 			SOURCE_EXTENSIONS.has(extname(dest)) &&
 			stats.size < 4 * 1024 * 1024 &&
-			BUN_API_PATTERN.test(readFileSync(abs, "utf-8"))
+			BUN_API_PATTERN.test((text = readFileSync(abs, "utf-8")))
 		) {
 			this.usesBunApis.push(dest);
+			if (BUN_GLOBALS_PATTERN.test(text)) this.usesBunGlobals.push(dest);
 		}
 	}
 

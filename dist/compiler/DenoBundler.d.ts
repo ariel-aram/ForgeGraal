@@ -1,3 +1,5 @@
+/** The files of the Deno namespace, in the order they are inlined ahead of the program. */
+export declare const DENO_SHIM_FILES: readonly ["deno-shim.js", "deno-test.js", "deno-ffi.js", "deno-kv.js"];
 export interface DenoVersion {
     deno: string;
     v8: string;
@@ -23,6 +25,8 @@ export interface DenoBundleResult {
     npmPackages: string[];
     /** Things the program uses that Graak cannot provide, worded for the build log. */
     warnings: string[];
+    /** Whether the program calls into shared libraries (Deno.dlopen), which a statically linked host cannot do. */
+    usesFfi: boolean;
     deno: DenoVersion;
     /** Removes `root`. Safe to call more than once. */
     cleanup: () => void;

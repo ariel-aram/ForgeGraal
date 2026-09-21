@@ -1,0 +1,33 @@
+// RocksDB itself (rocksdb-native): an addon that talks to libuv directly, for its thread pool and its file I/O.
+const RocksDB = require("rocksdb-native");
+(async () => {
+  const fs = require("fs");
+  const path = require("path");
+  const dir = fs.mkdtempSync(path.join(require("os").tmpdir(), "graak-rocks-"));
+  const db = new RocksDB(dir);
+  await db.ready();
+  await db.put("a", "1");
+  await db.put("b", "2");
+  await db.put("c", "3");
+  console.log("get", String(await db.get("a")), String(await db.get("missing")));
+  const write = db.write();
+  write.put("d", "4");
+  write.delete("b");
+  await write.flush();
+  const read = db.read();
+  const first = read.get("a");
+  const second = read.get("d");
+  read.flush();
+  console.log("read batch", String(await first), String(await second));
+  const rows = [];
+  for await (const { key, value } of db.iterator()) rows.push([String(key), String(value)]);
+  console.log("iter", JSON.stringify(rows));
+  const reversed = [];
+  for await (const { key } of db.iterator({ reverse: true, limit: 2 })) reversed.push(String(key));
+  console.log("reverse", JSON.stringify(reversed));
+  const ranged = [];
+  for await (const { key } of db.iterator({ gte: "b", lt: "d" })) ranged.push(String(key));
+  console.log("range", JSON.stringify(ranged));
+  await db.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+})().catch((e) => { console.log("ERR", e.message); process.exit(1); });

@@ -147,6 +147,7 @@ class BinaryPackager {
         // resolves. Deno itself is asked for the module graph, which becomes one bundle plus a real node_modules
         // tree -- see DenoBundler. Deno is needed here, at build time, and never on the device.
         let cleanupDeno = null;
+        let denoUsesFfi = false;
         if (pm === "deno") {
             if (!DenoBundler_1.DenoBundler.isAvailable()) {
                 throw new structures_1.RuntimeError("This is a Deno project and 'deno' is not on PATH. Graak reads Deno's own module graph to build it, the way " +
@@ -168,6 +169,7 @@ class BinaryPackager {
             cleanupDeno = bundled.cleanup;
             excludePaths.push(...bundled.bundled);
             warnings.push(...bundled.warnings);
+            denoUsesFfi = bundled.usesFfi;
         }
         try {
             log(`Collecting project files from ${root} (${pm})`);
@@ -202,15 +204,19 @@ class BinaryPackager {
                     strategy !== "auto" ||
                     RuntimeRegistry_1.RuntimeRegistry.find(target, root).length > 0;
             if (QuickJsPackager_1.QuickJsPackager.supports(target) && !explicitNodeOverride) {
-                if (project.usesBunApis.length) {
-                    warnings.push(`Bun APIs detected (${project.usesBunApis.slice(0, 5).join(", ")}). The native host does not provide ` +
-                        "Bun: anything under Bun.* or bun:* fails when reached. Use node: APIs or a portable database " +
-                        "driver, or build with --node-binary / --strategy sea|portable to get the Bun polyfills on Node.js.");
+                // bun:sqlite is provided (SQLite is built into the host); the rest of Bun is not.
+                if (project.usesBunGlobals.length) {
+                    warnings.push(`Bun APIs detected (${project.usesBunGlobals.slice(0, 5).join(", ")}). The native host provides bun:sqlite ` +
+                        "but not the rest of Bun: anything under Bun.* or another bun:* module fails when reached. Use node: APIs, " +
+                        "or build with --node-binary / --strategy sea|portable to get the Bun polyfills on Node.js.");
                 }
                 // Node-API is implemented by the host itself (quickjs/native/napi.c), so a native addon is
                 // not an obstacle here: it loads the way it would under Node.js, provided it was built for
                 // this target's architecture and the host can dlopen at all.
                 const { required, optional } = (0, QuickJsPackager_1.classifyNativeAddons)(project.nativeAddons.map((a) => a.path));
+                // Deno.dlopen loads a shared library at run time, which a static host cannot do any more than an addon.
+                if (denoUsesFfi)
+                    required.set("Deno FFI (Deno.dlopen)", []);
                 let nativeLibc = options.nativeLibc;
                 if (required.size && !QuickJsPackager_1.QuickJsPackager.loadsAddons(target, nativeLibc ?? "musl")) {
                     const names = [...required.keys()].join(", ");

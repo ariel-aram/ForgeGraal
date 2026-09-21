@@ -124,7 +124,7 @@ async function main() {
                 console.log("\nDeno projects: every target above is available. Graak reads Deno's own module graph (import map, jsr:, npm: and " +
                     "https: imports, top-level await) and provides the Deno namespace, so 'deno' must be on PATH at build time only. " +
                     `'deno compile' builds ${own} itself; Graak is the way to build the rest (32-bit systems, Windows XP, Vista and 7, ` +
-                    "iSH, ARMv7, FreeBSD) and to make one 3 MB file with no Deno on the device.");
+                    "iSH, ARMv7, FreeBSD) and to make one file with no Deno on the device.");
             }
             if (pm === "bun") {
                 console.log("\nBun projects: every target above is available. TypeScript/JSX entrypoints are transpiled " +

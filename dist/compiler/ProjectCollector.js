@@ -28,6 +28,8 @@ const SUPPORTED_ENTRY_EXTENSIONS = new Set([".js", ".cjs", ".mjs", ".ts", ".mts"
 exports.NATIVE_ONLY_ENTRY_EXTENSIONS = new Set([".ts", ".mts", ".cts", ".tsx", ".jsx"]);
 const SOURCE_EXTENSIONS = new Set([".js", ".cjs", ".mjs"]);
 const BUN_API_PATTERN = /\bBun\.[a-zA-Z]|["']bun:[a-z]/;
+/** What of Bun the native host does not provide: everything but `bun:sqlite`. */
+const BUN_GLOBALS_PATTERN = /\bBun\.[a-zA-Z]|["']bun:(?!sqlite["'])[a-z]/;
 function toPosix(p) {
     return p.split(node_path_1.sep).join("/");
 }
@@ -132,12 +134,14 @@ class ProjectCollector {
             nativeAddons: collector.nativeAddons,
             minNode: collector.minNode,
             usesBunApis: collector.usesBunApis,
+            usesBunGlobals: collector.usesBunGlobals,
             packages: collector.placed.size,
         };
     }
     entries = [];
     nativeAddons = [];
     usesBunApis = [];
+    usesBunGlobals = [];
     minNode = null;
     /** Destination package dir (e.g. "node_modules/a/node_modules/b") -> real source dir. */
     placed = new Map();
@@ -159,6 +163,7 @@ class ProjectCollector {
         return this.excluded.some((p) => isInside(abs, p));
     }
     addFile(abs, dest, stats, isProjectFile) {
+        let text = "";
         this.entries.push({ path: dest, source: abs, mode: stats.mode });
         if (dest.endsWith(".node")) {
             let info = null;
@@ -173,8 +178,10 @@ class ProjectCollector {
         else if (isProjectFile &&
             SOURCE_EXTENSIONS.has((0, node_path_1.extname)(dest)) &&
             stats.size < 4 * 1024 * 1024 &&
-            BUN_API_PATTERN.test((0, node_fs_1.readFileSync)(abs, "utf-8"))) {
+            BUN_API_PATTERN.test((text = (0, node_fs_1.readFileSync)(abs, "utf-8")))) {
             this.usesBunApis.push(dest);
+            if (BUN_GLOBALS_PATTERN.test(text))
+                this.usesBunGlobals.push(dest);
         }
     }
     /**

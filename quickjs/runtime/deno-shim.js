@@ -560,8 +560,10 @@
 		#waiting = null;
 		#ended = false;
 		#error = null;
-		constructor(socket) {
+		#unix;
+		constructor(socket, unixPath) {
 			this.#socket = socket;
+			this.#unix = unixPath;
 			Object.defineProperty(this, "rid", { value: 0, enumerable: false });
 			socket.on("data", (chunk) => {
 				this.#queue.push(chunk);
@@ -588,10 +590,10 @@
 			}
 		}
 		get localAddr() {
-			return addrOf(this.#socket, false);
+			return this.#unix ? { transport: "unix", path: this.#unix } : addrOf(this.#socket, false);
 		}
 		get remoteAddr() {
-			return addrOf(this.#socket, true);
+			return this.#unix ? { transport: "unix", path: this.#unix } : addrOf(this.#socket, true);
 		}
 		async read(buf) {
 			if (buf.byteLength === 0) return 0;
@@ -672,14 +674,16 @@
 		#pending = [];
 		#waiting = null;
 		#closed = false;
-		constructor(server) {
+		#unix;
+		constructor(server, unixPath) {
 			this.#server = server;
+			this.#unix = unixPath;
 			server.on("connection", (socket) => {
 				if (this.filter && !this.filter(socket)) {
 					socket.destroy();
 					return;
 				}
-				this.#pending.push(new Conn(socket));
+				this.#pending.push(new Conn(socket, this.#unix));
 				const w = this.#waiting;
 				if (w) {
 					this.#waiting = null;
@@ -696,6 +700,7 @@
 			});
 		}
 		get addr() {
+			if (this.#unix) return { transport: "unix", path: this.#unix };
 			const a = this.#server.address();
 			return { transport: "tcp", hostname: a.address === "::" ? "0.0.0.0" : a.address, port: a.port };
 		}
@@ -772,7 +777,7 @@
 		const server = create();
 		let ready = false;
 		let failure = null;
-		const listener = new Listener(server);
+		const listener = new Listener(server, options.path);
 		const waiters = [];
 		const accept = listener.accept.bind(listener);
 		listener.accept = async () => {
@@ -780,7 +785,7 @@
 			return accept();
 		};
 		server.once("error", (e) => {
-			failure = denoError(e, "listen", `${options.hostname ?? "0.0.0.0"}:${options.port}`);
+			failure = denoError(e, "listen", options.path ?? `${options.hostname ?? "0.0.0.0"}:${options.port}`);
 			for (const w of waiters) w();
 		});
 		const requested = options.hostname ?? "0.0.0.0";
@@ -791,7 +796,8 @@
 		// Node binds a host name asynchronously, but Deno.listen returns a bound listener whose `addr.port` is
 		// known at once, and port 0 leaves no other way to know it. So a specific host with port 0 binds to every
 		// interface (which does bind at once) and drops any connection that did not arrive on the requested one.
-		if ((options.port ?? 0) === 0 && requested !== "0.0.0.0" && requested !== "::" && !bindsAtOnce()) {
+		if (options.path) server.listen(options.path, onListening);
+		else if ((options.port ?? 0) === 0 && requested !== "0.0.0.0" && requested !== "::" && !bindsAtOnce()) {
 			listener.filter = (socket) => {
 				const local = String(socket.localAddress ?? "").replace(/^::ffff:/, "");
 				return local === requested || (requested === "localhost" && (local === "127.0.0.1" || local === "::1"));
@@ -800,6 +806,7 @@
 		} else server.listen(options.port ?? 0, requested, onListening);
 		Object.defineProperty(listener, "addr", {
 			get() {
+				if (options.path) return { transport: "unix", path: options.path };
 				const a = server.address();
 				if (!a) return { transport: "tcp", hostname: requested, port: options.port ?? 0 };
 				return { transport: "tcp", hostname: listener.filter ? requested : a.address === "::" ? "0.0.0.0" : a.address, port: a.port };
@@ -815,10 +822,90 @@
 
 	function connectSocket(mod, options) {
 		return new Promise((resolve, reject) => {
-			const socket = mod.connect({ host: options.hostname ?? "127.0.0.1", port: options.port, ...(options.tls ?? {}) });
-			socket.once("error", (e) => reject(denoError(e, "connect", `${options.hostname ?? "127.0.0.1"}:${options.port}`)));
-			socket.once(mod === require("tls") ? "secureConnect" : "connect", () => resolve(new Conn(socket)));
+			const target = options.path ? { path: options.path } : { host: options.hostname ?? "127.0.0.1", port: options.port, ...(options.tls ?? {}) };
+			const socket = mod.connect(target);
+			socket.once("error", (e) => reject(denoError(e, "connect", options.path ?? `${options.hostname ?? "127.0.0.1"}:${options.port}`)));
+			socket.once(mod === require("tls") ? "secureConnect" : "connect", () => resolve(new Conn(socket, options.path)));
 		});
+	}
+
+	class DatagramConn {
+		#socket;
+		#queue = [];
+		#waiting = null;
+		#closed = false;
+		#port;
+		#hostname;
+		constructor(socket, hostname, port) {
+			this.#socket = socket;
+			this.#hostname = hostname;
+			this.#port = port;
+			socket.on("message", (msg, r) => {
+				this.#queue.push([bytes(msg), { transport: "udp", hostname: r.address, port: r.port }]);
+				this.#wake();
+			});
+			socket.on("close", () => {
+				this.#closed = true;
+				this.#wake();
+			});
+			socket.on("error", () => {});
+		}
+		#wake() {
+			const w = this.#waiting;
+			if (w) {
+				this.#waiting = null;
+				w();
+			}
+		}
+		get addr() {
+			try {
+				const a = this.#socket.address();
+				return { transport: "udp", hostname: a.address === "::" ? "0.0.0.0" : a.address, port: a.port };
+			} catch {
+				return { transport: "udp", hostname: this.#hostname, port: this.#port };
+			}
+		}
+		async receive(p) {
+			for (;;) {
+				if (this.#queue.length) {
+					const [data, from] = this.#queue.shift();
+					if (!p) return [data, from];
+					const n = Math.min(p.byteLength, data.byteLength);
+					p.set(data.subarray(0, n));
+					return [p.subarray(0, n), from];
+				}
+				if (this.#closed) throw new errors.BadResource("Bad resource ID");
+				await new Promise((resolve) => {
+					this.#waiting = resolve;
+				});
+			}
+		}
+		send(p, to) {
+			if (to.transport !== "udp") return Promise.reject(new TypeError("Only udp datagram addresses are supported"));
+			return new Promise((resolve, reject) => {
+				this.#socket.send(p, to.port, to.hostname, (err, n) => (err ? reject(denoError(err, "send", to.hostname)) : resolve(n ?? p.byteLength)));
+			});
+		}
+		close() {
+			this.#socket.close();
+		}
+		ref() {}
+		unref() {}
+		async *[Symbol.asyncIterator]() {
+			for (;;) {
+				try {
+					yield await this.receive();
+				} catch (e) {
+					if (e instanceof errors.BadResource) return;
+					throw e;
+				}
+			}
+		}
+		[Symbol.dispose]() {
+			try {
+				this.close();
+			} catch {}
+		}
 	}
 
 	// ---- HTTP server -----------------------------------------------------------------------------------------
@@ -1014,242 +1101,10 @@
 		return serverObj;
 	}
 
-	// ---- WebSocket (RFC 6455): the client the global lacks, and the server side of Deno.upgradeWebSocket ----
+	// ---- WebSocket: the client the global lacks and the server side of Deno.upgradeWebSocket (see node-websocket.js) ----
 	const crypto = require("crypto");
 	const WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
-
-	function encodeFrame(opcode, payload, mask) {
-		const len = payload.length;
-		const head = [0x80 | opcode];
-		const maskBit = mask ? 0x80 : 0;
-		if (len < 126) head.push(maskBit | len);
-		else if (len < 65536) head.push(maskBit | 126, (len >> 8) & 255, len & 255);
-		else {
-			head.push(maskBit | 127, 0, 0, 0, 0, (len >>> 24) & 255, (len >>> 16) & 255, (len >>> 8) & 255, len & 255);
-		}
-		if (!mask) return Buffer.concat([Buffer.from(head), payload]);
-		const key = crypto.randomBytes(4);
-		const masked = Buffer.allocUnsafe(len);
-		for (let i = 0; i < len; i++) masked[i] = payload[i] ^ key[i & 3];
-		return Buffer.concat([Buffer.from(head), key, masked]);
-	}
-
-	/** Shared WebSocket endpoint over a connected socket; `client` frames are masked, `server` ones are not. */
-	class SocketWebSocket extends EventTarget {
-		static CONNECTING = 0;
-		static OPEN = 1;
-		static CLOSING = 2;
-		static CLOSED = 3;
-		CONNECTING = 0;
-		OPEN = 1;
-		CLOSING = 2;
-		CLOSED = 3;
-		#socket = null;
-		#client;
-		#buffer = Buffer.alloc(0);
-		#fragments = [];
-		#fragmentOpcode = 0;
-		#closeSent = false;
-		binaryType = "blob";
-		readyState = 0;
-		url = "";
-		protocol = "";
-		extensions = "";
-		bufferedAmount = 0;
-		onopen = null;
-		onmessage = null;
-		onclose = null;
-		onerror = null;
-		constructor(client) {
-			super();
-			this.#client = client;
-		}
-		_attach(socket) {
-			this.#socket = socket;
-			this.readyState = 1;
-			socket.on("data", (chunk) => this.#onData(chunk));
-			socket.on("close", () => this.#finish(1006, "", false));
-			socket.on("error", () => {});
-		}
-		/** Bytes that arrived with the handshake, handled after "open" so no message precedes it. */
-		_feed(head) {
-			if (head && head.length) this.#onData(head);
-		}
-		/** Events are delivered one per task, as in a browser, so a handler set after an await still sees the next one. */
-		_emit(type, init) {
-			setTimeout(() => {
-				const event = type === "message" ? new MessageEvent("message", init) : type === "close" ? new CloseEvent("close", init) : new Event(type);
-				const handler = this["on" + type];
-				if (typeof handler === "function") handler.call(this, event);
-				this.dispatchEvent(event);
-			}, 0);
-		}
-		#onData(chunk) {
-			this.#buffer = this.#buffer.length ? Buffer.concat([this.#buffer, chunk]) : chunk;
-			for (;;) {
-				const b = this.#buffer;
-				if (b.length < 2) return;
-				const opcode = b[0] & 15;
-				const fin = (b[0] & 0x80) !== 0;
-				const masked = (b[1] & 0x80) !== 0;
-				let len = b[1] & 127;
-				let off = 2;
-				if (len === 126) {
-					if (b.length < 4) return;
-					len = b.readUInt16BE(2);
-					off = 4;
-				} else if (len === 127) {
-					if (b.length < 10) return;
-					len = b.readUInt32BE(2) * 4294967296 + b.readUInt32BE(6);
-					off = 10;
-				}
-				const total = off + (masked ? 4 : 0) + len;
-				if (b.length < total) return;
-				let payload = b.subarray(off + (masked ? 4 : 0), total);
-				if (masked) {
-					const key = b.subarray(off, off + 4);
-					const out = Buffer.allocUnsafe(len);
-					for (let i = 0; i < len; i++) out[i] = payload[i] ^ key[i & 3];
-					payload = out;
-				}
-				this.#buffer = b.subarray(total);
-				this.#frame(opcode, fin, payload);
-			}
-		}
-		#frame(opcode, fin, payload) {
-			if (opcode === 0x8) {
-				const code = payload.length >= 2 ? payload.readUInt16BE(0) : 1005;
-				const reason = payload.length > 2 ? payload.subarray(2).toString("utf8") : "";
-				if (!this.#closeSent) this.#sendClose(code === 1005 ? 1000 : code, "");
-				this.#finish(code, reason, true);
-			} else if (opcode === 0x9) this.#write(0xa, payload);
-			else if (opcode === 0xa) return;
-			else {
-				if (opcode !== 0) {
-					this.#fragmentOpcode = opcode;
-					this.#fragments = [];
-				}
-				this.#fragments.push(payload);
-				if (!fin) return;
-				const whole = Buffer.concat(this.#fragments);
-				this.#fragments = [];
-				if (this.#fragmentOpcode === 1) this._emit("message", { data: whole.toString("utf8") });
-				else {
-					const data = this.binaryType === "arraybuffer" ? whole.buffer.slice(whole.byteOffset, whole.byteOffset + whole.length) : new Blob([whole]);
-					this._emit("message", { data });
-				}
-			}
-		}
-		#write(opcode, payload) {
-			if (this.#socket && !this.#socket.destroyed) this.#socket.write(encodeFrame(opcode, payload, this.#client));
-		}
-		#sendClose(code, reason) {
-			this.#closeSent = true;
-			const body = Buffer.alloc(2 + Buffer.byteLength(reason));
-			body.writeUInt16BE(code, 0);
-			body.write(reason, 2);
-			this.#write(0x8, body);
-		}
-		#finish(code, reason, wasClean) {
-			if (this.readyState === 3) return;
-			this.readyState = 3;
-			try {
-				this.#socket?.end();
-			} catch {}
-			this._emit("close", { code, reason, wasClean });
-		}
-		send(data) {
-			if (this.readyState !== 1) throw new DOMException("readyState not OPEN", "InvalidStateError");
-			if (typeof data === "string") this.#write(0x1, Buffer.from(data));
-			else if (data instanceof Blob) data.arrayBuffer().then((ab) => this.#write(0x2, Buffer.from(ab)));
-			else if (ArrayBuffer.isView(data)) this.#write(0x2, Buffer.from(data.buffer, data.byteOffset, data.byteLength));
-			else this.#write(0x2, Buffer.from(data));
-		}
-		close(code = 1000, reason = "") {
-			if (this.readyState >= 2) return;
-			this.readyState = 2;
-			this.#sendClose(code, reason);
-			setTimeout(() => this.#finish(code, reason, true), 1000).unref?.();
-		}
-		ping() {}
-	}
-	class WebSocketClient extends SocketWebSocket {
-		constructor(url, protocols) {
-			super(true);
-			const parsed = new URL(url);
-			if (parsed.protocol === "http:") parsed.protocol = "ws:";
-			if (parsed.protocol === "https:") parsed.protocol = "wss:";
-			if (parsed.protocol !== "ws:" && parsed.protocol !== "wss:") throw new DOMException(`The URL's scheme must be either 'ws' or 'wss'. '${parsed.protocol}' is not allowed.`, "SyntaxError");
-			this.url = parsed.href;
-			const secure = parsed.protocol === "wss:";
-			const key = crypto.randomBytes(16).toString("base64");
-			const list = protocols === undefined ? [] : Array.isArray(protocols) ? protocols : [protocols];
-			const mod = secure ? require("https") : require("http");
-			const req = mod.request({
-				host: parsed.hostname,
-				port: parsed.port || (secure ? 443 : 80),
-				path: `${parsed.pathname}${parsed.search}`,
-				headers: {
-					Connection: "Upgrade",
-					Upgrade: "websocket",
-					"Sec-WebSocket-Key": key,
-					"Sec-WebSocket-Version": "13",
-					...(list.length ? { "Sec-WebSocket-Protocol": list.join(", ") } : {}),
-				},
-			});
-			req.on("upgrade", (res, socket, head) => {
-				const expected = crypto.createHash("sha1").update(key + WS_GUID).digest("base64");
-				if (res.headers["sec-websocket-accept"] !== expected) {
-					socket.destroy();
-					this._emit("error");
-					this._finishFailed();
-					return;
-				}
-				this.protocol = res.headers["sec-websocket-protocol"] ?? "";
-				this._attach(socket);
-				this._emit("open");
-				this._feed(head);
-			});
-			req.on("response", () => {
-				this._emit("error");
-				this._finishFailed();
-			});
-			req.on("error", () => {
-				this._emit("error");
-				this._finishFailed();
-			});
-			req.end();
-		}
-		_finishFailed() {
-			if (this.readyState === 3) return;
-			this.readyState = 3;
-			this._emit("close", { code: 1006, reason: "", wasClean: false });
-		}
-	}
-
-	if (typeof global.WebSocket === "undefined") {
-		Object.defineProperty(global, "WebSocket", { value: WebSocketClient, writable: true, configurable: true });
-	}
-	if (typeof global.CloseEvent === "undefined") {
-		global.CloseEvent = class CloseEvent extends Event {
-			constructor(type, init = {}) {
-				super(type);
-				this.code = init.code ?? 0;
-				this.reason = init.reason ?? "";
-				this.wasClean = init.wasClean ?? false;
-			}
-		};
-	}
-	if (typeof global.MessageEvent === "undefined") {
-		global.MessageEvent = class MessageEvent extends Event {
-			constructor(type, init = {}) {
-				super(type);
-				this.data = init.data;
-				this.origin = init.origin ?? "";
-				this.lastEventId = init.lastEventId ?? "";
-			}
-		};
-	}
+	const { SocketWebSocket } = global[Symbol.for("graak.websocket")];
 
 	function upgradeWebSocket(request, options = {}) {
 		const upgrade = request.headers.get("upgrade");
@@ -1493,46 +1348,95 @@
 			revokeSync: (desc) => permissionStatus(desc),
 		},
 		listen: (options) => {
-			if (options.transport && options.transport !== "tcp") throw unsupported(`Deno.listen({ transport: "${options.transport}" })`, "only TCP is available");
+			if (options.transport === "unixpacket") throw unsupported('Deno.listen({ transport: "unixpacket" })', "datagram unix sockets are not available; use transport: \"unix\"");
+			if (options.transport === "unix") {
+				// Deno.listen reports a bad socket path at once; the server underneath would only emit an error later.
+				const at = toPath(options.path);
+				if (!fs.existsSync(path.dirname(at))) throw denoError(Object.assign(new Error("ENOENT"), { code: "ENOENT" }), "listen", at);
+				if (fs.existsSync(at)) throw denoError(Object.assign(new Error("EADDRINUSE"), { code: "EADDRINUSE" }), "listen", at);
+				return listenSync(() => require("net").createServer(), { path: at });
+			}
+			if (options.transport && options.transport !== "tcp") throw unsupported(`Deno.listen({ transport: "${options.transport}" })`, "the transports are tcp and unix");
 			return listenSync(() => require("net").createServer(), options);
 		},
 		connect: (options) => {
-			if (options.transport && options.transport !== "tcp") return Promise.reject(unsupported(`Deno.connect({ transport: "${options.transport}" })`, "only TCP is available"));
+			if (options.transport === "unixpacket") return Promise.reject(unsupported('Deno.connect({ transport: "unixpacket" })', "datagram unix sockets are not available; use transport: \"unix\""));
+			if (options.transport === "unix") return connectSocket(require("net"), { path: toPath(options.path) });
+			if (options.transport && options.transport !== "tcp") return Promise.reject(unsupported(`Deno.connect({ transport: "${options.transport}" })`, "the transports are tcp and unix"));
 			return connectSocket(require("net"), options);
 		},
+		listenDatagram: (options) => {
+			if (options.transport !== "udp") throw unsupported(`Deno.listenDatagram({ transport: "${options.transport}" })`, "only udp is available");
+			const hostname = options.hostname ?? "0.0.0.0";
+			const dgram = require("dgram");
+			const socket = dgram.createSocket({ type: hostname.includes(":") ? "udp6" : "udp4", reuseAddr: options.reuseAddress === true });
+			socket.bind(options.port ?? 0, hostname);
+			return new DatagramConn(socket, hostname, options.port ?? 0);
+		},
+		DatagramConn,
 		listenTls: (options) => listenSync(() => require("tls").createServer({ cert: options.cert ?? fs.readFileSync(options.certFile), key: options.key ?? fs.readFileSync(options.keyFile) }), options),
 		connectTls: (options) =>
 			connectSocket(require("tls"), { ...options, tls: { servername: options.hostname, ...(options.caCerts ? { ca: options.caCerts } : {}) } }),
 		serve,
 		upgradeWebSocket,
-		test: () => {
-			throw unsupported("Deno.test", "tests run under `deno test`");
-		},
-		bench: () => {
-			throw unsupported("Deno.bench", "benchmarks run under `deno bench`");
-		},
-		openKv: async () => {
-			throw unsupported("Deno.openKv", "Deno KV needs Deno's own storage engine; use a database driver instead");
-		},
-		cron: () => {
-			throw unsupported("Deno.cron", "schedule work with setInterval or an OS scheduler");
-		},
-		dlopen: () => {
-			throw unsupported("Deno.dlopen (FFI)", "load native code through a Node-API addon instead");
-		},
-		watchFs: () => {
-			throw unsupported("Deno.watchFs");
+		watchFs: (paths, options = {}) => {
+			const roots = [].concat(paths).map(toPath);
+			const recursive = options.recursive !== false;
+			const queue = [];
+			let wake = null;
+			let closed = false;
+			const push = (event) => {
+				queue.push(event);
+				const w = wake;
+				if (w) {
+					wake = null;
+					w();
+				}
+			};
+			const watchers = roots.map((root) => {
+				const watcher = fs.watch(root, { recursive }, (eventType, filename) => {
+					const full = filename ? path.join(root, String(filename)) : root;
+					const kind = eventType === "rename" ? (fs.existsSync(full) ? "create" : "remove") : "modify";
+					push({ kind, paths: [full] });
+				});
+				watcher.on?.("error", () => {});
+				return watcher;
+			});
+			const close = () => {
+				if (closed) return;
+				closed = true;
+				for (const w of watchers) w.close();
+				const w = wake;
+				if (w) {
+					wake = null;
+					w();
+				}
+			};
+			const next = async () => {
+				for (;;) {
+					if (queue.length) return { value: queue.shift(), done: false };
+					if (closed) return { value: undefined, done: true };
+					await new Promise((resolve) => {
+						wake = resolve;
+					});
+				}
+			};
+			return {
+				rid: 0,
+				close,
+				next,
+				return: async () => {
+					close();
+					return { value: undefined, done: true };
+				},
+				[Symbol.asyncIterator]() {
+					return this;
+				},
+				[Symbol.dispose]: close,
+			};
 		},
 		...fsApi,
 	};
-	for (const name of ["UnsafePointer", "UnsafePointerView", "UnsafeFnPointer", "UnsafeCallback"]) {
-		Object.defineProperty(Deno, name, {
-			get() {
-				throw unsupported(`Deno.${name} (FFI)`);
-			},
-			enumerable: false,
-		});
-	}
 
 	// The Deno global is not enumerable, as in Deno.
 	Object.defineProperty(global, "Deno", { value: Deno, writable: true, configurable: true, enumerable: false });

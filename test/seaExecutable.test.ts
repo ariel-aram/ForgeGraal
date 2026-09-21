@@ -188,7 +188,7 @@ test("a single-file Windows build unpacks itself and runs (Wine)", {
 		output: file,
 	});
 	assert.equal(result.launcherPath, file);
-	assert.ok(statSync(file).size < 4 * 1024 * 1024, "a small program on the Windows host is a single file under 4 MB");
+	assert.ok(statSync(file).size < 6 * 1024 * 1024, "a small program on the Windows host is a single file under 6 MB");
 
 	const run = spawnSync(
 		"docker",
