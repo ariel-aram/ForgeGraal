@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.ProjectCollector = void 0;
+exports.ProjectCollector = exports.NATIVE_ONLY_ENTRY_EXTENSIONS = void 0;
 exports.isInside = isInside;
 exports.resolveInside = resolveInside;
 exports.compareVersions = compareVersions;
@@ -23,7 +23,9 @@ const ALWAYS_EXCLUDED_NAMES = new Set([
     ".forgegraal-cache",
     "coverage",
 ]);
-const SUPPORTED_ENTRY_EXTENSIONS = new Set([".js", ".cjs", ".mjs"]);
+const SUPPORTED_ENTRY_EXTENSIONS = new Set([".js", ".cjs", ".mjs", ".ts", ".mts", ".cts", ".tsx", ".jsx"]);
+/** Entry extensions only the native host can run: it converts them at build time. Node.js targets need built JavaScript. */
+exports.NATIVE_ONLY_ENTRY_EXTENSIONS = new Set([".ts", ".mts", ".cts", ".tsx", ".jsx"]);
 const SOURCE_EXTENSIONS = new Set([".js", ".cjs", ".mjs"]);
 const BUN_API_PATTERN = /\bBun\.[a-zA-Z]|["']bun:[a-z]/;
 function toPosix(p) {
@@ -99,7 +101,7 @@ class ProjectCollector {
         }
         const ext = (0, node_path_1.extname)(entryAbs);
         if (!SUPPORTED_ENTRY_EXTENSIONS.has(ext)) {
-            throw new structures_1.ProjectError(`Entrypoint '${(0, node_path_1.basename)(entryAbs)}' must be JavaScript (.js, .cjs, .mjs). ` +
+            throw new structures_1.ProjectError(`Entrypoint '${(0, node_path_1.basename)(entryAbs)}' must be JavaScript (.js, .cjs, .mjs) or TypeScript (.ts, .tsx). ` +
                 "Compile TypeScript first (e.g. `tsc`, or `bun build --target=node --outdir dist`) and pass the built file.");
         }
         const root = (0, node_fs_1.realpathSync)(ProjectCollector.findProjectRoot(entryAbs));

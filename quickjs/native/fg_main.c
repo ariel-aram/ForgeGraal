@@ -14,6 +14,7 @@
 #include <string.h>
 
 void forgegraal_native_init(JSContext *ctx);
+int fg_sea_prepare(int *argc, char ***argv);
 void forgegraal_napi_shutdown(void);
 
 static char *read_file(const char *path, size_t *len_out)
@@ -56,6 +57,11 @@ int main(int argc, char **argv)
     size_t len;
     JSValue result;
     int status = 0;
+
+    /* A single-file build carries its application after the executable; unpack it and run it. */
+    if (fg_sea_prepare(&argc, &argv) < 0) {
+        return 1;
+    }
 
     if (argc < 2) {
         fprintf(stderr, "usage: %s <script.js> [args...]\n\n", argv[0]);
@@ -116,8 +122,73 @@ int main(int argc, char **argv)
         status = 1;
         JS_FreeValue(ctx, result);
     } else {
-        /* Pending promises and timers still need to run before the process ends. */
-        js_std_loop(ctx);
+        /* Pending promises and timers still need to run before the process ends. The engine's loop stops
+           for good the moment a queued job throws, silently dropping every timer and socket handler after
+           it, so an exception is handed to the program's uncaught-exception path (Node's behaviour: a
+           listener may handle it, otherwise it is printed and the process exits 1) and the loop resumes. */
+        int before_exit_done = 0;
+        for (;;) {
+            js_std_loop(ctx);
+            if (!JS_HasException(ctx)) {
+                /* The loop ran dry. 'beforeExit' may schedule more work, in which case the loop runs again. */
+                if (!before_exit_done) {
+                    JSValue global = JS_GetGlobalObject(ctx);
+                    JSValue hook = JS_GetPropertyStr(ctx, global, "__forgegraal_beforeExit");
+                    before_exit_done = 1;
+                    if (JS_IsFunction(ctx, hook)) {
+                        JSValue r = JS_Call(ctx, hook, JS_UNDEFINED, 0, NULL);
+                        JS_FreeValue(ctx, r);
+                        JS_FreeValue(ctx, hook);
+                        JS_FreeValue(ctx, global);
+                        continue;
+                    }
+                    JS_FreeValue(ctx, hook);
+                    JS_FreeValue(ctx, global);
+                }
+                break;
+            }
+            {
+                JSValue exc = JS_GetException(ctx);
+                JSValue global = JS_GetGlobalObject(ctx);
+                JSValue reporter = JS_GetPropertyStr(ctx, global, "__forgegraal_reportUncaught");
+                int handled = 0;
+                if (JS_IsFunction(ctx, reporter)) {
+                    JSValue r = JS_Call(ctx, reporter, JS_UNDEFINED, 1, &exc);
+                    if (JS_IsException(r)) {
+                        js_std_dump_error(ctx);
+                    } else {
+                        handled = 1;
+                    }
+                    JS_FreeValue(ctx, r);
+                } else {
+                    JS_Throw(ctx, JS_DupValue(ctx, exc));
+                    js_std_dump_error(ctx);
+                }
+                JS_FreeValue(ctx, reporter);
+                JS_FreeValue(ctx, global);
+                JS_FreeValue(ctx, exc);
+                if (!handled) {
+                    status = 1;
+                    break;
+                }
+            }
+        }
+
+        /* 'exit' listeners run, and process.exitCode becomes the status, as they do when Node ends. */
+        if (status == 0) {
+            JSValue global = JS_GetGlobalObject(ctx);
+            JSValue hook = JS_GetPropertyStr(ctx, global, "__forgegraal_exit");
+            if (JS_IsFunction(ctx, hook)) {
+                JSValue r = JS_Call(ctx, hook, JS_UNDEFINED, 0, NULL);
+                int32_t code = 0;
+                if (!JS_IsException(r) && JS_ToInt32(ctx, &code, r) == 0) {
+                    status = (int) code;
+                }
+                JS_FreeValue(ctx, r);
+            }
+            JS_FreeValue(ctx, hook);
+            JS_FreeValue(ctx, global);
+        }
 
         /* A module with top-level await evaluates to a promise, and an error thrown by the script
            rejects it. Without this check the process would exit 0 having silently failed. */

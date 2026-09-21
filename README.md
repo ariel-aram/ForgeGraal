@@ -1,5 +1,5 @@
 <p align="center"><img src="https://raw.githubusercontent.com/ariel-aram/ForgeGraal/main/assets/logo.webp" alt="ForgeGraal logo" width="256"></p>
-<h1 align="center">ForgeGraal</h1><p align="center">Standalone executables for ForgeScript powered apps, on every device, with no Node.js required on the device.</p>
+<h1 align="center">ForgeGraal</h1><p align="center">Standalone executables for ForgeScript bots, web servers, websites and other JavaScript or TypeScript programs, on every device, with no Node.js required on the device.</p>
 
 <p align="center">
 <a href="https://github.com/ariel-aram/ForgeGraal/"><img src="https://img.shields.io/github/package-json/v/ariel-aram/ForgeGraal/main?label=forgegraal&color=5c16d4" alt="forgegraal"></a>
@@ -12,19 +12,23 @@
 2. [Quick start](#quick-start)
 3. [How a build works](#how-a-build-works)
 4. [Supported targets](#supported-targets)
-5. [Native host (quickjs-ng)](#native-host-quickjs-ng)
+5. [Web servers, websites and other programs](#web-servers-websites-and-other-programs)
+   - [Module formats and TypeScript](#module-formats-and-typescript)
+   - [Static sites](#static-sites)
+   - [One file](#one-file)
+6. [Native host (quickjs-ng)](#native-host-quickjs-ng)
    - [The compatibility layer](#the-compatibility-layer)
    - [The C host](#the-native-host-quickjsnative-c)
    - [Native addons (Node-API)](#native-addons-node-api)
    - [Addons written against V8 or NAN](#addons-written-against-v8-or-nan)
    - [Windows 7 compatibility](#windows-what-is-verified-and-what-makes-windows-7-work)
-6. [Package managers](#package-managers)
+7. [Package managers](#package-managers)
    - [Bun projects](#bun-projects)
    - [Yarn Plug'n'Play](#yarn-plugnplay)
-7. [The Node.js path](#the-nodejs-path)
-8. [CLI](#cli)
-9. [Extension](#extension)
-10. [Development](#development)
+8. [The Node.js path](#the-nodejs-path)
+9. [CLI](#cli)
+10. [Extension](#extension)
+11. [Development](#development)
 <br>
 
 <h3 align="center">Installation</h3><hr>
@@ -68,23 +72,27 @@ npx forgegraal compile dist/index.js --target win-legacy-x64
 
 ## How a build works
 
-1. The project (the directory of the closest `package.json`) and its production `node_modules` are collected.
+1. The input is a program, or a folder of built static files (a `vite build`, Create React App or plain HTML site, see
+   [Static sites](#static-sites)). A program is the directory of the closest `package.json` with its production
+   `node_modules`, collected.
    pnpm and Bun symlink layouts are flattened into a plain, resolvable tree, and a Yarn Plug'n'Play project is
    materialized into one (see [Package managers](#package-managers)). `.env`, `.npmrc`, `.git` and
    devDependencies stay out unless you ask for them.
-2. The target decides the engine that runs the bot. Output is one of three strategies:
+2. The target decides the engine that runs the program. Output is one of three strategies:
    - **native host** (default for XP, Vista, Windows 7, iSH, 32-bit Linux and `linux-modern-x64`) — ForgeGraal's
      own C binary, `forgegraal-c`, embedding quickjs-ng. **No Node.js binary is shipped.** The output folder holds
      `forgegraal-c[.exe]`, `runtime/` (the Node-shaped compatibility layer), `app/` (your bot and its
      `node_modules`, as loose files) and a launcher (`<name>.cmd` / `<name>`). Files the bot writes to `app/`,
-     SQLite databases included, stay put across rebuilds. See [Native host](#native-host-quickjs-ng).
+     SQLite databases included, stay put across rebuilds. With `--engine native --strategy sea` the same thing is
+     [one file](#one-file). See [Native host](#native-host-quickjs-ng).
    - **sea** — a [Node.js Single Executable Application](https://nodejs.org/api/single-executable-applications.html)
      injected into a target Node.js runtime (>= 20.12). Official runtimes are downloaded and SHA-256 verified.
      The archive is extracted beside the executable on first start (`<name>.forgegraal/app`).
    - **portable** — a folder with the archive, `boot.cjs`, a launcher and the runtime if one is available.
      Chosen automatically when no SEA-capable runtime exists.
-3. `--node-binary`, `--strategy sea|portable` or a runtime registered with `forgegraal runtimes add` move any
-   native-host target back onto Node.js. Everything else stays on the native host.
+3. `--engine node`, `--node-binary`, `--strategy sea|portable` (without `--engine native`) or a runtime registered
+   with `forgegraal runtimes add` move any native-host target back onto Node.js. Everything else stays on the
+   native host.
 
 The build machine needs Node.js >= 20.12 to run `forgegraal` itself. The compiled bot needs nothing installed on
 the device when it targets the native host.
@@ -118,6 +126,96 @@ Every package manager (NPM, PNPM, Yarn, Bun) may build every target, and Yarn Pl
 
 ---
 
+## Web servers, websites and other programs
+
+ForgeGraal is not only for Discord bots. The native host runs any JavaScript program that stays inside the Node.js API
+it provides, and that now includes programs that **listen**: web servers, APIs, dashboards. Nothing in the packaging
+is specific to ForgeScript.
+
+What makes a server possible is a real network stack in the host: non-blocking sockets served from one poller (so a
+program can be its own client), TLS in both directions on mbedTLS, and JavaScript implementations of the modules on
+top of it, each checked against Node.js itself. The bar for those checks is not "works" but "prints exactly what
+Node.js prints": the test suite runs the same program on Node.js and on the packaged host and compares the output.
+
+| Module | What is covered |
+| --- | --- |
+| `http`, `https` | Server and client. HTTP/1.1 keep-alive, chunked bodies both ways, pipelined requests, `Expect: 100-continue`, HEAD/204/304 framing, `Upgrade` (WebSocket servers such as `ws`), backpressure and `drain`, `closeAllConnections`. HTTPS servers take a PEM `key` and `cert`. |
+| `net`, `tls` | `createServer`, `connect`, half-close, timeouts, `pause`/`resume`, `remoteAddress` and friends. `rejectUnauthorized: false` and `NODE_TLS_REJECT_UNAUTHORIZED=0` work as in Node. |
+| `fetch`, `Request`, `Response`, `Headers`, `FormData` | Streaming bodies, redirects (follow, manual, error), gzip/deflate, `AbortSignal`, `clone()`, multipart, `Response.json()` and `Response.redirect()`. |
+| `stream` | `Readable`, `Writable`, `Duplex`, `Transform`, `PassThrough`, `pipeline`, `finished`, `Readable.from`, async iteration, `stream/promises`, and the web-stream bridges. Backpressure follows Node's reference implementation. |
+| `fs`, `fs/promises` | Sync, callback and promise forms, file descriptors, `Stats`/`Dirent`, streams, `cp`, `rm`, `mkdtemp`, recursive `readdir`, and Node's error codes and messages. |
+| `Buffer`, `events`, `zlib`, `string_decoder` | Complete `Buffer` (every encoding, all integer/float/BigInt readers and writers), `EventEmitter` that tolerates being mixed into plain objects, gzip/deflate/raw (sync, callback and stream forms). |
+
+Verified against real packages, with no Node.js anywhere in the output: **Express 4** (routing, JSON body parsing),
+**Fastify** and **Hono** (through `@hono/node-server`), each served from a packaged `linux-modern-x64` build.
+
+`os`, `process` (standard streams as real streams, `exitCode`, `beforeExit` and `exit`, signals), `vm` (contexts are
+sandbox objects in the same realm, not a security boundary), `module` (`createRequire`, `builtinModules`), `punycode`, `url`,
+`worker_threads`, `child_process` and `readline` are provided too.
+
+Not provided, and said so when used: HTTP/2, Brotli, unix-domain sockets, UDP (`dgram`), `cluster`, `inspector`, `repl`,
+`wasi` and WebAssembly (the engine has none). An exception nothing catches is handled as Node handles it: `process.on("uncaughtException")` gets it,
+otherwise it is printed and the process exits with status 1, rather than the event loop quietly ending.
+
+A server binds IPv4 unless told otherwise (`listen(port)` is `0.0.0.0`), so `localhost` reaches it over IPv4.
+
+### Module formats and TypeScript
+
+The host loads CommonJS, so the build converts the rest. ES modules (ES-module-only packages such as chalk 5, nanoid 5 or
+node-fetch 3, `.mjs` files, a `"type": "module"` project), TypeScript (`.ts`, `.mts`, `.cts`) and JSX (`.tsx`, `.jsx`, with the
+automatic runtime) are converted to CommonJS by esbuild while the project is collected; plain CommonJS is left alone
+without being parsed. `import()`, `import.meta.url` and `import.meta.dirname` keep working, `package.json` `exports` (with
+conditions in the order the package lists them) and `imports` (`#name`) resolve as in Node, and an import written as
+`./x.ts` finds the converted file. So a TypeScript program compiles directly:
+
+```sh
+forgegraal compile src/index.ts --target win-legacy-x64
+```
+
+Not converted: top-level `await` (esbuild cannot express it in CommonJS), `tsconfig` path aliases (a bundler's job), and
+decorators that need `experimentalDecorators`. A TypeScript entry for a Node.js build must be compiled first, as before.
+
+### Static sites
+
+Point `forgegraal compile` at a folder of built files instead of a program:
+
+```sh
+forgegraal compile ./dist --target win-legacy-x64 --spa --port 8080
+forgegraal compile ./build --target linux-modern-x64 --engine native --strategy sea
+```
+
+A directory, or an `.html` file, is treated as a site (`--static` forces it). ForgeGraal generates a small web server, packages
+it with the files, and the result runs on every target that runs a program, legacy Windows included. It behaves like
+a static host: MIME types, `ETag` and `Last-Modified` with `304` replies, byte ranges (video seeking), gzip for text, an
+index file for directories with the redirect to the trailing-slash form, a custom `404.html`, `Cache-Control:
+immutable` for content-hashed file names, and no path that leaves the folder.
+
+| Option | Effect |
+| --- | --- |
+| `--spa` | Answer unknown page routes with `index.html`, so client-side routing (React Router, Vue Router) works. A missing file such as `/missing.png` is still a `404`. |
+| `--port <n>` | Default port, `8080`. At run time `PORT` in the environment or `--port` on the command line overrides it, and `--port 0` picks a free one. |
+| `--host <addr>` | Interface to listen on. Default `0.0.0.0`. |
+| `--index <file>` | Entry page. Default `index.html`. |
+
+Server-rendered frameworks are programs, not sites: package their server entry file like any other program.
+
+### One file
+
+`--engine native --strategy sea` writes **one executable** instead of a folder. The application (the compatibility layer,
+your program and its `node_modules`, deflated) is appended to a copy of the host, and on first start the host unpacks it
+next to itself (`<name>.forgegraal`, or the temp directory when that folder is read-only) and runs it. Later starts find
+the unpacked copy by the payload's SHA-256 and skip straight to running. The host is about 2.8 MB, so a small bot or
+a static site is a **single file of about 3 MB**, and an Express application is about 6 MB, with nothing else to copy
+to the device.
+
+```sh
+forgegraal compile dist/index.js --target win-legacy-x64 --engine native --strategy sea --output bot.exe
+```
+
+`--strategy portable` (or the default) keeps the folder form, whose files can be edited in place.
+
+---
+
 ## Native host (quickjs-ng)
 
 Node's own limits, not the hardware's, decide which *language* an old machine may run: Windows 7 is
@@ -148,13 +246,13 @@ loaded and then failed somewhere unrelated would be worse than the current messa
 
 ### The compatibility layer
 
-`quickjs/runtime/node-compat.js` is the part of Node's surface that can be written in JavaScript,
-built on the engine's own `qjs:os` and `qjs:std` primitives: `Buffer`, `events`, `stream`
-(Readable/Writable/Duplex/Transform, piping and async iteration), `fs`, `path`, `process`, `util`,
-`assert`, `os`, `querystring`, `string_decoder`, `timers`, `diagnostics_channel`, plus
-`TextEncoder`/`TextDecoder`, `EventTarget`, `AbortController` and a real `structuredClone`. It also
-implements CommonJS `require`, including `node_modules` resolution, so an installed dependency tree
-loads.
+`quickjs/runtime/` is the part of Node's surface that can be written in JavaScript, built on the engine's own
+`qjs:os` and `qjs:std` primitives. `node-compat.js` holds the core (`events`, `path`, `process`, `util`, `assert`,
+`os`, `querystring`, `timers`, `diagnostics_channel`, `TextEncoder`/`TextDecoder`, `EventTarget`, `AbortController`, a
+real `structuredClone`, and CommonJS `require` with `node_modules` resolution so an installed dependency tree loads);
+`node-buffer.js` is `Buffer`, `node-stream.js` is `stream`, `node-fs.js` is `fs`, `node-http.js` is `http` and
+`https`, `node-fetch.js` is the Fetch API, `node-web.js` the web streams and `Blob`, `node-url.js` the WHATWG `URL`,
+`node-inspect.js` the console, and `native-modules.js` gives the native sockets, TLS, crypto and zlib their Node shapes.
 
 `quickjs/runtime/selftest.js` runs **unmodified on both runtimes** and is the check that matters —
 a layer that merely loads proves nothing. It passes 26/26 on Node, 26/26 on quickjs-ng, and 26/26
@@ -622,11 +720,13 @@ XP/Vista/7's outdated store is normally not why a bot cannot reach Discord. Forc
 ## CLI
 
 ```sh
-# The entrypoint must be JavaScript (TypeScript and JSX are transpiled only for Bun projects, see above).
+# The entrypoint is JavaScript or TypeScript (a Node.js build needs it compiled first), or a folder of built files.
 forgegraal compile dist/index.js --target linux-modern-x64     # native host, no Node.js in the output
 forgegraal compile dist/index.js --target ios-ish-x86          # native host, static musl
 forgegraal compile dist/index.js --target win-legacy-x64       # native host, Windows 7 patches applied
 forgegraal compile dist/index.js --target win-xp-x86
+forgegraal compile dist/index.js --target win-legacy-x64 --engine native --strategy sea   # one .exe of about 3 MB
+forgegraal compile ./dist --target linux-modern-x64 --spa --port 8080                     # a built website
 forgegraal compile dist/index.js --target win-modern-x64       # sea, official Node.js
 forgegraal compile dist/index.js --target win-vista-x86 --node-binary ./node-5.12.0/node.exe   # opt back onto Node.js
 
@@ -643,8 +743,10 @@ forgegraal version
 | Option | Effect |
 | --- | --- |
 | `-t, --target <name>` | Target device (see `forgegraal targets`) |
-| `-o, --output <path>` | Output file (sea) or directory (portable, native host) |
-| `-s, --strategy auto\|sea\|portable` | `auto` picks the target's default. `sea` or `portable` also moves a native-host target onto Node.js |
+| `-o, --output <path>` | Output file (a single-file build, or a Node.js SEA) or directory (a folder build) |
+| `-e, --engine auto\|native\|node` | Which engine runs the program. `auto` follows the target. `native` forces ForgeGraal's own host (and refuses a target without one); with it, `--strategy sea` is [one file](#one-file). `node` forces a Node.js build |
+| `-s, --strategy auto\|sea\|portable` | `auto` picks the target's default. Without `--engine`, `sea` or `portable` also moves a native-host target onto Node.js, as it always has |
+| `--static`, `--spa`, `--port <n>`, `--host <addr>`, `--index <file>` | [Static sites](#static-sites) |
 | `--pm <name>` | Package manager override (`bun`, `pnpm`, `npm`, `yarn`) |
 | `--node-binary <path>` | Use this Node.js runtime instead of the target's default. Also moves a native-host target onto Node.js |
 | `--node-version <ver>` | Official Node.js version to download (`22` or `22.11.0`) |

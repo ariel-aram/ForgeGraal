@@ -1,7 +1,10 @@
 import { TargetDevice, type TargetMetadata } from "../structures";
 import { type PackageManager } from "./PolicyEnforcer";
 import { type NativeHostLibc } from "./QuickJsPackager";
+import { type StaticSiteOptions } from "./StaticSite";
 export type BuildStrategy = "auto" | "sea" | "portable";
+/** Which engine runs the program: ForgeGraal's native host (quickjs-ng), or a Node.js runtime. `auto` follows the target. */
+export type BuildEngine = "auto" | "native" | "node";
 /**
  * Runtimes below this major need their bundled code lowered and the modern platform APIs
  * supplied. Node.js 20 is the floor because that is where the last of what current discord.js
@@ -32,6 +35,12 @@ export interface BuildOptions {
     output?: string;
     packageManager?: PackageManager | string;
     strategy?: BuildStrategy;
+    /**
+     * `native` runs the program on the ForgeGraal native host and `node` on a Node.js runtime; `auto` (the default) follows
+     * the target. With `engine: "native"`, `strategy: "sea"` writes one self-unpacking executable and `portable` (or `auto`)
+     * a folder. Without it, an explicit `strategy` still means a Node.js build, as it always has.
+     */
+    engine?: BuildEngine;
     /** Node.js runtime for the target (required for targets without official builds). */
     nodeBinary?: string;
     /** Official Node.js version to download, e.g. "22" or "22.11.0". */
@@ -52,6 +61,11 @@ export interface BuildOptions {
     v8SourceMirror?: string;
     /** Windows SDK `Redist\\ucrt\\DLLs\\<arch>` folder, shipped app-local for addons that need the Universal C Runtime on Windows 7. */
     ucrtDir?: string;
+    /**
+     * Package a folder of static files (a built React, Vue or plain HTML site) as a web server instead of a
+     * program. A directory or `.html` entrypoint is treated this way without this flag.
+     */
+    staticSite?: boolean | StaticSiteOptions;
     onLog?: (message: string) => void;
 }
 export interface BuildResult {

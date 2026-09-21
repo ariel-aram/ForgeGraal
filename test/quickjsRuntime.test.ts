@@ -213,8 +213,10 @@ test("modules needing a socket are real with a native layer and explicit without
 			`${name} must be native-backed with an explicit fallback`
 		);
 	}
-	// http2 is the one still outstanding, and it explains itself rather than pretending.
-	assert.match(source, /http2: notImplemented\(/);
+	// http2 is the one still outstanding. It exports the classes servers test `instanceof` against, and
+	// every entry point that would open a connection throws an explanation instead of pretending.
+	assert.match(source, /Http2ServerRequest/);
+	assert.match(source, /http2\.\$\{name\}\(\) is not implemented/);
 	assert.ok(
 		source.includes("__forgegraalUnavailable"),
 		"unavailable modules must stay detectable by the conformance tool"

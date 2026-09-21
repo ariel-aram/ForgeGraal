@@ -12,6 +12,8 @@ export * from "./QuickJsPackager";
 export * from "./QuickJsRuntime";
 export * from "./RuntimeRegistry";
 export * from "./SeaPackager";
+export * from "./SeaPayload";
+export * from "./StaticSite";
 export * from "./V8AddonBuilder";
 export * from "./Win7Compat";
 export * from "./YarnPnpCompat";

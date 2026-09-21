@@ -49,7 +49,9 @@ const ALWAYS_EXCLUDED_NAMES = new Set([
 	"coverage",
 ]);
 
-const SUPPORTED_ENTRY_EXTENSIONS = new Set([".js", ".cjs", ".mjs"]);
+const SUPPORTED_ENTRY_EXTENSIONS = new Set([".js", ".cjs", ".mjs", ".ts", ".mts", ".cts", ".tsx", ".jsx"]);
+/** Entry extensions only the native host can run: it converts them at build time. Node.js targets need built JavaScript. */
+export const NATIVE_ONLY_ENTRY_EXTENSIONS = new Set([".ts", ".mts", ".cts", ".tsx", ".jsx"]);
 const SOURCE_EXTENSIONS = new Set([".js", ".cjs", ".mjs"]);
 const BUN_API_PATTERN = /\bBun\.[a-zA-Z]|["']bun:[a-z]/;
 
@@ -127,7 +129,7 @@ export class ProjectCollector {
 		const ext = extname(entryAbs);
 		if (!SUPPORTED_ENTRY_EXTENSIONS.has(ext)) {
 			throw new ProjectError(
-				`Entrypoint '${basename(entryAbs)}' must be JavaScript (.js, .cjs, .mjs). ` +
+				`Entrypoint '${basename(entryAbs)}' must be JavaScript (.js, .cjs, .mjs) or TypeScript (.ts, .tsx). ` +
 					"Compile TypeScript first (e.g. `tsc`, or `bun build --target=node --outdir dist`) and pass the built file."
 			);
 		}

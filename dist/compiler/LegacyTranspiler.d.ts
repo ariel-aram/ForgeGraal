@@ -41,5 +41,22 @@ export declare class LegacyTranspiler {
      * 20.19+/22.12+, and ForgeScript itself `require()`s chalk, which is published as pure ESM.
      */
     static transpile(entries: readonly ArchiveEntry[], options: LegacyTranspileOptions): Promise<LegacyTranspileResult>;
+    /**
+     * What the native host needs: ES modules become CommonJS and TypeScript/JSX become JavaScript, and nothing else
+     * changes. The host's engine parses current syntax directly, so unlike {@link transpile} no downlevelling happens
+     * (`target: esnext`), and a file that is already plain CommonJS is left alone without being parsed at all.
+     *
+     * This is what makes ES-module-only packages (chalk 5, nanoid 5, node-fetch 3, ...) and `.mjs` or TypeScript
+     * programs run: the host loads CommonJS. TypeScript and JSX files are renamed to `.js`; the module resolver maps
+     * an import of `./x.ts` (or `./x.js` written for an `x.ts`) onto the renamed file.
+     */
+    static toCommonJs(entries: readonly ArchiveEntry[], options?: {
+        onLog?: (message: string) => void;
+    }): Promise<{
+        entries: ArchiveEntry[];
+        renamed: Map<string, string>;
+        converted: number;
+        failures: string[];
+    }>;
 }
 //# sourceMappingURL=LegacyTranspiler.d.ts.map

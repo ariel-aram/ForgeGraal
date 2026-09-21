@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { BinaryInspector } from "./compiler/BinaryInspector";
-import { BinaryPackager, type BuildStrategy } from "./compiler/BinaryPackager";
+import { BinaryPackager, type BuildEngine, type BuildStrategy } from "./compiler/BinaryPackager";
 import { PolicyEnforcer } from "./compiler/PolicyEnforcer";
 import { QuickJsPackager } from "./compiler/QuickJsPackager";
 import { RuntimeRegistry } from "./compiler/RuntimeRegistry";
@@ -14,7 +14,7 @@ const VERSION: string = require("../package.json").version;
 const HELP = `ForgeGraal ${VERSION} - standalone executables for ForgeScript bots
 
 Usage:
-  forgegraal compile <entrypoint.js> --target <target> [options]
+  forgegraal compile <entrypoint.js | site-folder> --target <target> [options]
   forgegraal targets [--pm <package manager>]
   forgegraal info <target> [--db <driver>]
   forgegraal extensions
@@ -26,9 +26,12 @@ Usage:
 
 Compile options:
   -t, --target <name>        Target device (see 'forgegraal targets')
-  -o, --output <path>        Output file (sea) or directory (portable)
-  -s, --strategy <name>      auto (default), sea or portable — also opts a native-host target
-                              (see below) back onto Node.js, same as --node-binary
+  -o, --output <path>        Output file (single file) or directory (folder)
+  -e, --engine <name>        auto (default, follows the target), native (ForgeGraal's own host) or node.
+                              With native, --strategy sea writes ONE self-unpacking executable and
+                              portable/auto a folder
+  -s, --strategy <name>      auto (default), sea or portable. Without --engine it also opts a native-host
+                              target (see below) back onto Node.js, same as --node-binary
       --pm <name>            Package manager override (bun, pnpm, npm, yarn)
       --node-binary <path>   Node.js runtime to use instead of the target's default. Also opts a
                               native-host target (below) back onto Node.js
@@ -38,6 +41,12 @@ Compile options:
       --native-libc <name>   musl (default) or glibc, for targets that build the ForgeGraal
                               native host. musl runs unmodified on both glibc and musl systems
                               (Alpine included); glibc is only wired up for linux-modern-x64
+      --static               Treat the entrypoint as a folder of built static files and serve it
+                             (also automatic when it is a directory or an .html file)
+      --spa                  Static site: answer unknown page routes with index.html (client-side routing)
+      --port <n>             Static site: default port (PORT and --port at run time override it). 8080
+      --host <addr>          Static site: interface to listen on. Default 0.0.0.0
+      --index <file>         Static site: entry page. Default index.html
       --offline              Never download runtimes
       --include-dev          Bundle devDependencies too
       --include-env          Bundle .env files (they usually contain your bot token)
@@ -262,6 +271,7 @@ async function main(): Promise<void> {
 				target: values.target,
 				output: values.output,
 				strategy: values.strategy as BuildStrategy | undefined,
+				engine: values.engine as BuildEngine | undefined,
 				packageManager: values.pm,
 				nodeBinary: values["node-binary"],
 				nodeVersion: values["node-version"],
@@ -271,6 +281,15 @@ async function main(): Promise<void> {
 				includeDev: values["include-dev"],
 				includeEnv: values["include-env"],
 				allowNativeMismatch: values["allow-native-mismatch"],
+				staticSite:
+					values.static || values.spa || values.port || values.host || values.index
+						? {
+								spa: values.spa,
+								port: values.port === undefined ? undefined : Number(values.port),
+								host: values.host,
+								index: values.index,
+							}
+						: undefined,
 				onLog: (msg) => console.log(`[ForgeGraal] ${msg}`),
 			});
 
@@ -279,6 +298,9 @@ async function main(): Promise<void> {
 			console.log(`  Strategy : ${result.strategy}`);
 			console.log(`  Output   : ${result.outputPath}`);
 			console.log(`  Run      : ${result.launcherPath}`);
+			if (result.strategy === "quickjs") {
+				console.log(`  Layout   : ${result.outputPath === result.launcherPath ? "one self-unpacking file" : "folder"}`);
+			}
 			console.log(
 				`  Runtime  : ${
 					result.strategy === "quickjs"
@@ -304,6 +326,7 @@ function parse() {
 			target: { type: "string", short: "t" },
 			output: { type: "string", short: "o" },
 			strategy: { type: "string", short: "s" },
+			engine: { type: "string", short: "e" },
 			pm: { type: "string" },
 			db: { type: "string" },
 			"node-binary": { type: "string" },
@@ -314,6 +337,11 @@ function parse() {
 			"include-dev": { type: "boolean" },
 			"include-env": { type: "boolean" },
 			"allow-native-mismatch": { type: "boolean" },
+			static: { type: "boolean" },
+			spa: { type: "boolean" },
+			port: { type: "string" },
+			host: { type: "string" },
+			index: { type: "string" },
 			sha256: { type: "string" },
 			notes: { type: "string" },
 			global: { type: "boolean" },

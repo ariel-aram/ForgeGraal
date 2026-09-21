@@ -138,6 +138,12 @@ function classifyNativeAddons(addonPaths) {
 const RUNTIME_FILES = [
     "node-compat.js",
     "node-web.js",
+    "node-http.js",
+    "node-stream.js",
+    "node-fs.js",
+    "node-system.js",
+    "node-fetch.js",
+    "node-buffer.js",
     "node-misc.js",
     "node-inspect.js",
     "node-url.js",

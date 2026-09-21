@@ -1,0 +1,21 @@
+const out = [];
+const log = (...a) => out.push(a.map((x) => (typeof x === "string" ? x : JSON.stringify(x))).join(" "));
+const os = require("os"), vm = require("vm"), Module = require("module"), punycode = require("punycode");
+log("os shapes", typeof os.cpus().length, os.cpus().length >= 1, typeof os.totalmem(), os.totalmem() > 0, os.EOL === "\n", os.platform() === process.platform, typeof os.hostname(), typeof os.userInfo().username, Array.isArray(os.loadavg()), typeof os.availableParallelism());
+log("vm this", vm.runInThisContext("1 + 2"), vm.runInThisContext("typeof Array"));
+const ctx = vm.createContext({ x: 10, out: [] });
+log("vm ctx", vm.runInContext("x * 2", ctx), vm.runInContext("y = 5; out.push(x + y); out.length", ctx), ctx.y, typeof y, vm.isContext(ctx), vm.isContext({}));
+log("vm new", vm.runInNewContext("a + b", { a: 1, b: 2 }));
+log("vm script", new vm.Script("z = z + 1; z").runInNewContext({ z: 41 }));
+try { new vm.Script("var 1x"); } catch (e) { log("vm syntax", e.name); }
+log("compileFunction", vm.compileFunction("return a + b", ["a", "b"])(2, 3));
+log("module", Module.builtinModules.includes("fs"), Module.isBuiltin("node:path"), Module.isBuiltin("nope"), typeof Module.createRequire(__filename), typeof Module.wrap("x"), Module === Module.Module);
+const req = Module.createRequire(__filename); log("createRequire", req("path") === require("path"));
+log("require.main", require.main === module, module.id === __filename, typeof module.paths[0], module.children.length >= 0, this === module.exports, typeof require.resolve("fs"), require.resolve("fs"));
+log("punycode", punycode.toASCII("mañana.com"), punycode.toUnicode("xn--maana-pta.com"), punycode.encode("ü"), punycode.decode("tda"), punycode.ucs2.decode("a😀").length);
+log("process", process.argv.length >= 2, typeof process.argv[0], typeof process.version, /^v\d+\.\d+\.\d+/.test(process.version), typeof process.versions.node, process.release.name, typeof process.umask(), typeof process.hrtime.bigint(), typeof process.memoryUsage().rss, typeof process.cpuUsage().user);
+process.stdout.write("via stdout\n"); process.stdout.write(Buffer.from("buffer out\n"));
+log("stdout", process.stdout.fd, typeof process.stdout.isTTY, typeof process.stdout.write, process.stdout.writable);
+process.on("exit", (c) => console.log("exit event", c, process.exitCode));
+process.exitCode = 3;
+console.log(out.join("\n"));

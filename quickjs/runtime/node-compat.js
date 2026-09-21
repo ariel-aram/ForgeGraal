@@ -22,7 +22,12 @@
 import * as os from "qjs:os";
 import * as std from "qjs:std";
 import * as web from "./node-web.js";
+import * as fetchApi from "./node-fetch.js";
+import { createFs } from "./node-fs.js";
+import { createModuleModule, createOs, createPunycode, createStdio, createUnavailable, createVm } from "./node-system.js";
+import { createConsumers, createStreamModule } from "./node-stream.js";
 import * as misc from "./node-misc.js";
+import { Buffer, INSPECT_MAX_BYTES, SlowBuffer, bufferConstants, isAscii, isUtf8, kMaxLength, normalizeEncoding } from "./node-buffer.js";
 import { createConsole, format as inspectFormat, inspect as inspectValue, setPromiseStateReader } from "./node-inspect.js";
 import { URL, URLSearchParams, urlModule } from "./node-url.js";
 import { Segmenter } from "./segmenter.js";
@@ -39,12 +44,22 @@ if (typeof globalThis.URL === "undefined") {
 {
 	const promiseState = globalThis.__forgegraal_native?.promiseState;
 	if (promiseState) setPromiseStateReader(promiseState);
+	// Until process.stdout/stderr exist (they are streams, built later) console writes straight to the C streams;
+	// after that it goes through them, so a program that replaces process.stdout.write sees its console output too.
 	globalObject.console = createConsole(
 		(text) => {
+			if (processModule.stdout?.write && processModule.stdout._isStdio) {
+				processModule.stdout.write(text);
+				return;
+			}
 			std.out.puts(text);
 			std.out.flush();
 		},
 		(text) => {
+			if (processModule.stderr?.write && processModule.stderr._isStdio) {
+				processModule.stderr.write(text);
+				return;
+			}
 			std.out.flush();
 			std.err.puts(text);
 			std.err.flush();
@@ -88,7 +103,15 @@ if (typeof globalObject.setTimeout === "undefined" && typeof os.setTimeout === "
 		if (typeof fn !== "function") {
 			throw new TypeError('The "callback" argument must be of type function.');
 		}
-		const run = args.length ? () => fn(...args) : fn;
+		// An exception in a timer is an uncaught exception, not something to lose: without this the engine
+		// drops it and the event loop can quietly end.
+		const run = () => {
+			try {
+				fn(...args);
+			} catch (error) {
+				reportUncaught(error);
+			}
+		};
 		return new Timeout(create(run, Math.max(1, Number(ms) || 1)));
 	};
 	const clear = (timer) => {
@@ -171,6 +194,40 @@ if (typeof globalObject.setTimeout === "undefined" && typeof os.setTimeout === "
 		}
 	}
 	Object.defineProperty(Error, "prepareStackTrace", { value: undefined, writable: true, configurable: true, enumerable: false });
+
+	// V8 starts every stack with "Name: message"; the engine's begins at the first frame. Code prints
+	// `err.stack` to show what went wrong (Express does in its error page), so the header is added on first
+	// read and then kept, as V8 fixes it at construction.
+	const stackDescriptor = Object.getOwnPropertyDescriptor(Error.prototype, "stack");
+	if (stackDescriptor?.get) {
+		const headerOf = (error) => {
+			let name = "Error";
+			let message = "";
+			try {
+				name = error.name === undefined ? "Error" : String(error.name);
+				message = error.message === undefined ? "" : String(error.message);
+			} catch {
+				// A hostile getter: fall back to the plain header.
+			}
+			return name && message ? `${name}: ${message}` : name || message;
+		};
+		Object.defineProperty(Error.prototype, "stack", {
+			configurable: true,
+			enumerable: false,
+			get() {
+				const raw = stackDescriptor.get.call(this);
+				if (typeof raw !== "string") return raw;
+				const value = raw ? `${headerOf(this)}\n${raw}` : headerOf(this);
+				try {
+					Object.defineProperty(this, "stack", { value, writable: true, configurable: true, enumerable: false });
+				} catch {
+					// Frozen error: return the value without keeping it.
+				}
+				return value;
+			},
+			set: stackDescriptor.set,
+		});
+	}
 	if (typeof captureNative === "function") {
 		Error.captureStackTrace = function captureStackTrace(target, constructorOpt) {
 			// Frames above and including constructorOpt are left out; this wrapper is one more of them.
@@ -378,151 +435,43 @@ globalObject.TextDecoder = TextDecoder;
 
 /* ------------------------------------------------------------------- buffer */
 
-/*
- * Buffer over Uint8Array. Node's Buffer is a Uint8Array subclass, so inheriting gives the
- * indexing, iteration and byte semantics for free; what is added here is the encoding surface
- * that libraries actually call.
- */
-class Buffer extends Uint8Array {
-	static alloc(size, fill = 0) {
-		const buf = new Buffer(size);
-		if (fill !== 0) buf.fill(fill);
-		return buf;
-	}
-
-	static allocUnsafe(size) {
-		return new Buffer(size);
-	}
-
-	static from(value, encodingOrOffset, length) {
-		if (typeof value === "string") return Buffer._fromString(value, encodingOrOffset || "utf8");
-		if (value instanceof ArrayBuffer) {
-			// Shares memory with the ArrayBuffer rather than copying it, as Node does. Native addons
-			// rely on it: they write into the buffer they created after handing it back to JavaScript.
-			return new Buffer(value, encodingOrOffset || 0, length);
-		}
-		if (ArrayBuffer.isView(value)) {
-			const out = new Buffer(value.byteLength);
-			out.set(new Uint8Array(value.buffer, value.byteOffset, value.byteLength));
-			return out;
-		}
-		if (Array.isArray(value) || typeof value?.length === "number") {
-			const out = new Buffer(value.length);
-			for (let i = 0; i < value.length; i++) out[i] = value[i] & 0xff;
-			return out;
-		}
-		throw new TypeError("Buffer.from expects a string, ArrayBuffer, view or array-like");
-	}
-
-	static _fromString(str, encoding) {
-		const enc = String(encoding).toLowerCase();
-		if (enc === "utf8" || enc === "utf-8") {
-			const bytes = new TextEncoder().encode(str);
-			const out = new Buffer(bytes.length);
-			out.set(bytes);
-			return out;
-		}
-		if (enc === "hex") {
-			const clean = str.length % 2 ? str.slice(0, -1) : str;
-			const out = new Buffer(clean.length / 2);
-			for (let i = 0; i < out.length; i++) out[i] = Number.parseInt(clean.substr(i * 2, 2), 16);
-			return out;
-		}
-		if (enc === "base64") return Buffer._fromBase64(str);
-		if (enc === "latin1" || enc === "binary" || enc === "ascii") {
-			const out = new Buffer(str.length);
-			for (let i = 0; i < str.length; i++) out[i] = str.charCodeAt(i) & 0xff;
-			return out;
-		}
-		throw new TypeError(`Unsupported encoding '${encoding}'`);
-	}
-
-	static _fromBase64(str) {
-		const table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-		const clean = str.replace(/[^A-Za-z0-9+/]/g, "");
-		const out = new Buffer(Math.floor((clean.length * 3) / 4));
-		let bits = 0;
-		let acc = 0;
-		let pos = 0;
-		for (const ch of clean) {
-			acc = (acc << 6) | table.indexOf(ch);
-			bits += 6;
-			if (bits >= 8) {
-				bits -= 8;
-				out[pos++] = (acc >> bits) & 0xff;
-			}
-		}
-		return out.subarray(0, pos);
-	}
-
-	static concat(list, totalLength) {
-		let total = totalLength;
-		if (total === undefined) {
-			total = 0;
-			for (const item of list) total += item.length;
-		}
-		const out = new Buffer(total);
-		let offset = 0;
-		for (const item of list) {
-			if (offset >= total) break;
-			out.set(item.subarray(0, Math.min(item.length, total - offset)), offset);
-			offset += item.length;
-		}
-		return out;
-	}
-
-	static isBuffer(value) {
-		return value instanceof Buffer;
-	}
-
-	static byteLength(value, encoding = "utf8") {
-		return typeof value === "string" ? Buffer._fromString(value, encoding).length : value.byteLength;
-	}
-
-	toString(encoding = "utf8", start = 0, end = this.length) {
-		const slice = this.subarray(start, end);
-		const enc = String(encoding).toLowerCase();
-		if (enc === "utf8" || enc === "utf-8") return new TextDecoder().decode(slice);
-		if (enc === "hex") {
-			let out = "";
-			for (const byte of slice) out += byte.toString(16).padStart(2, "0");
-			return out;
-		}
-		if (enc === "base64") {
-			const table = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-			let out = "";
-			for (let i = 0; i < slice.length; i += 3) {
-				const triple = (slice[i] << 16) | ((slice[i + 1] ?? 0) << 8) | (slice[i + 2] ?? 0);
-				out += table[(triple >> 18) & 63] + table[(triple >> 12) & 63];
-				out += i + 1 < slice.length ? table[(triple >> 6) & 63] : "=";
-				out += i + 2 < slice.length ? table[triple & 63] : "=";
-			}
-			return out;
-		}
-		if (enc === "latin1" || enc === "binary" || enc === "ascii") {
-			let out = "";
-			for (const byte of slice) out += String.fromCharCode(byte);
-			return out;
-		}
-		throw new TypeError(`Unsupported encoding '${encoding}'`);
-	}
-
-	equals(other) {
-		if (this.length !== other.length) return false;
-		for (let i = 0; i < this.length; i++) if (this[i] !== other[i]) return false;
-		return true;
-	}
-
-	slice(start, end) {
-		return Buffer.from(this.subarray(start, end));
-	}
-}
-
 /* ------------------------------------------------------------------- events */
 
 function initEventEmitter() {
 	this._events = Object.create(null);
-	this._maxListeners = 10;
+	this._maxListeners = undefined;
+}
+
+/*
+ * Framework code mixes EventEmitter.prototype into plain objects and functions (Express does this to its
+ * `app`) without ever running the constructor, so every method has to cope with `_events` not existing yet.
+ */
+const eventsOf = (emitter) => emitter._events ?? (emitter._events = Object.create(null));
+
+function addListener(emitter, name, fn, prepend, once) {
+	if (typeof fn !== "function") {
+		throw Object.assign(new TypeError(`The "listener" argument must be of type function. Received ${fn === null ? "null" : typeof fn}`), {
+			code: "ERR_INVALID_ARG_TYPE",
+		});
+	}
+	const events = eventsOf(emitter);
+	let entry = fn;
+	if (once) {
+		const state = { fired: false };
+		entry = function onceWrapper(...args) {
+			if (state.fired) return undefined;
+			state.fired = true;
+			emitter.removeListener(name, entry);
+			return fn.apply(emitter, args);
+		};
+		entry.listener = fn;
+	}
+	// 'newListener' fires before the listener is added, with the original function.
+	if (events.newListener !== undefined && name !== "newListener") emitter.emit("newListener", name, fn);
+	const list = events[name] ?? (events[name] = []);
+	if (prepend) list.unshift(entry);
+	else list.push(entry);
+	return emitter;
 }
 
 class EventEmitter {
@@ -531,68 +480,89 @@ class EventEmitter {
 	}
 
 	on(name, fn) {
-		(this._events[name] ||= []).push(fn);
-		return this;
+		return addListener(this, name, fn, false, false);
 	}
 
 	addListener(name, fn) {
-		return this.on(name, fn);
+		return addListener(this, name, fn, false, false);
 	}
 
 	once(name, fn) {
-		const wrapper = (...args) => {
-			this.off(name, wrapper);
-			fn.apply(this, args);
-		};
-		wrapper.listener = fn;
-		return this.on(name, wrapper);
+		return addListener(this, name, fn, false, true);
 	}
 
 	prependListener(name, fn) {
-		(this._events[name] ||= []).unshift(fn);
-		return this;
+		return addListener(this, name, fn, true, false);
+	}
+
+	prependOnceListener(name, fn) {
+		return addListener(this, name, fn, true, true);
 	}
 
 	off(name, fn) {
-		const list = this._events[name];
-		if (!list) return this;
-		const index = list.findIndex((entry) => entry === fn || entry.listener === fn);
-		if (index !== -1) list.splice(index, 1);
-		return this;
+		return this.removeListener(name, fn);
 	}
 
 	removeListener(name, fn) {
-		return this.off(name, fn);
+		const events = eventsOf(this);
+		const list = events[name];
+		if (!list) return this;
+		for (let i = list.length - 1; i >= 0; i--) {
+			if (list[i] === fn || list[i].listener === fn) {
+				list.splice(i, 1);
+				if (!list.length) delete events[name];
+				if (events.removeListener !== undefined) this.emit("removeListener", name, fn);
+				break;
+			}
+		}
+		return this;
 	}
 
 	removeAllListeners(name) {
+		const events = eventsOf(this);
 		if (name === undefined) this._events = Object.create(null);
-		else delete this._events[name];
+		else delete events[name];
 		return this;
 	}
 
 	emit(name, ...args) {
-		const list = this._events[name];
+		const events = eventsOf(this);
+		if (name === "error" && events[errorMonitorSymbol]) {
+			for (const fn of [...events[errorMonitorSymbol]]) fn.apply(this, args);
+		}
+		const list = events[name];
 		if (!list || !list.length) {
 			// Node throws on an unhandled 'error' event rather than swallowing it, and code
 			// depends on that being how a failure surfaces.
-			if (name === "error") throw args[0] instanceof Error ? args[0] : new Error(`Unhandled error. (${args[0]})`);
+			if (name === "error") {
+				if (args[0] instanceof Error) throw args[0];
+				throw Object.assign(new Error(`Unhandled error. (${typeof args[0] === "string" ? `'${args[0]}'` : String(args[0])})`), {
+					code: "ERR_UNHANDLED_ERROR",
+					context: args[0],
+				});
+			}
 			return false;
 		}
-		for (const fn of [...list]) fn.apply(this, args);
+		for (const fn of list.length === 1 ? list : [...list]) fn.apply(this, args);
 		return true;
 	}
 
-	listenerCount(name) {
-		return this._events[name]?.length ?? 0;
+	listenerCount(name, fn) {
+		const list = eventsOf(this)[name];
+		if (!list) return 0;
+		return fn === undefined ? list.length : list.filter((entry) => entry === fn || entry.listener === fn).length;
 	}
 
 	listeners(name) {
-		return [...(this._events[name] ?? [])];
+		return (eventsOf(this)[name] ?? []).map((entry) => entry.listener ?? entry);
+	}
+
+	rawListeners(name) {
+		return [...(eventsOf(this)[name] ?? [])];
 	}
 
 	eventNames() {
-		return Reflect.ownKeys(this._events);
+		return Reflect.ownKeys(eventsOf(this));
 	}
 
 	setMaxListeners(n) {
@@ -601,9 +571,46 @@ class EventEmitter {
 	}
 
 	getMaxListeners() {
-		return this._maxListeners;
+		return this._maxListeners === undefined ? EventEmitter.defaultMaxListeners : this._maxListeners;
+	}
+
+	static listenerCount(emitter, name) {
+		return emitter.listenerCount(name);
+	}
+
+	static once(emitter, name, options) {
+		return new Promise((resolve, reject) => {
+			if (options?.signal?.aborted) return reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError", code: "ABORT_ERR" }));
+			const onEvent = (...args) => {
+				if (name !== "error") emitter.removeListener("error", onError);
+				resolve(args);
+			};
+			const onError = (err) => {
+				emitter.removeListener(name, onEvent);
+				reject(err);
+			};
+			emitter.once(name, onEvent);
+			if (name !== "error") emitter.once("error", onError);
+			options?.signal?.addEventListener("abort", () => {
+				emitter.removeListener(name, onEvent);
+				emitter.removeListener("error", onError);
+				reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError", code: "ABORT_ERR" }));
+			}, { once: true });
+		});
+	}
+
+	static getEventListeners(emitter, name) {
+		return emitter.listeners(name);
+	}
+
+	static setMaxListeners(n, ...emitters) {
+		if (!emitters.length) EventEmitter.defaultMaxListeners = n;
+		else for (const emitter of emitters) emitter.setMaxListeners?.(n);
 	}
 }
+const errorMonitorSymbol = Symbol("events.errorMonitor");
+EventEmitter.errorMonitor = errorMonitorSymbol;
+EventEmitter.captureRejections = false;
 EventEmitter.EventEmitter = EventEmitter;
 EventEmitter.defaultMaxListeners = 10;
 
@@ -719,142 +726,43 @@ pathModule.win32 = win32Path;
 
 /* ----------------------------------------------------------------------- fs */
 
-function throwErrno(errno, syscall, target) {
-	const err = new Error(`${syscall} failed for '${target}': ${std.strerror(errno)}`);
-	err.errno = -errno;
-	err.syscall = syscall;
-	err.path = target;
-	err.code = errno === 2 ? "ENOENT" : errno === 13 ? "EACCES" : errno === 17 ? "EEXIST" : `E${errno}`;
-	return err;
-}
-
-const fs = {
-	readFileSync(file, options) {
-		const encoding = typeof options === "string" ? options : options?.encoding;
-		if (encoding) {
-			const text = std.loadFile(file);
-			if (text === null) throw throwErrno(2, "open", file);
-			return text;
-		}
-		const handle = std.open(file, "rb");
-		if (!handle) throw throwErrno(2, "open", file);
-		handle.seek(0, std.SEEK_END);
-		const size = handle.tell();
-		handle.seek(0, std.SEEK_SET);
-		const buf = Buffer.alloc(size);
-		if (size > 0) handle.read(buf.buffer, 0, size);
-		handle.close();
-		return buf;
-	},
-	writeFileSync(file, data) {
-		const handle = std.open(file, "wb");
-		if (!handle) throw throwErrno(13, "open", file);
-		const bytes = typeof data === "string" ? Buffer.from(data, "utf8") : Buffer.from(data);
-		if (bytes.length) handle.write(bytes.buffer, bytes.byteOffset, bytes.length);
-		handle.close();
-	},
-	appendFileSync(file, data) {
-		const handle = std.open(file, "ab");
-		if (!handle) throw throwErrno(13, "open", file);
-		const bytes = typeof data === "string" ? Buffer.from(data, "utf8") : Buffer.from(data);
-		if (bytes.length) handle.write(bytes.buffer, bytes.byteOffset, bytes.length);
-		handle.close();
-	},
-	existsSync(file) {
-		return os.stat(file)[1] === 0;
-	},
-	statSync(file) {
-		const [info, errno] = os.stat(file);
-		if (errno !== 0) throw throwErrno(errno, "stat", file);
-		return fs._toStats(info);
-	},
-	lstatSync(file) {
-		const [info, errno] = (os.lstat ?? os.stat)(file);
-		if (errno !== 0) throw throwErrno(errno, "lstat", file);
-		return fs._toStats(info);
-	},
-	_toStats(info) {
-		const isDir = (info.mode & os.S_IFMT) === os.S_IFDIR;
-		return {
-			...info,
-			size: info.size,
-			mode: info.mode,
-			mtimeMs: info.mtime,
-			isDirectory: () => isDir,
-			isFile: () => (info.mode & os.S_IFMT) === os.S_IFREG,
-			isSymbolicLink: () => (info.mode & os.S_IFMT) === os.S_IFLNK,
-		};
-	},
-	readdirSync(dir, options) {
-		const [names, errno] = os.readdir(dir);
-		if (errno !== 0) throw throwErrno(errno, "scandir", dir);
-		const filtered = names.filter((n) => n !== "." && n !== "..");
-		if (!options?.withFileTypes) return filtered;
-		return filtered.map((name) => {
-			const stats = fs.statSync(pathModule.join(dir, name));
-			return { name, isDirectory: stats.isDirectory, isFile: stats.isFile, isSymbolicLink: stats.isSymbolicLink };
-		});
-	},
-	mkdirSync(dir, options) {
-		if (options?.recursive) {
-			// Built up from the root (a drive on Windows) so no prefix is mistaken for a directory name.
-			const full = pathModule.resolve(dir);
-			const root = pathModule.parse(full).root;
-			let current = root;
-			for (const part of full.slice(root.length).split(/[\\/]/)) {
-				if (!part) continue;
-				current = !current || current.endsWith(pathModule.sep) ? current + part : current + pathModule.sep + part;
-				if (!fs.existsSync(current)) os.mkdir(current);
-			}
-			return;
-		}
-		const errno = os.mkdir(dir);
-		if (errno !== 0) throw throwErrno(-errno, "mkdir", dir);
-	},
-	unlinkSync(file) {
-		const errno = os.remove(file);
-		if (errno !== 0) throw throwErrno(-errno, "unlink", file);
-	},
-	rmSync(target) {
-		os.remove(target);
-	},
-	renameSync(from, to) {
-		const errno = os.rename(from, to);
-		if (errno !== 0) throw throwErrno(-errno, "rename", from);
-	},
-	realpathSync(p) {
-		const [resolved, errno] = os.realpath(p);
-		if (errno !== 0) throw throwErrno(errno, "realpath", p);
-		return resolved;
-	},
-	chmodSync() {
-		/* quickjs-ng exposes no chmod; permissions are left as the OS created them. */
-	},
-};
-fs.promises = {
-	readFile: async (...a) => fs.readFileSync(...a),
-	writeFile: async (...a) => fs.writeFileSync(...a),
-	mkdir: async (...a) => fs.mkdirSync(...a),
-	readdir: async (...a) => fs.readdirSync(...a),
-	stat: async (...a) => fs.statSync(...a),
-	unlink: async (...a) => fs.unlinkSync(...a),
-};
+/* `fs` is built in node-fs.js once the stream classes it extends exist (see below). */
+const fs = {};
 
 /* ------------------------------------------------------------------ process */
 
 const processModule = new EventEmitter();
 Object.assign(processModule, {
-	argv: ["qjs", ...(globalObject.scriptArgs ?? []).slice(1)],
+	argv: [os.exePath?.()[0] ?? "qjs", ...(globalObject.scriptArgs ?? []).slice(1)],
+	argv0: "node",
+	execArgv: [],
+	title: "node",
+	exitCode: undefined,
 	env: std.getenviron(),
 	platform: os.platform === "win32" ? "win32" : os.platform,
 	arch: globalThis.__forgegraal_native?.arch ?? "ia32",
-	version: "v18.0.0-forgegraal-quickjs",
-	versions: { node: "18.0.0", quickjs: "0.16.2" },
+	version: "v20.18.0",
+	versions: { node: "20.18.0", v8: "0.0.0-quickjs-ng", quickjs: "0.16.2", uv: "1.48.0", modules: "115", napi: "10", openssl: "mbedtls-3.6.2", zlib: "miniz-3.0.2" },
+	release: { name: "node", lts: "Iron" },
+	config: { target_defaults: {}, variables: {} },
+	features: { inspector: false, debug: false, uv: true, ipv6: true, tls_alpn: false, tls_sni: true, tls_ocsp: false, tls: true },
 	pid: os.getpid?.() ?? globalThis.__forgegraal_native?.getpid?.() ?? 0,
 	execPath: os.exePath?.()[0] ?? "qjs",
 	cwd: () => os.getcwd()[0],
 	chdir: (dir) => os.chdir(dir),
-	exit: (code) => std.exit(code ?? 0),
+	exit: (code) => {
+		if (code !== undefined) processModule.exitCode = code;
+		const finalCode = processModule.exitCode ?? 0;
+		if (!processModule._exiting) {
+			processModule._exiting = true;
+			try {
+				processModule.emit("exit", finalCode);
+			} catch {
+				// An 'exit' listener that throws must not keep the process alive.
+			}
+		}
+		std.exit(finalCode);
+	},
 	hrtime: Object.assign(
 		(prev) => {
 			const now = os.now() * 1e6;
@@ -865,11 +773,71 @@ Object.assign(processModule, {
 	),
 	nextTick: (fn, ...args) => queueMicrotask(() => fn(...args)),
 	uptime: () => os.now() / 1000,
-	memoryUsage: () => ({ rss: 0, heapTotal: 0, heapUsed: 0, external: 0 }),
+	memoryUsage: Object.assign(() => ({ rss: 50 * 1024 * 1024, heapTotal: 32 * 1024 * 1024, heapUsed: 16 * 1024 * 1024, external: 0, arrayBuffers: 0 }), { rss: () => 50 * 1024 * 1024 }),
+	cpuUsage: () => ({ user: Math.round((os.cputime?.() ?? 0) * 1000), system: 0 }),
+	resourceUsage: () => ({ userCPUTime: 0, systemCPUTime: 0, maxRSS: 0 }),
+	umask: () => 0o022,
+	getuid: () => 0,
+	geteuid: () => 0,
+	getgid: () => 0,
+	getegid: () => 0,
+	getgroups: () => [],
+	kill: (pid, signal = "SIGTERM") => {
+		const signals = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGKILL: 9, SIGUSR1: 10, SIGUSR2: 12, SIGTERM: 15, 0: 0 };
+		const number = typeof signal === "number" ? signal : signals[signal];
+		if (number === undefined) throw Object.assign(new TypeError(`Unknown signal: ${signal}`), { code: "ERR_UNKNOWN_SIGNAL" });
+		const rc = os.kill?.(pid, number) ?? -1;
+		if (rc < 0) throw Object.assign(new Error(`kill ESRCH`), { code: "ESRCH", errno: rc, syscall: "kill" });
+		return true;
+	},
+	abort: () => std.exit(134),
+	binding: () => {
+		throw new Error("process.binding is not available in the ForgeGraal native host");
+	},
+	setUncaughtExceptionCaptureCallback: () => {},
+	hasUncaughtExceptionCaptureCallback: () => false,
+	setSourceMapsEnabled: () => {},
+	allowedNodeEnvironmentFlags: new Set(),
 	stdout: { write: (s) => (std.out.puts(s), true), isTTY: false, fd: 1 },
 	stderr: { write: (s) => (std.err.puts(s), true), isTTY: false, fd: 2 },
 	emitWarning: (warning) => std.err.puts(`Warning: ${warning}\n`),
 });
+
+/*
+ * What Node does with an exception nothing caught: give 'uncaughtException' listeners the chance, and
+ * otherwise print it and exit with status 1. Timers and the socket poller route their errors here.
+ */
+function reportUncaught(error) {
+	if (processModule.listenerCount("uncaughtException") > 0) {
+		try {
+			processModule.emit("uncaughtException", error, "uncaughtException");
+			return;
+		} catch (thrown) {
+			error = thrown;
+		}
+	}
+	const text = error instanceof Error ? error.stack || `${error.name}: ${error.message}` : `Uncaught ${inspectValue(error)}`;
+	std.err.puts(`${text}\n`);
+	processModule.exitCode = 1;
+	processModule.exit(1);
+}
+globalObject.__forgegraal_reportUncaught = reportUncaught;
+/* Called by the host when the event loop runs dry (a listener may schedule more work) and again just before it exits. */
+globalObject.__forgegraal_beforeExit = () => {
+	processModule.emit("beforeExit", processModule.exitCode ?? 0);
+};
+globalObject.__forgegraal_exit = () => {
+	if (!processModule._exiting) {
+		processModule._exiting = true;
+		try {
+			processModule.emit("exit", processModule.exitCode ?? 0);
+		} catch (error) {
+			std.err.puts(`${error && error.stack ? error.stack : error}\n`);
+			return 1;
+		}
+	}
+	return Number(processModule.exitCode ?? 0) || 0;
+};
 
 /* --------------------------------------------------------------------- util */
 
@@ -1116,34 +1084,69 @@ const querystring = {
 	unescape: decodeURIComponent,
 };
 
-class StringDecoder {
-	constructor(encoding = "utf8") {
-		this.encoding = encoding;
-		this._decoder = new TextDecoder(encoding === "utf8" ? "utf-8" : encoding);
+/*
+ * StringDecoder keeps the bytes of a character split across chunks until the rest arrives. A function
+ * constructor rather than a class, because old code inherits with `StringDecoder.call(this, encoding)`
+ * (iconv-lite does), which an ES class refuses.
+ */
+function StringDecoder(encoding) {
+	const enc = normalizeEncoding(encoding);
+	if (enc === null) {
+		throw Object.assign(new TypeError(`Unknown encoding: ${encoding}`), { code: "ERR_UNKNOWN_ENCODING" });
 	}
-	write(buf) {
-		return this._decoder.decode(buf, { stream: true });
-	}
-	end(buf) {
-		return buf ? this._decoder.decode(buf) : this._decoder.decode();
-	}
+	this.encoding = enc;
+	this._pending = new Uint8Array(0);
 }
 
-const osModule = {
-	platform: () => processModule.platform,
-	arch: () => processModule.arch,
-	type: () => (processModule.platform === "win32" ? "Windows_NT" : "Linux"),
-	release: () => "",
-	homedir: () => processModule.env.HOME ?? processModule.env.USERPROFILE ?? "",
-	tmpdir: () => processModule.env.TMPDIR ?? processModule.env.TEMP ?? "/tmp",
-	hostname: () => "localhost",
-	cpus: () => [],
-	totalmem: () => 0,
-	freemem: () => 0,
-	uptime: () => processModule.uptime(),
-	EOL: processModule.platform === "win32" ? "\r\n" : "\n",
-	endianness: () => "LE",
+/* How many trailing bytes of `bytes` are the start of a character that is not complete yet. */
+function incompleteTail(encoding, bytes) {
+	const n = bytes.length;
+	if (encoding === "utf8") {
+		for (let back = 1; back <= Math.min(3, n); back++) {
+			const byte = bytes[n - back];
+			if ((byte & 0xc0) === 0x80) continue; // a continuation byte: keep looking for its lead
+			const need = byte >= 0xf0 ? 4 : byte >= 0xe0 ? 3 : byte >= 0xc0 ? 2 : 1;
+			return need > back ? back : 0;
+		}
+		return 0;
+	}
+	if (encoding === "utf16le") {
+		let keep = n % 2;
+		// A high surrogate at the end waits for its low half.
+		if (n - keep >= 2) {
+			const unit = bytes[n - keep - 2] | (bytes[n - keep - 1] << 8);
+			if (unit >= 0xd800 && unit <= 0xdbff) keep += 2;
+		}
+		return keep;
+	}
+	if (encoding === "base64" || encoding === "base64url") return n % 3;
+	return 0;
+}
+
+StringDecoder.prototype.write = function write(buf) {
+	if (typeof buf === "string") return buf;
+	const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf.buffer ?? buf, buf.byteOffset ?? 0, buf.byteLength);
+	const all = this._pending.length ? Buffer.concat([this._pending, bytes]) : bytes;
+	const keep = incompleteTail(this.encoding, all);
+	this._pending = keep ? Buffer.from(all.subarray(all.length - keep)) : new Uint8Array(0);
+	const complete = keep ? all.subarray(0, all.length - keep) : all;
+	return Buffer.from(complete).toString(this.encoding);
 };
+
+StringDecoder.prototype.end = function end(buf) {
+	let out = buf === undefined ? "" : this.write(buf);
+	if (this._pending.length) {
+		out += this.encoding === "utf8" ? "\ufffd" : Buffer.from(this._pending).toString(this.encoding);
+		this._pending = new Uint8Array(0);
+	}
+	return out;
+};
+
+StringDecoder.prototype.text = function text(buf, offset) {
+	return this.write(buf.subarray(offset));
+};
+
+const osModule = createOs({ std, processModule, readText: (file) => std.loadFile(file) });
 
 const timers = {
 	setTimeout: globalObject.setTimeout,
@@ -1180,8 +1183,92 @@ class Channel {
 	}
 }
 
+/* start/end/asyncStart/asyncEnd/error channels around one traced operation (undici, Fastify use them). */
+class TracingChannel {
+	constructor(name) {
+		for (const event of ["start", "end", "asyncStart", "asyncEnd", "error"]) {
+			this[event] = diagnosticsChannel.channel(`tracing:${name}:${event}`);
+		}
+	}
+	get hasSubscribers() {
+		return ["start", "end", "asyncStart", "asyncEnd", "error"].some((event) => this[event].hasSubscribers);
+	}
+	subscribe(handlers) {
+		for (const event of Object.keys(handlers)) this[event]?.subscribe(handlers[event]);
+	}
+	unsubscribe(handlers) {
+		let all = true;
+		for (const event of Object.keys(handlers)) if (this[event] && !this[event].unsubscribe(handlers[event])) all = false;
+		return all;
+	}
+	traceSync(fn, context = {}, thisArg, ...args) {
+		if (!this.hasSubscribers) return fn.apply(thisArg, args);
+		this.start.publish(context);
+		try {
+			const result = fn.apply(thisArg, args);
+			context.result = result;
+			return result;
+		} catch (error) {
+			context.error = error;
+			this.error.publish(context);
+			throw error;
+		} finally {
+			this.end.publish(context);
+		}
+	}
+	tracePromise(fn, context = {}, thisArg, ...args) {
+		if (!this.hasSubscribers) return fn.apply(thisArg, args);
+		this.start.publish(context);
+		const done = () => this.asyncEnd.publish(context);
+		try {
+			const promise = fn.apply(thisArg, args);
+			this.end.publish(context);
+			return promise.then(
+				(result) => {
+					context.result = result;
+					this.asyncStart.publish(context);
+					done();
+					return result;
+				},
+				(error) => {
+					context.error = error;
+					this.error.publish(context);
+					this.asyncStart.publish(context);
+					done();
+					throw error;
+				}
+			);
+		} catch (error) {
+			context.error = error;
+			this.error.publish(context);
+			this.end.publish(context);
+			throw error;
+		}
+	}
+	traceCallback(fn, position = -1, context = {}, thisArg, ...args) {
+		if (!this.hasSubscribers) return fn.apply(thisArg, args);
+		const index = position < 0 ? args.length + position : position;
+		const original = args[index];
+		args[index] = (error, result) => {
+			if (error) {
+				context.error = error;
+				this.error.publish(context);
+			} else context.result = result;
+			this.asyncStart.publish(context);
+			try {
+				return original.call(thisArg, error, result);
+			} finally {
+				this.asyncEnd.publish(context);
+			}
+		};
+		return this.traceSync(fn, context, thisArg, ...args);
+	}
+}
+
 const diagnosticsChannel = {
 	Channel,
+	TracingChannel,
+	tracingChannel: (name) => new TracingChannel(name),
 	channel(name) {
 		return (diagnosticsChannels[name] ||= new Channel(name));
 	},
@@ -1199,254 +1286,10 @@ const diagnosticsChannel = {
 /* ------------------------------------------------------------------- stream */
 
 /*
- * Object-mode-capable streams, in memory. This covers the shape libraries actually use --
- * push/read, 'data'/'end'/'error', write/end, pipe, and Transform -- on top of EventEmitter.
- *
- * It is not a port of Node's implementation and does not reproduce its backpressure accounting:
- * highWaterMark is tracked and `write()` reports false past it, but nothing here talks to a
- * socket, so the pressure it models is only between JavaScript producers and consumers. That is
- * enough for the stream plumbing inside libraries and not enough to call this finished.
- */
-class Stream extends EventEmitter {}
-
-function initReadable(options = {}) {
-	this._buffer = [];
-	this._flowing = false;
-	this._ended = false;
-	this._destroyed = false;
-	this.readable = true;
-	this.readableObjectMode = Boolean(options.objectMode);
-	this.readableHighWaterMark = options.highWaterMark ?? 16384;
-	if (options.read) this._read = options.read;
-}
-
-class Readable extends Stream {
-	constructor(options = {}) {
-		super();
-		initReadable.call(this, options);
-	}
-
-	_read() {}
-
-	push(chunk) {
-		if (chunk === null) {
-			this._ended = true;
-			// 'end' only fires once everything buffered has been handed out.
-			if (!this._buffer.length) queueMicrotask(() => this.emit("end"));
-			return false;
-		}
-		const value = this.readableObjectMode || typeof chunk !== "string" ? chunk : Buffer.from(chunk, "utf8");
-		this._buffer.push(value);
-		if (this._flowing) queueMicrotask(() => this._drain());
-		else this.emit("readable");
-		return this._buffer.length < this.readableHighWaterMark;
-	}
-
-	read() {
-		return this._buffer.length ? this._buffer.shift() : null;
-	}
-
-	_drain() {
-		while (this._flowing && this._buffer.length) this.emit("data", this._buffer.shift());
-		if (this._ended && !this._buffer.length) this.emit("end");
-	}
-
-	on(name, fn) {
-		super.on(name, fn);
-		if (name === "data") {
-			this._flowing = true;
-			queueMicrotask(() => this._drain());
-		}
-		return this;
-	}
-
-	resume() {
-		this._flowing = true;
-		queueMicrotask(() => this._drain());
-		return this;
-	}
-
-	pause() {
-		this._flowing = false;
-		return this;
-	}
-
-	pipe(destination) {
-		this.on("data", (chunk) => destination.write(chunk));
-		this.on("end", () => destination.end());
-		this.on("error", (err) => destination.emit("error", err));
-		return destination;
-	}
-
-	destroy(err) {
-		this._destroyed = true;
-		this.readable = false;
-		if (err) this.emit("error", err);
-		this.emit("close");
-		return this;
-	}
-
-	async *[Symbol.asyncIterator]() {
-		const queue = [];
-		let done = false;
-		let notify;
-		this.on("data", (chunk) => {
-			queue.push(chunk);
-			notify?.();
-		});
-		this.on("end", () => {
-			done = true;
-			notify?.();
-		});
-		for (;;) {
-			if (queue.length) {
-				yield queue.shift();
-				continue;
-			}
-			if (done) return;
-			await new Promise((resolve) => {
-				notify = resolve;
-			});
-			notify = null;
-		}
-	}
-
-	static from(iterable) {
-		const readable = new Readable({ objectMode: true });
-		(async () => {
-			try {
-				for await (const item of iterable) readable.push(item);
-				readable.push(null);
-			} catch (err) {
-				readable.destroy(err);
-			}
-		})();
-		return readable;
-	}
-}
-
-function initWritable(options = {}) {
-	this.writable = true;
-	this._chunks = [];
-	this.writableObjectMode = Boolean(options.objectMode);
-	this.writableHighWaterMark = options.highWaterMark ?? 16384;
-	if (options.write) this._write = options.write;
-	if (options.final) this._final = options.final;
-}
-
-class Writable extends Stream {
-	constructor(options = {}) {
-		super();
-		initWritable.call(this, options);
-	}
-
-	_write(chunk, _encoding, callback) {
-		this._chunks.push(chunk);
-		callback();
-	}
-
-	_final(callback) {
-		callback();
-	}
-
-	write(chunk, encoding, callback) {
-		if (typeof encoding === "function") {
-			callback = encoding;
-			encoding = undefined;
-		}
-		if (!this.writable) {
-			this.emit("error", new Error("write after end"));
-			return false;
-		}
-		const value = this.writableObjectMode || typeof chunk !== "string" ? chunk : Buffer.from(chunk, encoding || "utf8");
-		this._write(value, encoding, (err) => {
-			if (err) this.emit("error", err);
-			callback?.(err);
-		});
-		return this._chunks.length < this.writableHighWaterMark;
-	}
-
-	end(chunk, encoding, callback) {
-		if (typeof chunk === "function") {
-			callback = chunk;
-			chunk = undefined;
-		}
-		if (chunk !== undefined && chunk !== null) this.write(chunk, encoding);
-		this.writable = false;
-		this._final(() => {
-			this.emit("finish");
-			this.emit("close");
-			callback?.();
-		});
-		return this;
-	}
-
-	destroy(err) {
-		this.writable = false;
-		if (err) this.emit("error", err);
-		this.emit("close");
-		return this;
-	}
-}
-
-/*
- * Duplex is a Readable that is also a Writable. The writable half is mixed in as methods on the
- * prototype rather than held as a separate object, so `_write` and `_final` resolve on the instance:
- * a subclass overriding them, as sharp and most stream libraries do, is honoured.
- */
-class Duplex extends Readable {
-	constructor(options = {}) {
-		super(options);
-		initWritable.call(this, options);
-	}
-}
-for (const name of Object.getOwnPropertyNames(Writable.prototype)) {
-	if (name === "constructor" || name === "destroy" || Object.hasOwn(Duplex.prototype, name)) continue;
-	Object.defineProperty(Duplex.prototype, name, Object.getOwnPropertyDescriptor(Writable.prototype, name));
-}
-
-function initTransform(options = {}) {
-	if (options.transform) this._transform = options.transform;
-	if (options.flush) this._flush = options.flush;
-}
-
-class Transform extends Duplex {
-	constructor(options = {}) {
-		super(options);
-		initTransform.call(this, options);
-	}
-
-	_write(chunk, encoding, callback) {
-		this._transform(chunk, encoding, (err, value) => {
-			if (err) return callback(err);
-			if (value !== undefined && value !== null) this.push(value);
-			callback();
-		});
-	}
-
-	_final(callback) {
-		this._flush((err, value) => {
-			if (value !== undefined && value !== null) this.push(value);
-			this.push(null);
-			callback(err);
-		});
-	}
-
-	_transform(chunk, _encoding, callback) {
-		callback(null, chunk);
-	}
-
-	_flush(callback) {
-		callback();
-	}
-}
-
-class PassThrough extends Transform {}
-
-/*
- * ES classes cannot be invoked without `new`, but a great deal of published code inherits the old
- * way: `util.inherits(Sharp, Duplex)` and then `Duplex.call(this, options)`. Wrapping the exported
- * constructor lets that call run the same initialisation on the caller's `this`.
+ * ES classes cannot be invoked without `new`, but a great deal of published code inherits the old way:
+ * `util.inherits(X, EventEmitter)` and then `EventEmitter.call(this)`. Wrapping the exported constructor
+ * lets that call run the same initialisation on the caller's `this`. (The stream constructors in
+ * node-stream.js are plain functions and need no wrapper.)
  */
 function callable(Class, ...inits) {
 	return new Proxy(Class, {
@@ -1458,42 +1301,20 @@ function callable(Class, ...inits) {
 
 const CallableEventEmitter = callable(EventEmitter, initEventEmitter);
 EventEmitter.EventEmitter = CallableEventEmitter;
-const CallableStream = callable(Stream, initEventEmitter);
-const CallableReadable = callable(Readable, initEventEmitter, initReadable);
-const CallableWritable = callable(Writable, initEventEmitter, initWritable);
-const CallableDuplex = callable(Duplex, initEventEmitter, initReadable, initWritable);
-const CallableTransform = callable(Transform, initEventEmitter, initReadable, initWritable, initTransform);
-const CallablePassThrough = callable(PassThrough, initEventEmitter, initReadable, initWritable, initTransform);
 
-const streamModule = {
-	Stream: CallableStream,
-	Readable: CallableReadable,
-	Writable: CallableWritable,
-	Duplex: CallableDuplex,
-	Transform: CallableTransform,
-	PassThrough: CallablePassThrough,
-	pipeline(...args) {
-		const callback = typeof args[args.length - 1] === "function" ? args.pop() : null;
-		const [source, ...rest] = args;
-		let current = source;
-		for (const next of rest) current = current.pipe(next);
-		current.on("finish", () => callback?.(null));
-		current.on("error", (err) => callback?.(err));
-		return current;
-	},
-	finished(stream, callback) {
-		stream.on("end", () => callback(null));
-		stream.on("finish", () => callback(null));
-		stream.on("error", (err) => callback(err));
-	},
-	isDisturbed: (stream) => Boolean(stream?._flowing || stream?._ended),
-	isReadable: (stream) => Boolean(stream?.readable),
-	isErrored: () => false,
-};
-streamModule.promises = {
-	pipeline: (...args) => new Promise((resolve, reject) => streamModule.pipeline(...args, (err) => (err ? reject(err) : resolve()))),
-	finished: (stream) => new Promise((resolve, reject) => streamModule.finished(stream, (err) => (err ? reject(err) : resolve()))),
-};
+const CallableStream = createStreamModule(CallableEventEmitter, Buffer, StringDecoder, web);
+const streamModule = CallableStream;
+{
+	const stdio = createStdio({ os, std, Buffer, stream: streamModule });
+	processModule.stdout = stdio.stdout;
+	processModule.stderr = stdio.stderr;
+	Object.defineProperty(processModule, "stdin", { get: stdio.getStdin, configurable: true, enumerable: true });
+}
+Object.assign(
+	fs,
+	createFs({ os, std, Buffer, path: pathModule, stream: streamModule, EventEmitter: CallableEventEmitter, native: globalThis.__forgegraal_native, platform: os.platform })
+);
+if (globalThis.__forgegraal_native) (await import("./native-modules.js")).zlib.attachStreams(streamModule.Transform);
 
 /* ---------------------------------------------------------- module registry */
 
@@ -1511,7 +1332,8 @@ let nativeModules = null;
 if (nativeLayer) {
 	const nm = await import("./native-modules.js");
 	const { net, tls } = nm.createNetModules(EventEmitter);
-	const { http, https, fetch } = web.createHttpModules({ net, tls }, nm.zlib, EventEmitter);
+	const { http, https } = (await import("./node-http.js")).createHttpModules({ net, tls }, EventEmitter, streamModule, Buffer);
+	const fetch = fetchApi.makeFetch({ http, https }, nm.zlib);
 	nativeModules = { net, tls, http, https, fetch, crypto: nm.crypto, zlib: nm.zlib };
 
 	// Loaders for native addons choose between glibc and musl prebuilts by reading this, exactly as
@@ -1559,9 +1381,10 @@ if (nativeLayer) {
 
 	// Web globals that only become real once there is a socket and a compressor behind them.
 	defGlobal("fetch", fetch);
-	defGlobal("Headers", web.Headers);
-	defGlobal("Request", web.Request);
-	defGlobal("Response", web.Response);
+	defGlobal("Headers", fetchApi.Headers);
+	defGlobal("Request", fetchApi.Request);
+	defGlobal("Response", fetchApi.Response);
+	defGlobal("FormData", fetchApi.FormData);
 }
 
 function defGlobal(name, value) {
@@ -1616,7 +1439,18 @@ function createReadlineModule() {
 const builtins = {
 	assert,
 	"assert/strict": assert,
-	buffer: { Buffer, atob: (s) => Buffer.from(s, "base64").toString("latin1"), btoa: (s) => Buffer.from(s, "latin1").toString("base64") },
+	buffer: {
+		Buffer,
+		SlowBuffer,
+		kMaxLength,
+		kStringMaxLength: bufferConstants.MAX_STRING_LENGTH,
+		constants: bufferConstants,
+		INSPECT_MAX_BYTES,
+		isUtf8,
+		isAscii,
+		atob: (s) => Buffer.from(s, "base64").toString("latin1"),
+		btoa: (s) => Buffer.from(s, "latin1").toString("base64"),
+	},
 	events: CallableEventEmitter,
 	fs,
 	"fs/promises": fs.promises,
@@ -1645,12 +1479,36 @@ const builtins = {
 	https: nativeModules?.https ?? notImplemented("https", NEEDS_NATIVE_WORK),
 	dns: nativeModules ? misc.createDns(dnsLookup) : notImplemented("dns", NEEDS_NATIVE_WORK),
 	"dns/promises": nativeModules ? misc.createDns(dnsLookup).promises : notImplemented("dns/promises", NEEDS_NATIVE_WORK),
-	http2: notImplemented(
-		"http2",
-		"An HTTP/2 client needs HPACK header compression and stream multiplexing, which is a protocol " +
-			"implementation in its own right. Nothing a bot does requires it: Discord's REST API is " +
-			"HTTP/1.1 and its gateway is a WebSocket, both of which are supported."
-	),
+	http2: (() => {
+		// Present so that `x instanceof http2.Http2ServerRequest` (which servers use to tell HTTP/1 from
+		// HTTP/2) answers false instead of throwing. Opening an HTTP/2 connection is what is unsupported:
+		// it needs HPACK header compression and stream multiplexing, a protocol implementation of its own.
+		const unsupported = (name) => () => {
+			throw Object.assign(
+				new Error(
+					`http2.${name}() is not implemented: HTTP/2 needs HPACK and stream multiplexing, which ForgeGraal's ` +
+						"native host does not provide. HTTP/1.1 (http, https) and WebSocket are supported."
+				),
+				{ code: "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM" }
+			);
+		};
+		class Http2Session extends EventEmitter {}
+		class Http2Stream extends EventEmitter {}
+		class Http2ServerRequest extends EventEmitter {}
+		class Http2ServerResponse extends EventEmitter {}
+		return {
+			Http2Session,
+			Http2Stream,
+			Http2ServerRequest,
+			Http2ServerResponse,
+			constants: { HTTP2_HEADER_STATUS: ":status", HTTP2_HEADER_METHOD: ":method", HTTP2_HEADER_PATH: ":path", HTTP2_HEADER_AUTHORITY: ":authority", HTTP2_HEADER_SCHEME: ":scheme", HTTP2_HEADER_CONTENT_TYPE: "content-type" },
+			sensitiveHeaders: Symbol("nodejs.http2.sensitiveHeaders"),
+			connect: unsupported("connect"),
+			createServer: unsupported("createServer"),
+			createSecureServer: unsupported("createSecureServer"),
+			getDefaultSettings: unsupported("getDefaultSettings"),
+		};
+	})(),
 	crypto: nativeModules?.crypto ?? notImplemented("crypto", "It needs a native crypto library (hashing, HMAC and the TLS primitives)."),
 	zlib: nativeModules?.zlib ?? notImplemented("zlib", "It needs a native compression library."),
 	worker_threads:
@@ -1670,10 +1528,23 @@ const builtins = {
 	tty: misc.createTty({ isatty: os.isatty, write: (text) => std.out.puts(text) }),
 	readline: createReadlineModule(),
 	"readline/promises": createReadlineModule(),
-	stream: streamModule,
+	stream: CallableStream,
 	"stream/promises": streamModule.promises,
+	"stream/consumers": createConsumers(Buffer),
+	"stream/web": {
+		ReadableStream: web.ReadableStream,
+		WritableStream: web.WritableStream,
+		TransformStream: web.TransformStream,
+		ByteLengthQueuingStrategy: web.ByteLengthQueuingStrategy,
+		CountQueuingStrategy: web.CountQueuingStrategy,
+	},
 	diagnostics_channel: diagnosticsChannel,
+	sys: util,
+	punycode: createPunycode(),
+	constants: { ...osModule.constants.errno, ...osModule.constants.signals, ...fs.constants },
+	...createUnavailable(CallableEventEmitter),
 };
+
 
 /* -------------------------------------------------------- CommonJS require */
 
@@ -1753,6 +1624,11 @@ function resolveInstalledPackage(dir, specifier) {
 function resolveModule(specifier, fromDir) {
 	const bare = specifier.startsWith("node:") ? specifier.slice(5) : specifier;
 	if (bare in builtins) return { builtin: bare };
+	if (specifier.startsWith("#")) {
+		const found = resolvePackageImport(specifier, fromDir);
+		if (found) return found;
+		throw moduleNotFound(specifier, fromDir);
+	}
 
 	let base;
 	if (specifier.startsWith("./") || specifier.startsWith("../") || pathModule.isAbsolute(specifier)) {
@@ -1776,17 +1652,22 @@ function resolveModule(specifier, fromDir) {
 }
 
 /**
- * Picks the CommonJS entry out of a package's "exports" field.
+ * Picks the CommonJS target out of an "exports" or "imports" value.
  *
- * Only the root export and the conditions this runtime satisfies are considered: "require" and
- * "node" before "default", and "import" last, because everything here is loaded through require().
+ * Conditions are tried in the order the package lists them, as Node does, against the ones this runtime satisfies:
+ * "require", "node", "node-addons", "module-sync" and "default". A package that offers only "import" is an ES module
+ * whose code was converted to CommonJS at build time, so it is used as a last resort.
  */
 function resolveExports(exports) {
+	return pickCondition(exports, false) ?? pickCondition(exports, true);
+}
+
+function pickCondition(exports, allowImport) {
 	if (!exports) return null;
 	if (typeof exports === "string") return exports;
 	if (Array.isArray(exports)) {
 		for (const candidate of exports) {
-			const resolved = resolveExports(candidate);
+			const resolved = pickCondition(candidate, allowImport);
 			if (resolved) return resolved;
 		}
 		return null;
@@ -1796,19 +1677,76 @@ function resolveExports(exports) {
 	const root = Object.hasOwn(exports, ".") ? exports["."] : exports;
 	if (typeof root === "string") return root;
 	if (!root || typeof root !== "object") return null;
+	if (Array.isArray(root)) return pickCondition(root, allowImport);
 
-	for (const condition of ["require", "node", "default", "import"]) {
-		if (Object.hasOwn(root, condition)) {
-			const resolved = resolveExports(root[condition]);
-			if (resolved) return resolved;
-		}
+	for (const condition of Object.keys(root)) {
+		if (condition.startsWith(".")) continue;
+		const active = condition === "require" || condition === "node" || condition === "node-addons" || condition === "module-sync" || condition === "default" || (allowImport && condition === "import");
+		if (!active) continue;
+		const resolved = pickCondition(root[condition], allowImport);
+		if (resolved) return resolved;
 	}
 	return null;
 }
 
+/** `#name` specifiers: the "imports" map of the nearest package.json above the importing file. */
+function resolvePackageImport(specifier, fromDir) {
+	let dir = fromDir;
+	for (;;) {
+		const manifestPath = pathModule.join(dir, "package.json");
+		if (fs.existsSync(manifestPath)) {
+			let imports;
+			try {
+				imports = JSON.parse(fs.readFileSync(manifestPath, "utf8")).imports;
+			} catch {
+				imports = undefined;
+			}
+			if (imports && typeof imports === "object") {
+				let target = null;
+				if (Object.hasOwn(imports, specifier)) target = resolveExports(imports[specifier]);
+				else {
+					let best = null;
+					for (const key of Object.keys(imports)) {
+						const star = key.indexOf("*");
+						if (star < 0) continue;
+						const prefix = key.slice(0, star);
+						const suffix = key.slice(star + 1);
+						if (specifier.startsWith(prefix) && specifier.endsWith(suffix) && specifier.length >= key.length - 1 && (!best || prefix.length > best.prefix.length)) best = { key, prefix, suffix };
+					}
+					if (best) {
+						const value = resolveExports(imports[best.key]);
+						target = value ? value.replaceAll("*", specifier.slice(best.prefix.length, specifier.length - best.suffix.length)) : null;
+					}
+				}
+				if (!target) {
+					throw Object.assign(new Error(`Package import specifier "${specifier}" is not defined in package ${manifestPath}`), { code: "ERR_PACKAGE_IMPORT_NOT_DEFINED" });
+				}
+				if (target.startsWith("./")) {
+					const found = resolvePackage(pathModule.join(dir, target));
+					if (found) return { file: found };
+					throw moduleNotFound(target, dir);
+				}
+				return resolveModule(target, dir);
+			}
+			return null;
+		}
+		const parent = pathModule.dirname(dir);
+		if (parent === dir) return null;
+		dir = parent;
+	}
+}
+
+/* TypeScript and JSX files are converted to JavaScript at build time and renamed; an import that still says .ts finds them. */
+const SOURCE_EXTENSION_MAP = { ".ts": ".js", ".tsx": ".js", ".jsx": ".js", ".mts": ".mjs", ".cts": ".cjs" };
+
 function resolvePackage(base) {
-	for (const candidate of [base, `${base}.js`, `${base}.cjs`, `${base}.json`, `${base}.node`]) {
+	for (const candidate of [base, `${base}.js`, `${base}.cjs`, `${base}.mjs`, `${base}.json`, `${base}.node`]) {
 		if (fs.existsSync(candidate) && !fs.statSync(candidate).isDirectory()) return candidate;
+	}
+	const mapped = /\.(tsx?|jsx|mts|cts)$/.exec(base);
+	if (mapped) {
+		const alternative = base.slice(0, -mapped[0].length) + SOURCE_EXTENSION_MAP[`.${mapped[1]}`];
+		if (fs.existsSync(alternative) && !fs.statSync(alternative).isDirectory()) return alternative;
 	}
 	if (fs.existsSync(base) && fs.statSync(base).isDirectory()) {
 		const manifestPath = pathModule.join(base, "package.json");
@@ -1826,15 +1764,35 @@ function resolvePackage(base) {
 				/* an unreadable manifest just means falling through to index.js */
 			}
 		}
-		const index = pathModule.join(base, "index.js");
-		if (fs.existsSync(index)) return index;
+		for (const name of ["index.js", "index.cjs", "index.mjs", "index.json", "index.node"]) {
+			const index = pathModule.join(base, name);
+			if (fs.existsSync(index)) return index;
+		}
 	}
 	return null;
 }
 
-function createRequire(fromFile) {
+let mainModule = null;
+
+function nodeModulePaths(from) {
+	const paths = [];
+	let dir = from;
+	for (;;) {
+		if (pathModule.basename(dir) !== "node_modules") paths.push(pathModule.join(dir, "node_modules"));
+		const parent = pathModule.dirname(dir);
+		if (parent === dir) break;
+		dir = parent;
+	}
+	return paths;
+}
+
+function createRequire(fromFile, parentModule) {
 	const fromDir = pathModule.dirname(pathModule.resolve(fromFile));
 	const require = (specifier) => {
+		if (typeof specifier !== "string") {
+			throw Object.assign(new TypeError(`The "id" argument must be of type string. Received ${specifier === null ? "null" : typeof specifier}`), { code: "ERR_INVALID_ARG_TYPE" });
+		}
+		if (specifier === "") throw Object.assign(new TypeError("The argument 'id' must be a non-empty string. Received ''"), { code: "ERR_INVALID_ARG_VALUE" });
 		const resolved = resolveModule(specifier, fromDir);
 		if (resolved.builtin) return builtins[resolved.builtin];
 
@@ -1842,12 +1800,33 @@ function createRequire(fromFile) {
 		if (moduleCache.has(file)) return moduleCache.get(file).exports;
 
 		if (file.endsWith(".json")) {
-			const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
-			moduleCache.set(file, { exports: parsed });
+			let parsed;
+			try {
+				parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+			} catch (err) {
+				err.message = `${file}: ${err.message}`;
+				throw err;
+			}
+			moduleCache.set(file, { exports: parsed, id: file, filename: file, loaded: true });
 			return parsed;
 		}
 
-		const module = { exports: {}, id: file, filename: file, loaded: false };
+		const module = {
+			id: file,
+			path: pathModule.dirname(file),
+			exports: {},
+			filename: file,
+			loaded: false,
+			children: [],
+			paths: nodeModulePaths(pathModule.dirname(file)),
+			parent: parentModule,
+		};
+		module.require = createRequire(file, module);
+		parentModule?.children?.push(module);
+		if (mainModule === null) {
+			mainModule = module;
+			module.id = "."; // the entry module is "." in Node
+		}
 		moduleCache.set(file, module);
 		if (file.endsWith(".node")) {
 			if (typeof processModule.dlopen !== "function") {
@@ -1865,19 +1844,54 @@ function createRequire(fromFile) {
 			module.loaded = true;
 			return module.exports;
 		}
-		const source = fs.readFileSync(file, "utf8");
+		let source = fs.readFileSync(file, "utf8");
+		if (source.charCodeAt(0) === 0xfeff) source = source.slice(1);
+		if (source.startsWith("#!")) source = `//${source}`;
 		const text = `(function (exports, require, module, __filename, __dirname) {${source}\n})`;
 		const wrapper = nativeLayer?.evalScript ? nativeLayer.evalScript(text, file) : std.evalScript(text);
-		wrapper(module.exports, createRequire(file), module, file, pathModule.dirname(file));
+		try {
+			wrapper.call(module.exports, module.exports, module.require, module, file, pathModule.dirname(file));
+		} catch (err) {
+			// A module that throws while loading is not left half-registered, as in Node.
+			moduleCache.delete(file);
+			throw err;
+		}
 		module.loaded = true;
 		return module.exports;
 	};
-	require.resolve = (specifier) => {
-		const resolved = resolveModule(specifier, fromDir);
-		return resolved.builtin ?? resolved.file;
-	};
-	require.cache = moduleCache;
+	require.resolve = Object.assign(
+		(specifier) => {
+			const resolved = resolveModule(specifier, fromDir);
+			return resolved.builtin ? specifier : resolved.file;
+		},
+		{ paths: (specifier) => (specifier.startsWith(".") ? [fromDir] : nodeModulePaths(fromDir)) }
+	);
+	Object.defineProperty(require, "main", { get: () => mainModule ?? undefined, enumerable: true });
+	require.extensions = { ".js": () => {}, ".json": () => {}, ".node": () => {} };
+	require.cache = new Proxy(moduleCache, {
+		get: (target, key) => (key === "__proto__" ? undefined : typeof key === "string" && key !== "constructor" ? target.get(key) : Reflect.get(target, key)),
+		has: (target, key) => target.has(key),
+		deleteProperty: (target, key) => target.delete(key),
+		ownKeys: (target) => [...target.keys()],
+		getOwnPropertyDescriptor: (target, key) => (target.has(key) ? { value: target.get(key), writable: true, enumerable: true, configurable: true } : undefined),
+		set: (target, key, value) => (target.set(key, value), true),
+	});
 	return require;
+}
+
+// `vm` and `module` need the resolver and the evaluator, which exist only now.
+{
+	const evalScript = (code, filename) => (nativeLayer?.evalScript ? nativeLayer.evalScript(code, filename) : std.evalScript(code));
+	builtins.vm = createVm({ evalScript });
+	builtins.module = createModuleModule({
+		builtins,
+		moduleCache,
+		createRequire,
+		resolveModule,
+		pathModule,
+		readText: (file) => fs.readFileSync(file, "utf8"),
+		evalScript,
+	});
 }
 
 /* ---------------------------------------------------------------- install */

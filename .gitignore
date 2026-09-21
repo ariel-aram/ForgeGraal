@@ -37,3 +37,4 @@ bin/
 forgegraal-out/
 *.forgegraal/
 .forgegraal-cache/
+forgegraal-c-build/

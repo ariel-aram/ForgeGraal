@@ -26,6 +26,8 @@ export interface CollectedProject {
     usesBunApis: string[];
     packages: number;
 }
+/** Entry extensions only the native host can run: it converts them at build time. Node.js targets need built JavaScript. */
+export declare const NATIVE_ONLY_ENTRY_EXTENSIONS: Set<string>;
 export declare function isInside(child: string, parent: string): boolean;
 /**
  * Resolves `input` against `root` and throws when it escapes `root` (symlinks included).

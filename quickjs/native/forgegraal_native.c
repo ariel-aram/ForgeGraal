@@ -24,11 +24,16 @@
 #include <gnu/libc-version.h>
 #endif
 
+#include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #ifdef _WIN32
 /* Winsock 2 and CryptoAPI only. Nothing here postdates Windows XP. */
+#ifndef FD_SETSIZE
+#define FD_SETSIZE 1024 /* select() on Windows is capped by this; the default of 64 is too few for a server */
+#endif
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -43,6 +48,7 @@ typedef int socklen_t;
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #define FG_CLOSE_SOCKET close
@@ -56,6 +62,7 @@ typedef int SOCKET;
 #include "mbedtls/error.h"
 #include "mbedtls/md.h"
 #include "mbedtls/net_sockets.h"
+#include "mbedtls/pk.h"
 #include "mbedtls/ssl.h"
 #include "mbedtls/x509_crt.h"
 
@@ -71,10 +78,18 @@ extern const char forgegraal_ca_bundle[];
 typedef struct {
     int in_use;
     int is_tls;
+    int is_listener;
+    int hs_pending;  /* TLS: handshake still to be stepped (server side by read/send, client side by connectStatus) */
+    int connecting;  /* non-blocking connect() still in progress */
     mbedtls_net_context net;
     mbedtls_ssl_context ssl;
     mbedtls_ssl_config conf;
     mbedtls_x509_crt cacert;
+    /* A TLS listener keeps its PEM so every accepted socket can build its own server context. */
+    char *pem_cert;
+    char *pem_key;
+    mbedtls_x509_crt srvcert;
+    mbedtls_pk_context srvkey;
 } fg_socket;
 
 /* A fixed table rather than a growing map: ids are indices, an out-of-range or unused id is
@@ -125,14 +140,19 @@ static void fg_socket_release(fg_socket *sock)
         return;
     }
     if (sock->is_tls) {
-        mbedtls_ssl_close_notify(&sock->ssl);
+        if (!sock->hs_pending) {
+            mbedtls_ssl_close_notify(&sock->ssl);
+        }
         mbedtls_ssl_free(&sock->ssl);
         mbedtls_ssl_config_free(&sock->conf);
         mbedtls_x509_crt_free(&sock->cacert);
+        mbedtls_x509_crt_free(&sock->srvcert);
+        mbedtls_pk_free(&sock->srvkey);
     }
+    free(sock->pem_cert);
+    free(sock->pem_key);
     mbedtls_net_free(&sock->net);
-    sock->in_use = 0;
-    sock->is_tls = 0;
+    memset(sock, 0, sizeof(*sock));
 }
 
 static JSValue fg_connect(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
@@ -141,12 +161,13 @@ static JSValue fg_connect(JSContext *ctx, JSValueConst this_val, int argc, JSVal
     char port_str[16];
     int32_t port = 0;
     int is_tls = 0;
+    int insecure = 0;
     int id = -1;
     int ret;
     fg_socket *sock;
 
     if (argc < 2) {
-        return JS_ThrowTypeError(ctx, "connect(host, port, tls) needs a host and a port");
+        return JS_ThrowTypeError(ctx, "connect(host, port, tls, insecure) needs a host and a port");
     }
     host = JS_ToCString(ctx, argv[0]);
     if (!host) {
@@ -158,6 +179,9 @@ static JSValue fg_connect(JSContext *ctx, JSValueConst this_val, int argc, JSVal
     }
     if (argc > 2) {
         is_tls = JS_ToBool(ctx, argv[2]);
+    }
+    if (argc > 3) {
+        insecure = JS_ToBool(ctx, argv[3]);
     }
     snprintf(port_str, sizeof(port_str), "%d", (int) port);
 
@@ -205,9 +229,9 @@ static JSValue fg_connect(JSContext *ctx, JSValueConst this_val, int argc, JSVal
         if (ret != 0) {
             goto tls_failed;
         }
-        /* Verification is required, not optional: the whole reason for a compiled-in CA bundle
-           is to verify properly on a machine whose own store cannot. */
-        mbedtls_ssl_conf_authmode(&sock->conf, MBEDTLS_SSL_VERIFY_REQUIRED);
+        /* Verification is required unless the caller says rejectUnauthorized: false, as Node's is: the whole
+           reason for a compiled-in CA bundle is to verify properly on a machine whose own store cannot. */
+        mbedtls_ssl_conf_authmode(&sock->conf, insecure ? MBEDTLS_SSL_VERIFY_NONE : MBEDTLS_SSL_VERIFY_REQUIRED);
         mbedtls_ssl_conf_ca_chain(&sock->conf, &sock->cacert, NULL);
         mbedtls_ssl_conf_rng(&sock->conf, mbedtls_ctr_drbg_random, &fg_drbg);
 
@@ -230,6 +254,9 @@ static JSValue fg_connect(JSContext *ctx, JSValueConst this_val, int argc, JSVal
         sock->is_tls = 1;
     }
 
+    /* Blocking while connecting and handshaking (one caller waits), non-blocking afterwards so the
+       JavaScript poller can serve many sockets from one thread. */
+    mbedtls_net_set_nonblock(&sock->net);
     sock->in_use = 1;
     JS_FreeCString(ctx, host);
     return JS_NewInt32(ctx, id);
@@ -247,6 +274,43 @@ tls_failed:
     }
 }
 
+/* Waits for a descriptor, so a write that would block does not spin. */
+static void fg_wait_fd(SOCKET fd, int for_write, int ms)
+{
+#ifdef _WIN32
+    fd_set set;
+    struct timeval tv;
+    FD_ZERO(&set);
+    FD_SET(fd, &set);
+    tv.tv_sec = ms / 1000;
+    tv.tv_usec = (ms % 1000) * 1000;
+    select(0, for_write ? NULL : &set, for_write ? &set : NULL, NULL, &tv);
+#else
+    struct pollfd pfd;
+    pfd.fd = fd;
+    pfd.events = for_write ? POLLOUT : POLLIN;
+    pfd.revents = 0;
+    poll(&pfd, 1, ms);
+#endif
+}
+
+/* Steps a TLS server handshake. Returns 1 when done, 0 while still waiting, -1 on failure. */
+static int fg_handshake_step(fg_socket *sock, int *code)
+{
+    int ret = mbedtls_ssl_handshake(&sock->ssl);
+    if (ret == 0) {
+        sock->hs_pending = 0;
+        return 1;
+    }
+    if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+        return 0;
+    }
+    *code = ret;
+    return -1;
+}
+
+/* read(id): a Uint8Array of what arrived, an empty one when the peer is done, or null when nothing
+   has arrived yet (the socket is non-blocking; poll() says when to ask again). */
 static JSValue fg_read(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
 {
     int32_t id;
@@ -261,12 +325,25 @@ static JSValue fg_read(JSContext *ctx, JSValueConst this_val, int argc, JSValueC
     if (!sock) {
         return JS_EXCEPTION;
     }
+    if (sock->is_listener) {
+        return JS_ThrowTypeError(ctx, "socket %d is a listener, use accept()", id);
+    }
+    if (sock->hs_pending) {
+        int code = 0;
+        int st = fg_handshake_step(sock, &code);
+        if (st < 0) {
+            return fg_throw_mbedtls(ctx, "TLS handshake", code);
+        }
+        if (st == 0) {
+            return JS_NULL;
+        }
+    }
 
-    do {
-        ret = sock->is_tls ? mbedtls_ssl_read(&sock->ssl, buf, sizeof(buf))
-                           : mbedtls_net_recv(&sock->net, buf, sizeof(buf));
-    } while (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE);
-
+    ret = sock->is_tls ? mbedtls_ssl_read(&sock->ssl, buf, sizeof(buf))
+                       : mbedtls_net_recv(&sock->net, buf, sizeof(buf));
+    if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+        return JS_NULL;
+    }
     /* A clean close and a zero-length read both mean "peer is done", which is what the
        JavaScript side treats as end of stream. */
     if (ret == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY || ret == 0) {
@@ -285,6 +362,7 @@ static JSValue fg_write(JSContext *ctx, JSValueConst this_val, int argc, JSValue
     size_t len = 0;
     uint8_t *data;
     size_t sent = 0;
+    int waited = 0;
 
     if (JS_ToInt32(ctx, &id, argv[0])) {
         return JS_EXCEPTION;
@@ -299,16 +377,110 @@ static JSValue fg_write(JSContext *ctx, JSValueConst this_val, int argc, JSValue
     }
 
     while (sent < len) {
-        int ret = sock->is_tls ? mbedtls_ssl_write(&sock->ssl, data + sent, len - sent)
-                               : mbedtls_net_send(&sock->net, data + sent, len - sent);
+        int ret;
+        if (sock->hs_pending) {
+            int code = 0;
+            int st = fg_handshake_step(sock, &code);
+            if (st < 0) {
+                return fg_throw_mbedtls(ctx, "TLS handshake", code);
+            }
+            if (st == 0) {
+                fg_wait_fd(sock->net.fd, 0, 50);
+                if ((waited += 50) > 30000) {
+                    return JS_ThrowInternalError(ctx, "TLS handshake timed out");
+                }
+                continue;
+            }
+        }
+        ret = sock->is_tls ? mbedtls_ssl_write(&sock->ssl, data + sent, len - sent)
+                           : mbedtls_net_send(&sock->net, data + sent, len - sent);
         if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+            fg_wait_fd(sock->net.fd, ret == MBEDTLS_ERR_SSL_WANT_WRITE, 50);
+            if ((waited += 50) > 30000) {
+                return JS_ThrowInternalError(ctx, "write timed out (the peer stopped reading)");
+            }
             continue;
         }
         if (ret <= 0) {
             return fg_throw_mbedtls(ctx, "write", ret);
         }
+        waited = 0;
         sent += (size_t) ret;
     }
+    return JS_UNDEFINED;
+}
+
+/* send(id, bytes, offset) -> how many bytes were accepted (possibly 0: the socket's buffer is full or a TLS
+   handshake is still going; poll() for writability and call again with the same arguments). Never blocks, so a
+   program that talks to itself (a server and its client in one process) cannot deadlock on a large body. */
+static JSValue fg_send(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    int32_t id;
+    uint32_t offset = 0;
+    fg_socket *sock;
+    size_t len = 0;
+    uint8_t *data;
+    int ret;
+
+    if (JS_ToInt32(ctx, &id, argv[0])) {
+        return JS_EXCEPTION;
+    }
+    sock = fg_socket_get(ctx, id);
+    if (!sock) {
+        return JS_EXCEPTION;
+    }
+    data = JS_GetUint8Array(ctx, &len, argv[1]);
+    if (!data) {
+        return JS_EXCEPTION;
+    }
+    if (argc > 2 && JS_ToUint32(ctx, &offset, argv[2])) {
+        return JS_EXCEPTION;
+    }
+    if (offset >= len) {
+        return JS_NewInt32(ctx, 0);
+    }
+    if (sock->hs_pending) {
+        int code = 0;
+        int st = fg_handshake_step(sock, &code);
+        if (st < 0) {
+            return fg_throw_mbedtls(ctx, "TLS handshake", code);
+        }
+        if (st == 0) {
+            return JS_NewInt32(ctx, 0);
+        }
+    }
+    ret = sock->is_tls ? mbedtls_ssl_write(&sock->ssl, data + offset, len - offset)
+                       : mbedtls_net_send(&sock->net, data + offset, len - offset);
+    if (ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE) {
+        return JS_NewInt32(ctx, 0);
+    }
+    if (ret < 0) {
+        return fg_throw_mbedtls(ctx, "write", ret);
+    }
+    return JS_NewInt32(ctx, ret);
+}
+
+/* shutdown(id): stop sending (TLS close_notify first) but keep reading until the peer is done. */
+static JSValue fg_shutdown(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    int32_t id;
+    fg_socket *sock;
+
+    if (JS_ToInt32(ctx, &id, argv[0])) {
+        return JS_EXCEPTION;
+    }
+    if (id < 0 || id >= FG_MAX_SOCKETS || !fg_sockets[id].in_use || fg_sockets[id].is_listener) {
+        return JS_UNDEFINED;
+    }
+    sock = &fg_sockets[id];
+    if (sock->is_tls && !sock->hs_pending) {
+        mbedtls_ssl_close_notify(&sock->ssl);
+    }
+#ifdef _WIN32
+    shutdown(sock->net.fd, SD_SEND);
+#else
+    shutdown(sock->net.fd, SHUT_WR);
+#endif
     return JS_UNDEFINED;
 }
 
@@ -325,6 +497,537 @@ static JSValue fg_close(JSContext *ctx, JSValueConst this_val, int argc, JSValue
         fg_socket_release(&fg_sockets[id]);
     }
     return JS_UNDEFINED;
+}
+
+/* ----------------------------------------------------------------- servers */
+
+static int fg_alloc_socket(void)
+{
+    for (int i = 0; i < FG_MAX_SOCKETS; i++) {
+        if (!fg_sockets[i].in_use) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* listen(host, port, backlog, cert?, key?) -> id. Non-blocking. With a PEM cert and key every accepted
+   socket is a TLS server connection. */
+static JSValue fg_listen(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    const char *host = NULL;
+    const char *cert = NULL, *key = NULL;
+    char port_str[16];
+    int32_t port = 0;
+    int id, ret;
+    fg_socket *sock;
+    JSValue result;
+
+    if (argc < 2 || JS_ToInt32(ctx, &port, argv[1])) {
+        return JS_ThrowTypeError(ctx, "listen(host, port, backlog, cert, key) needs a port");
+    }
+    if (JS_IsString(argv[0])) {
+        host = JS_ToCString(ctx, argv[0]);
+        if (!host) {
+            return JS_EXCEPTION;
+        }
+    }
+    if (argc > 4 && JS_IsString(argv[3]) && JS_IsString(argv[4])) {
+        cert = JS_ToCString(ctx, argv[3]);
+        key = JS_ToCString(ctx, argv[4]);
+    }
+    id = fg_alloc_socket();
+    if (id < 0) {
+        result = JS_ThrowInternalError(ctx, "too many open sockets (limit is %d)", FG_MAX_SOCKETS);
+        goto done;
+    }
+    if (fg_rng_init() != 0) {
+        result = JS_ThrowInternalError(ctx, "could not seed the random number generator");
+        goto done;
+    }
+    sock = &fg_sockets[id];
+    memset(sock, 0, sizeof(*sock));
+    mbedtls_net_init(&sock->net);
+    snprintf(port_str, sizeof(port_str), "%d", (int) port);
+    /* No host means every IPv4 interface. Windows' getaddrinfo would hand back an IPv6-only "::" first, which
+       IPv4 clients cannot reach, so the wildcard is spelled out. */
+    ret = mbedtls_net_bind(&sock->net, (host && host[0]) ? host : "0.0.0.0", port_str, MBEDTLS_NET_PROTO_TCP);
+    if (ret != 0) {
+        mbedtls_net_free(&sock->net);
+        result = fg_throw_mbedtls(ctx, "listen", ret);
+        goto done;
+    }
+    sock->in_use = 1;
+    if (cert && key) {
+        sock->pem_cert = strdup(cert);
+        sock->pem_key = strdup(key);
+        if (!sock->pem_cert || !sock->pem_key) {
+            fg_socket_release(sock);
+            result = JS_ThrowOutOfMemory(ctx);
+            goto done;
+        }
+        /* Fail now, not on the first request, if the certificate or key cannot be read. */
+        mbedtls_x509_crt probe_crt;
+        mbedtls_pk_context probe_key;
+        mbedtls_x509_crt_init(&probe_crt);
+        mbedtls_pk_init(&probe_key);
+        ret = mbedtls_x509_crt_parse(&probe_crt, (const unsigned char *) cert, strlen(cert) + 1);
+        if (ret == 0) {
+            ret = mbedtls_pk_parse_key(&probe_key, (const unsigned char *) key, strlen(key) + 1, NULL, 0,
+                                       mbedtls_ctr_drbg_random, &fg_drbg);
+        }
+        mbedtls_x509_crt_free(&probe_crt);
+        mbedtls_pk_free(&probe_key);
+        if (ret != 0) {
+            fg_socket_release(sock);
+            result = fg_throw_mbedtls(ctx, "certificate or key", ret);
+            goto done;
+        }
+    }
+    mbedtls_net_set_nonblock(&sock->net);
+    sock->is_listener = 1;
+    sock->in_use = 1;
+    result = JS_NewInt32(ctx, id);
+done:
+    if (host) JS_FreeCString(ctx, host);
+    if (cert) JS_FreeCString(ctx, cert);
+    if (key) JS_FreeCString(ctx, key);
+    return result;
+}
+
+/* accept(listenerId) -> socket id, or null when nobody is waiting. */
+static JSValue fg_accept(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    int32_t lid;
+    fg_socket *lis, *sock;
+    int id, ret;
+
+    if (JS_ToInt32(ctx, &lid, argv[0])) {
+        return JS_EXCEPTION;
+    }
+    lis = fg_socket_get(ctx, lid);
+    if (!lis) {
+        return JS_EXCEPTION;
+    }
+    if (!lis->is_listener) {
+        return JS_ThrowTypeError(ctx, "socket %d is not a listener", lid);
+    }
+    id = fg_alloc_socket();
+    if (id < 0) {
+        return JS_ThrowInternalError(ctx, "too many open sockets (limit is %d)", FG_MAX_SOCKETS);
+    }
+    sock = &fg_sockets[id];
+    memset(sock, 0, sizeof(*sock));
+    mbedtls_net_init(&sock->net);
+    ret = mbedtls_net_accept(&lis->net, &sock->net, NULL, 0, NULL);
+    if (ret == MBEDTLS_ERR_SSL_WANT_READ) {
+        mbedtls_net_free(&sock->net);
+        return JS_NULL;
+    }
+    if (ret != 0) {
+        mbedtls_net_free(&sock->net);
+        return fg_throw_mbedtls(ctx, "accept", ret);
+    }
+    mbedtls_net_set_nonblock(&sock->net);
+    {
+        int one = 1;
+        setsockopt(sock->net.fd, IPPROTO_TCP, TCP_NODELAY, (const char *) &one, sizeof(one));
+    }
+
+    if (lis->pem_cert) {
+        mbedtls_ssl_init(&sock->ssl);
+        mbedtls_ssl_config_init(&sock->conf);
+        mbedtls_x509_crt_init(&sock->srvcert);
+        mbedtls_pk_init(&sock->srvkey);
+        sock->is_tls = 1;
+        ret = mbedtls_x509_crt_parse(&sock->srvcert, (const unsigned char *) lis->pem_cert,
+                                     strlen(lis->pem_cert) + 1);
+        if (ret == 0) {
+            ret = mbedtls_pk_parse_key(&sock->srvkey, (const unsigned char *) lis->pem_key,
+                                       strlen(lis->pem_key) + 1, NULL, 0, mbedtls_ctr_drbg_random, &fg_drbg);
+        }
+        if (ret == 0) {
+            ret = mbedtls_ssl_config_defaults(&sock->conf, MBEDTLS_SSL_IS_SERVER, MBEDTLS_SSL_TRANSPORT_STREAM,
+                                              MBEDTLS_SSL_PRESET_DEFAULT);
+        }
+        if (ret == 0) {
+            mbedtls_ssl_conf_rng(&sock->conf, mbedtls_ctr_drbg_random, &fg_drbg);
+            ret = mbedtls_ssl_conf_own_cert(&sock->conf, &sock->srvcert, &sock->srvkey);
+        }
+        if (ret == 0) {
+            ret = mbedtls_ssl_setup(&sock->ssl, &sock->conf);
+        }
+        if (ret != 0) {
+            sock->in_use = 1;
+            fg_socket_release(sock);
+            return fg_throw_mbedtls(ctx, "TLS server setup", ret);
+        }
+        mbedtls_ssl_set_bio(&sock->ssl, &sock->net, mbedtls_net_send, mbedtls_net_recv, NULL);
+        sock->hs_pending = 1;
+    }
+    sock->in_use = 1;
+    return JS_NewInt32(ctx, id);
+}
+
+/* poll(readIds, timeoutMs, writeIds) -> [readable ids, writable ids]. A listener is readable when a connection
+   waits to be accepted. Ids that no longer exist are reported as readable so the caller can find out. */
+static uint32_t fg_array_length(JSContext *ctx, JSValueConst arr)
+{
+    uint32_t n = 0;
+    JSValue lenv = JS_GetPropertyStr(ctx, arr, "length");
+    JS_ToUint32(ctx, &n, lenv);
+    JS_FreeValue(ctx, lenv);
+    return n;
+}
+
+static JSValue fg_poll(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    JSValue out, rd_out, wr_out;
+    uint32_t nr, nw = 0, n, i, found_r = 0, found_w = 0;
+    int32_t timeout = 0;
+    int32_t *ids;
+    int *ready;
+    int *is_write;
+
+    nr = fg_array_length(ctx, argv[0]);
+    if (argc > 2 && !JS_IsUndefined(argv[2])) {
+        nw = fg_array_length(ctx, argv[2]);
+    }
+    if (argc > 1) {
+        JS_ToInt32(ctx, &timeout, argv[1]);
+    }
+    n = nr + nw;
+    out = JS_NewArray(ctx);
+    rd_out = JS_NewArray(ctx);
+    wr_out = JS_NewArray(ctx);
+    JS_SetPropertyUint32(ctx, out, 0, rd_out);
+    JS_SetPropertyUint32(ctx, out, 1, wr_out);
+    rd_out = JS_GetPropertyUint32(ctx, out, 0);
+    wr_out = JS_GetPropertyUint32(ctx, out, 1);
+    if (n == 0) {
+        JS_FreeValue(ctx, rd_out);
+        JS_FreeValue(ctx, wr_out);
+        return out;
+    }
+    ids = (int32_t *) calloc(n, sizeof(int32_t));
+    ready = (int *) calloc(n, sizeof(int));
+    is_write = (int *) calloc(n, sizeof(int));
+    if (!ids || !ready || !is_write) {
+        free(ids);
+        free(ready);
+        free(is_write);
+        JS_FreeValue(ctx, rd_out);
+        JS_FreeValue(ctx, wr_out);
+        JS_FreeValue(ctx, out);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    for (i = 0; i < n; i++) {
+        JSValue v = JS_GetPropertyUint32(ctx, i < nr ? argv[0] : argv[2], i < nr ? i : i - nr);
+        JS_ToInt32(ctx, &ids[i], v);
+        JS_FreeValue(ctx, v);
+        is_write[i] = i >= nr;
+    }
+
+    for (i = 0; i < n; i++) {
+        fg_socket *sock;
+        if (ids[i] < 0 || ids[i] >= FG_MAX_SOCKETS || !fg_sockets[ids[i]].in_use) {
+            ready[i] = 1; /* closed under us: let the caller find out */
+            timeout = 0;
+            continue;
+        }
+        sock = &fg_sockets[ids[i]];
+        /* Data already decrypted and buffered inside TLS never wakes the descriptor again. */
+        if (!is_write[i] && sock->is_tls && !sock->hs_pending && mbedtls_ssl_get_bytes_avail(&sock->ssl) > 0) {
+            ready[i] = 1;
+            timeout = 0;
+        }
+    }
+
+#ifdef _WIN32
+    {
+        fd_set rset, wset;
+        struct timeval tv;
+        int any = 0;
+        FD_ZERO(&rset);
+        FD_ZERO(&wset);
+        for (i = 0; i < n; i++) {
+            if (!ready[i] && any < FD_SETSIZE - 1) {
+                FD_SET((SOCKET) fg_sockets[ids[i]].net.fd, is_write[i] ? &wset : &rset);
+                any++;
+            }
+        }
+        tv.tv_sec = timeout / 1000;
+        tv.tv_usec = (timeout % 1000) * 1000;
+        if (any && select(0, &rset, &wset, NULL, &tv) > 0) {
+            for (i = 0; i < n; i++) {
+                if (!ready[i] && FD_ISSET((SOCKET) fg_sockets[ids[i]].net.fd, is_write[i] ? &wset : &rset)) {
+                    ready[i] = 1;
+                }
+            }
+        } else if (!any && timeout > 0) {
+            Sleep((DWORD) timeout);
+        }
+    }
+#else
+    {
+        struct pollfd *pfds = (struct pollfd *) calloc(n, sizeof(struct pollfd));
+        if (pfds) {
+            for (i = 0; i < n; i++) {
+                pfds[i].fd = ready[i] ? -1 : fg_sockets[ids[i]].net.fd;
+                pfds[i].events = is_write[i] ? POLLOUT : POLLIN;
+            }
+            if (poll(pfds, n, timeout) > 0) {
+                for (i = 0; i < n; i++) {
+                    if (pfds[i].fd >= 0 && pfds[i].revents) {
+                        ready[i] = 1;
+                    }
+                }
+            }
+            free(pfds);
+        }
+    }
+#endif
+
+    for (i = 0; i < n; i++) {
+        if (ready[i]) {
+            if (is_write[i]) {
+                JS_SetPropertyUint32(ctx, wr_out, found_w++, JS_NewInt32(ctx, ids[i]));
+            } else {
+                JS_SetPropertyUint32(ctx, rd_out, found_r++, JS_NewInt32(ctx, ids[i]));
+            }
+        }
+    }
+    free(ids);
+    free(ready);
+    free(is_write);
+    JS_FreeValue(ctx, rd_out);
+    JS_FreeValue(ctx, wr_out);
+    return out;
+}
+
+/* address(id, peer) -> [ip, port, family] of the local end, or of the peer when `peer` is true. */
+static JSValue fg_address(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    int32_t id;
+    fg_socket *sock;
+    struct sockaddr_storage ss;
+    socklen_t sl = sizeof(ss);
+    char host[64];
+    char serv[16];
+    int peer = argc > 1 && JS_ToBool(ctx, argv[1]);
+    JSValue arr;
+
+    if (JS_ToInt32(ctx, &id, argv[0])) {
+        return JS_EXCEPTION;
+    }
+    sock = fg_socket_get(ctx, id);
+    if (!sock) {
+        return JS_EXCEPTION;
+    }
+    memset(&ss, 0, sizeof(ss));
+    if ((peer ? getpeername(sock->net.fd, (struct sockaddr *) &ss, &sl)
+              : getsockname(sock->net.fd, (struct sockaddr *) &ss, &sl)) != 0) {
+        return JS_NULL;
+    }
+    if (getnameinfo((struct sockaddr *) &ss, sl, host, sizeof(host), serv, sizeof(serv),
+                    NI_NUMERICHOST | NI_NUMERICSERV) != 0) {
+        return JS_NULL;
+    }
+    arr = JS_NewArray(ctx);
+    JS_SetPropertyUint32(ctx, arr, 0, JS_NewString(ctx, host));
+    JS_SetPropertyUint32(ctx, arr, 1, JS_NewInt32(ctx, atoi(serv)));
+    JS_SetPropertyUint32(ctx, arr, 2, JS_NewString(ctx, ss.ss_family == AF_INET6 ? "IPv6" : "IPv4"));
+    return arr;
+}
+
+/* ----------------------------------------------------- non-blocking client connect */
+
+static JSValue fg_throw_code(JSContext *ctx, const char *code, const char *fmt, const char *arg)
+{
+    JSValue err = JS_NewError(ctx);
+    char message[256];
+    snprintf(message, sizeof(message), fmt, arg);
+    JS_SetPropertyStr(ctx, err, "message", JS_NewString(ctx, message));
+    JS_SetPropertyStr(ctx, err, "code", JS_NewString(ctx, code));
+    return JS_Throw(ctx, err);
+}
+
+/* connectStart(host, port, tls, insecure) -> id. Returns at once: the connection (and the TLS handshake) finish
+   in the background and connectStatus() reports when. Blocking here would stop a program whose own server is the
+   peer -- an http server and the client testing it in one process -- from ever answering. */
+static JSValue fg_connect_start(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    const char *host;
+    char port_str[16];
+    int32_t port = 0;
+    int is_tls = 0, insecure = 0, id, ret;
+    struct addrinfo hints, *res = NULL, *ai, *pick = NULL;
+    fg_socket *sock;
+
+    if (argc < 2 || JS_ToInt32(ctx, &port, argv[1])) {
+        return JS_ThrowTypeError(ctx, "connectStart(host, port, tls, insecure) needs a host and a port");
+    }
+    host = JS_ToCString(ctx, argv[0]);
+    if (!host) {
+        return JS_EXCEPTION;
+    }
+    if (argc > 2) is_tls = JS_ToBool(ctx, argv[2]);
+    if (argc > 3) insecure = JS_ToBool(ctx, argv[3]);
+    id = fg_alloc_socket();
+    if (id < 0) {
+        JS_FreeCString(ctx, host);
+        return JS_ThrowInternalError(ctx, "too many open sockets (limit is %d)", FG_MAX_SOCKETS);
+    }
+    if (fg_rng_init() != 0) {
+        JS_FreeCString(ctx, host);
+        return JS_ThrowInternalError(ctx, "could not seed the random number generator");
+    }
+    snprintf(port_str, sizeof(port_str), "%d", (int) port);
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_protocol = IPPROTO_TCP;
+    if (getaddrinfo(host, port_str, &hints, &res) != 0 || !res) {
+        JSValue err = fg_throw_code(ctx, "ENOTFOUND", "getaddrinfo ENOTFOUND %s", host);
+        JS_FreeCString(ctx, host);
+        return err;
+    }
+    /* IPv4 first: an IPv4-only peer must not be missed because "localhost" listed ::1 before 127.0.0.1. */
+    for (ai = res; ai; ai = ai->ai_next) {
+        if (ai->ai_family == AF_INET) {
+            pick = ai;
+            break;
+        }
+    }
+    if (!pick) pick = res;
+
+    sock = &fg_sockets[id];
+    memset(sock, 0, sizeof(*sock));
+    mbedtls_net_init(&sock->net);
+    sock->net.fd = (int) socket(pick->ai_family, pick->ai_socktype, pick->ai_protocol);
+    if (sock->net.fd < 0) {
+        freeaddrinfo(res);
+        JS_FreeCString(ctx, host);
+        return fg_throw_code(ctx, "EMFILE", "socket() failed%s", "");
+    }
+    mbedtls_net_set_nonblock(&sock->net);
+    {
+        int one = 1;
+        setsockopt(sock->net.fd, IPPROTO_TCP, TCP_NODELAY, (const char *) &one, sizeof(one));
+    }
+    ret = connect(sock->net.fd, pick->ai_addr, (socklen_t) pick->ai_addrlen);
+    freeaddrinfo(res);
+    if (ret != 0) {
+        int e = FG_SOCKET_ERRNO;
+#ifdef _WIN32
+        int pending = (e == WSAEWOULDBLOCK || e == WSAEINPROGRESS);
+#else
+        int pending = (e == EINPROGRESS);
+#endif
+        if (!pending) {
+            mbedtls_net_free(&sock->net);
+            memset(sock, 0, sizeof(*sock));
+            JSValue err = fg_throw_code(ctx, "ECONNREFUSED", "connect ECONNREFUSED %s", host);
+            JS_FreeCString(ctx, host);
+            return err;
+        }
+        sock->connecting = 1;
+    }
+
+    if (is_tls) {
+        mbedtls_ssl_init(&sock->ssl);
+        mbedtls_ssl_config_init(&sock->conf);
+        mbedtls_x509_crt_init(&sock->cacert);
+        ret = mbedtls_x509_crt_parse(&sock->cacert, (const unsigned char *) forgegraal_ca_bundle,
+                                     strlen(forgegraal_ca_bundle) + 1);
+        if (ret >= 0) {
+            ret = mbedtls_ssl_config_defaults(&sock->conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM,
+                                              MBEDTLS_SSL_PRESET_DEFAULT);
+        }
+        if (ret == 0) {
+            mbedtls_ssl_conf_authmode(&sock->conf, insecure ? MBEDTLS_SSL_VERIFY_NONE : MBEDTLS_SSL_VERIFY_REQUIRED);
+            mbedtls_ssl_conf_ca_chain(&sock->conf, &sock->cacert, NULL);
+            mbedtls_ssl_conf_rng(&sock->conf, mbedtls_ctr_drbg_random, &fg_drbg);
+            ret = mbedtls_ssl_setup(&sock->ssl, &sock->conf);
+        }
+        if (ret == 0) {
+            /* SNI, and the name the certificate is checked against. An IP literal is sent as-is. */
+            ret = mbedtls_ssl_set_hostname(&sock->ssl, host);
+        }
+        if (ret != 0) {
+            sock->in_use = 1;
+            sock->is_tls = 1;
+            fg_socket_release(sock);
+            JSValue err = fg_throw_mbedtls(ctx, "TLS setup", ret);
+            JS_FreeCString(ctx, host);
+            return err;
+        }
+        mbedtls_ssl_set_bio(&sock->ssl, &sock->net, mbedtls_net_send, mbedtls_net_recv, NULL);
+        sock->is_tls = 1;
+        sock->hs_pending = 1;
+    }
+    sock->in_use = 1;
+    JS_FreeCString(ctx, host);
+    return JS_NewInt32(ctx, id);
+}
+
+/* connectStatus(id) -> true once connected (and, for TLS, handshaken), false while still working. Throws if the
+   connection failed, with a Node-style `code`. */
+static JSValue fg_connect_status(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    int32_t id;
+    fg_socket *sock;
+
+    if (JS_ToInt32(ctx, &id, argv[0])) {
+        return JS_EXCEPTION;
+    }
+    sock = fg_socket_get(ctx, id);
+    if (!sock) {
+        return JS_EXCEPTION;
+    }
+    if (sock->connecting) {
+        int err = 0;
+        socklen_t len = sizeof(err);
+#ifdef _WIN32
+        fd_set wset, eset;
+        struct timeval tv = {0, 0};
+        FD_ZERO(&wset);
+        FD_ZERO(&eset);
+        FD_SET((SOCKET) sock->net.fd, &wset);
+        FD_SET((SOCKET) sock->net.fd, &eset);
+        if (select(0, NULL, &wset, &eset, &tv) <= 0) {
+            return JS_FALSE;
+        }
+#else
+        struct pollfd pfd;
+        pfd.fd = sock->net.fd;
+        pfd.events = POLLOUT;
+        pfd.revents = 0;
+        if (poll(&pfd, 1, 0) <= 0) {
+            return JS_FALSE;
+        }
+#endif
+        getsockopt(sock->net.fd, SOL_SOCKET, SO_ERROR, (char *) &err, &len);
+        if (err != 0) {
+            return fg_throw_code(ctx, "ECONNREFUSED", "connect ECONNREFUSED %s", "the peer");
+        }
+        sock->connecting = 0;
+    }
+    if (sock->hs_pending) {
+        int code = 0;
+        int st = fg_handshake_step(sock, &code);
+        if (st < 0) {
+            char buf[128];
+            mbedtls_strerror(code, buf, sizeof(buf));
+            return fg_throw_code(ctx, code == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED ? "UNABLE_TO_VERIFY_LEAF_SIGNATURE"
+                                                                                  : "ERR_TLS_HANDSHAKE",
+                                 "TLS handshake failed: %s", buf);
+        }
+        if (st == 0) {
+            return JS_FALSE;
+        }
+    }
+    return JS_TRUE;
 }
 
 /* ------------------------------------------------------------------- crypto */
@@ -442,56 +1145,44 @@ static JSValue fg_random_bytes(JSContext *ctx, JSValueConst this_val, int argc, 
 
 /* -------------------------------------------------------------- compression */
 
+/* deflate/inflate, zlib-wrapped or raw. Raw is what gzip and HTTP "deflate" bodies carry inside their framing, and
+   it must really be raw: a zlib header in front of it is a different, invalid, stream. */
 static JSValue fg_zlib(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv,
                        int compress, int raw)
 {
     size_t len = 0;
     uint8_t *data = JS_GetUint8Array(ctx, &len, argv[0]);
-    mz_ulong out_len;
-    unsigned char *out;
+    size_t out_len = 0;
+    void *out;
     JSValue result;
-    int ret;
 
     if (!data) {
         return JS_EXCEPTION;
     }
 
     if (compress) {
-        out_len = mz_compressBound((mz_ulong) len);
-        out = js_malloc(ctx, out_len ? out_len : 1);
-        if (!out) {
-            return JS_EXCEPTION;
+        int level = 6;
+        if (argc > 2) {
+            JS_ToInt32(ctx, &level, argv[2]);
         }
-        ret = mz_compress2(out, &out_len, data, (mz_ulong) len, MZ_DEFAULT_COMPRESSION);
-        if (ret != MZ_OK) {
-            js_free(ctx, out);
-            return JS_ThrowInternalError(ctx, "deflate failed (%d)", ret);
+        if (level < 0 || level > 10) {
+            level = 6;
+        }
+        out = tdefl_compress_mem_to_heap(data, len, &out_len,
+                                         (int) tdefl_create_comp_flags_from_zip_params(level, raw ? -15 : 15, MZ_DEFAULT_STRATEGY));
+        if (!out) {
+            return JS_ThrowInternalError(ctx, "deflate failed");
         }
     } else {
-        /* Inflating needs a guess at the output size; grow until it fits rather than
-           capping, so a large gateway frame is not silently truncated. */
-        size_t capacity = len * 4 + 1024;
-        for (;;) {
-            out = js_malloc(ctx, capacity);
-            if (!out) {
-                return JS_EXCEPTION;
-            }
-            out_len = (mz_ulong) capacity;
-            ret = mz_uncompress(out, &out_len, data, (mz_ulong) len);
-            if (ret == MZ_OK) {
-                break;
-            }
-            js_free(ctx, out);
-            if (ret != MZ_BUF_ERROR || capacity > (64u << 20)) {
-                return JS_ThrowInternalError(ctx, "inflate failed (%d)", ret);
-            }
-            capacity *= 4;
+        out = tinfl_decompress_mem_to_heap(data, len, &out_len,
+                                           raw ? 0 : (TINFL_FLAG_PARSE_ZLIB_HEADER | TINFL_FLAG_COMPUTE_ADLER32));
+        if (!out) {
+            return JS_ThrowInternalError(ctx, "inflate failed: %s stream is invalid or truncated", raw ? "deflate" : "zlib");
         }
     }
 
-    result = JS_NewUint8ArrayCopy(ctx, out, (size_t) out_len);
-    js_free(ctx, out);
-    (void) raw;
+    result = JS_NewUint8ArrayCopy(ctx, (const uint8_t *) out, out_len);
+    mz_free(out);
     return result;
 }
 
@@ -530,6 +1221,58 @@ static JSValue fg_decode_utf8(JSContext *ctx, JSValueConst this_val, int argc, J
         return JS_EXCEPTION;
     }
     return JS_NewStringLen(ctx, (const char *) data, len);
+}
+
+/* -------------------------------------------------------------- file metadata */
+
+/* chmod(path, mode), ftruncate(fd, length), fsync(fd): the file calls the engine's own `os` module leaves out.
+   Each returns 0, or a negative errno, so JavaScript can raise the same errors Node does. */
+static JSValue fg_chmod(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    const char *path = JS_ToCString(ctx, argv[0]);
+    int32_t mode = 0;
+    int rc;
+    if (!path) {
+        return JS_EXCEPTION;
+    }
+    JS_ToInt32(ctx, &mode, argv[1]);
+#ifdef _WIN32
+    /* Windows has only a read-only bit: any write permission means writable. */
+    rc = _chmod(path, (mode & 0222) ? (_S_IREAD | _S_IWRITE) : _S_IREAD);
+#else
+    rc = chmod(path, (mode_t) (mode & 07777));
+#endif
+    JS_FreeCString(ctx, path);
+    return JS_NewInt32(ctx, rc == 0 ? 0 : -errno);
+}
+
+static JSValue fg_ftruncate(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    int32_t fd = 0;
+    int64_t length = 0;
+    int rc;
+    JS_ToInt32(ctx, &fd, argv[0]);
+    JS_ToInt64(ctx, &length, argv[1]);
+#ifdef _WIN32
+    rc = _chsize_s(fd, length);
+    return JS_NewInt32(ctx, rc == 0 ? 0 : -rc);
+#else
+    rc = ftruncate(fd, (off_t) length);
+    return JS_NewInt32(ctx, rc == 0 ? 0 : -errno);
+#endif
+}
+
+static JSValue fg_fsync(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    int32_t fd = 0;
+    int rc;
+    JS_ToInt32(ctx, &fd, argv[0]);
+#ifdef _WIN32
+    rc = _commit(fd);
+#else
+    rc = fsync(fd);
+#endif
+    return JS_NewInt32(ctx, rc == 0 ? 0 : -errno);
 }
 
 /* ------------------------------------------------------------------ install */
@@ -750,6 +1493,9 @@ static const JSCFunctionListEntry fg_native_funcs[] = {
     JS_CFUNC_DEF("evalScript", 2, fg_eval_script),
     JS_CFUNC_DEF("promiseState", 1, fg_promise_state),
     JS_CFUNC_DEF("getpid", 0, fg_getpid),
+    JS_CFUNC_DEF("chmod", 2, fg_chmod),
+    JS_CFUNC_DEF("ftruncate", 2, fg_ftruncate),
+    JS_CFUNC_DEF("fsync", 1, fg_fsync),
 #ifdef _WIN32
     JS_CFUNC_DEF("exec", 2, fg_exec),
 #endif
@@ -757,11 +1503,19 @@ static const JSCFunctionListEntry fg_native_funcs[] = {
     JS_CFUNC_DEF("read", 1, fg_read),
     JS_CFUNC_DEF("write", 2, fg_write),
     JS_CFUNC_DEF("close", 1, fg_close),
+    JS_CFUNC_DEF("send", 3, fg_send),
+    JS_CFUNC_DEF("shutdown", 1, fg_shutdown),
+    JS_CFUNC_DEF("listen", 5, fg_listen),
+    JS_CFUNC_DEF("connectStart", 4, fg_connect_start),
+    JS_CFUNC_DEF("connectStatus", 1, fg_connect_status),
+    JS_CFUNC_DEF("accept", 1, fg_accept),
+    JS_CFUNC_DEF("poll", 3, fg_poll),
+    JS_CFUNC_DEF("address", 2, fg_address),
     JS_CFUNC_DEF("hash", 2, fg_hash),
     JS_CFUNC_DEF("hmac", 3, fg_hmac),
     JS_CFUNC_DEF("randomBytes", 1, fg_random_bytes),
     JS_CFUNC_DEF("inflate", 2, fg_inflate),
-    JS_CFUNC_DEF("deflate", 2, fg_deflate),
+    JS_CFUNC_DEF("deflate", 3, fg_deflate),
     JS_CFUNC_DEF("encodeUtf8", 1, fg_encode_utf8),
     JS_CFUNC_DEF("decodeUtf8", 1, fg_decode_utf8),
 };

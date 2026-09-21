@@ -171,6 +171,7 @@ fi
 	-I quickjs-ng -I mbedtls/include -I miniz -I "$SCRIPT_DIR" -I "$SCRIPT_DIR/include" \
 	-o "$EXE" \
 	"$SCRIPT_DIR/fg_main.c" \
+	"$SCRIPT_DIR/fg_sea.c" \
 	"$SCRIPT_DIR/forgegraal_native.c" \
 	"$SCRIPT_DIR/napi.c" \
 	"$SCRIPT_DIR/ca_bundle.c" \

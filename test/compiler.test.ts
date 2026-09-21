@@ -209,9 +209,11 @@ test("ProjectCollector follows pnpm-style symlinked node_modules", (t) => {
 	assert.ok(!paths.some((p) => p.includes(".pnpm")), "the pnpm store itself must not be copied");
 });
 
-test("ProjectCollector rejects TypeScript entrypoints and missing dependencies", () => {
+test("ProjectCollector accepts TypeScript entrypoints (the native host converts them), rejects other languages and missing dependencies", () => {
 	const root = createProject();
-	assert.throws(() => ProjectCollector.collect({ entrypoint: join(root, "src/main.ts") }), ProjectError);
+	assert.equal(ProjectCollector.collect({ entrypoint: join(root, "src/main.ts") }).entry, "src/main.ts");
+	write(join(root, "src/main.py"), "print(1)");
+	assert.throws(() => ProjectCollector.collect({ entrypoint: join(root, "src/main.py") }), ProjectError);
 
 	write(join(root, "package.json"), JSON.stringify({ name: "x", dependencies: { missing: "1" } }));
 	assert.throws(() => ProjectCollector.collect({ entrypoint: join(root, "src/index.js") }), /missing/);

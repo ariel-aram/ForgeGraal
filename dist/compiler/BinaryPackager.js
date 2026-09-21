@@ -3,6 +3,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.BinaryPackager = exports.DEFAULT_OUTPUT_DIR = exports.MIN_TRANSPILABLE_NODE_MAJOR = exports.MIN_MODERN_API_NODE_MAJOR = void 0;
 const node_crypto_1 = require("node:crypto");
 const node_fs_1 = require("node:fs");
+const node_os_1 = require("node:os");
 const node_path_1 = require("node:path");
 const ForgeDBIntegration_1 = require("../integrations/ForgeDBIntegration");
 const launcher_1 = require("../runtime/launcher");
@@ -20,6 +21,8 @@ const ProjectCollector_1 = require("./ProjectCollector");
 const QuickJsPackager_1 = require("./QuickJsPackager");
 const RuntimeRegistry_1 = require("./RuntimeRegistry");
 const SeaPackager_1 = require("./SeaPackager");
+const SeaPayload_1 = require("./SeaPayload");
+const StaticSite_1 = require("./StaticSite");
 const V8AddonBuilder_1 = require("./V8AddonBuilder");
 const Win7Compat_1 = require("./Win7Compat");
 const YarnPnpCompat_1 = require("./YarnPnpCompat");
@@ -50,11 +53,26 @@ class BinaryPackager {
      * runtime supports it, otherwise into a portable bundle (launcher + archive + runtime).
      */
     static async compile(options) {
+        // A folder of built files is a site, not a program: generate the server that serves it and package that.
+        if (options.staticSite || StaticSite_1.StaticSite.isSiteEntry(options.entrypoint)) {
+            const site = StaticSite_1.StaticSite.materialize(options.entrypoint, typeof options.staticSite === "object" ? options.staticSite : {});
+            try {
+                options.onLog?.(`Packaging ${StaticSite_1.StaticSite.siteDirectory(options.entrypoint)} as a static site server`);
+                return await BinaryPackager.compile({ ...options, entrypoint: site.entrypoint, staticSite: false });
+            }
+            finally {
+                site.cleanup();
+            }
+        }
         const startTime = performance.now();
         const log = options.onLog ?? (() => { });
         const strategy = options.strategy ?? "auto";
         if (!["auto", "sea", "portable"].includes(strategy)) {
             throw new structures_1.RuntimeError(`Unknown strategy '${strategy}' (expected auto, sea or portable)`);
+        }
+        const engine = options.engine ?? "auto";
+        if (!["auto", "native", "node"].includes(engine)) {
+            throw new structures_1.RuntimeError(`Unknown engine '${engine}' (expected auto, native or node)`);
         }
         const root = ProjectCollector_1.ProjectCollector.findProjectRoot((0, node_path_1.resolve)(options.entrypoint));
         const pm = PolicyEnforcer_1.PolicyEnforcer.resolvePackageManager(options.packageManager, root);
@@ -115,7 +133,17 @@ class BinaryPackager {
             //   - an explicit --node-binary
             //   - a runtime already registered with `forgegraal runtimes add` for this target
             //   - an explicit --strategy sea/portable (asking for a Node-shaped output by name)
-            const explicitNodeOverride = Boolean(options.nodeBinary) || strategy !== "auto" || RuntimeRegistry_1.RuntimeRegistry.find(target, root).length > 0;
+            // An explicit engine settles it. Without one, the older rules apply.
+            if (engine === "native" && !QuickJsPackager_1.QuickJsPackager.supports(target)) {
+                throw new structures_1.RuntimeError(`There is no ForgeGraal native host build for ${meta.name} yet, so --engine native cannot be used. ` +
+                    "Leave the engine on auto to build it on Node.js.");
+            }
+            const explicitNodeOverride = engine === "native"
+                ? false
+                : engine === "node" ||
+                    Boolean(options.nodeBinary) ||
+                    strategy !== "auto" ||
+                    RuntimeRegistry_1.RuntimeRegistry.find(target, root).length > 0;
             if (QuickJsPackager_1.QuickJsPackager.supports(target) && !explicitNodeOverride) {
                 if (project.usesBunApis.length) {
                     warnings.push(`Bun APIs detected (${project.usesBunApis.slice(0, 5).join(", ")}). The native host does not provide ` +
@@ -155,39 +183,77 @@ class BinaryPackager {
                     warnings.push(`${[...optional.keys()].join(", ")} ship native addons that this static host cannot load; ` +
                         "their libraries fall back to pure JavaScript on their own.");
                 }
+                // The host loads CommonJS: ES modules (ES-module-only packages, .mjs) and TypeScript/JSX become CommonJS here.
+                const converted = await LegacyTranspiler_1.LegacyTranspiler.toCommonJs(project.entries, { onLog: log });
+                project.entries = converted.entries;
+                project.entry = converted.renamed.get(project.entry) ?? project.entry;
+                if (converted.failures.length) {
+                    warnings.push(`${converted.failures.length} file(s) could not be parsed and were kept as they are ` +
+                        `(they only matter if the program loads them). First: ${converted.failures[0]}`);
+                }
                 // With the host settled, addons built against V8 are rebuilt for it, then the bundle is checked.
                 await BinaryPackager.rebuildV8Addons(project, target, { ...options, nativeLibc }, warnings, log);
                 BinaryPackager.applyWin7Compat(project, target, options, warnings, log);
                 BinaryPackager.checkNativeAddons(project.nativeAddons, target, options, warnings, "native");
                 log(`Packaging for the ForgeGraal native host on ${meta.name} (no Node.js runtime bundled)`);
                 const nativeHostBinary = await QuickJsPackager_1.QuickJsPackager.ensureNativeHost(target, nativeLibc ?? "musl", log);
-                const outputPath = (0, node_path_1.resolve)(options.output ?? (0, node_path_1.join)(defaultOutDir, `${project.name}-${target}`));
+                // engine: "native" + strategy: "sea" is one self-unpacking executable; everything else is a folder.
+                const single = engine === "native" && strategy === "sea";
+                const isWindowsTarget = meta.nodePlatform === "win32";
+                const outputPath = (0, node_path_1.resolve)(options.output ?? (0, node_path_1.join)(defaultOutDir, `${project.name}-${target}${single && isWindowsTarget ? ".exe" : ""}`));
+                const stage = single ? (0, node_fs_1.mkdtempSync)((0, node_path_1.join)((0, node_os_1.tmpdir)(), "forgegraal-sea-")) : null;
                 const res = QuickJsPackager_1.QuickJsPackager.build({
                     target,
                     name: project.name,
                     entry: project.entry,
                     entries: project.entries,
-                    outputPath,
+                    outputPath: stage ?? outputPath,
                     nativeHostBinary,
                 });
-                warnings.push(...res.warnings);
+                let finalPath = res.outputPath;
+                let finalLauncher = res.launcherPath;
+                let finalSize = res.sizeBytes;
+                let finalSha = res.sha256;
+                if (stage) {
+                    try {
+                        const payload = (0, SeaPayload_1.packSeaPayload)((0, SeaPayload_1.collectSeaEntries)(stage, ["app", "runtime"]), `app/${project.entry}`);
+                        (0, node_fs_1.mkdirSync)((0, node_path_1.dirname)(outputPath), { recursive: true });
+                        finalSha = (0, SeaPayload_1.writeSeaExecutable)(nativeHostBinary, payload, outputPath);
+                        finalPath = outputPath;
+                        finalLauncher = outputPath;
+                        finalSize = (0, node_fs_1.statSync)(outputPath).size;
+                        warnings.push("This is one self-unpacking executable: on first start it unpacks the application next to itself " +
+                            `(${(0, node_path_1.basename)(outputPath)}.forgegraal, or the temp directory when that folder is read-only). ` +
+                            "Delete that folder to force a fresh unpack.");
+                    }
+                    finally {
+                        (0, node_fs_1.rmSync)(stage, { recursive: true, force: true });
+                    }
+                }
+                else {
+                    warnings.push(...res.warnings);
+                }
                 return {
                     success: true,
                     strategy: "quickjs",
-                    outputPath: res.outputPath,
-                    launcherPath: res.launcherPath,
+                    outputPath: finalPath,
+                    launcherPath: finalLauncher,
                     target,
                     packageManager: pm,
-                    sizeBytes: res.sizeBytes,
+                    sizeBytes: finalSize,
                     is32BitOrLegacy: (0, structures_1.is32BitOrLegacy)(target),
                     metadata: meta,
                     runtimeVersion: null,
-                    archiveSha256: res.sha256,
+                    archiveSha256: finalSha,
                     files: project.entries.length,
                     packages: project.packages,
                     durationMs: Math.round(performance.now() - startTime),
                     warnings,
                 };
+            }
+            if (ProjectCollector_1.NATIVE_ONLY_ENTRY_EXTENSIONS.has((0, node_path_1.extname)(project.entry))) {
+                throw new structures_1.RuntimeError(`'${(0, node_path_1.basename)(project.entry)}' is TypeScript or JSX, which only the ForgeGraal native host converts at build time. ` +
+                    "For a Node.js build, compile it first (e.g. `tsc`, or `bun build --target=node --outdir dist`) and pass the built file.");
             }
             BinaryPackager.checkNativeAddons(project.nativeAddons, target, options, warnings);
             const runtime = await BinaryPackager.selectRuntime(target, meta, project.minNode, options, root, log);
