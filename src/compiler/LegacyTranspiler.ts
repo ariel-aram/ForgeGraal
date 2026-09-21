@@ -178,6 +178,83 @@ export class LegacyTranspiler {
 	}
 
 	/**
+	 * A module that awaits at its top level becomes the body of an async function. Its imports become require() calls
+	 * (through esbuild's own interop, so default and namespace imports mean what they do in a converted module) and
+	 * its exports are assigned once it has finished. The program's entry point is the case that matters: it runs to
+	 * completion. A module that another one requires sees its exports only after its own awaits are done.
+	 */
+	private static async wrapTopLevelAwait(
+		esbuild: typeof import("esbuild"),
+		source: string,
+		options: import("esbuild").TransformOptions
+	): Promise<string> {
+		const EXTERNAL = "graak-external";
+		const built = await esbuild.build({
+			stdin: { contents: source, sourcefile: options.sourcefile, loader: options.loader, resolveDir: "/" },
+			bundle: true,
+			write: false,
+			format: "esm",
+			platform: "node",
+			target: "esnext",
+			jsx: "automatic",
+			logLevel: "silent",
+			legalComments: "inline",
+			metafile: true,
+			supported: { "dynamic-import": false },
+			define: options.define,
+			plugins: [
+				{
+					name: "externals",
+					setup(build) {
+						build.onResolve({ filter: /.*/ }, (args) => {
+							if (args.kind === "entry-point") return undefined;
+							// The require() inside a virtual module is the runtime's own, not something to bundle.
+							if (args.namespace === EXTERNAL) return { path: args.path, external: true };
+							// A suffix keeps ".mjs" and ".cjs" out of the virtual path: esbuild reads a module's kind from
+							// its extension, and this one is CommonJS whatever the file it stands for is.
+							return { path: `${args.path}?graak`, namespace: EXTERNAL };
+						});
+						build.onLoad({ filter: /.*/, namespace: EXTERNAL }, (args) => ({
+							contents: `module.exports = require(${JSON.stringify(args.path.slice(0, -"?graak".length))});`,
+							loader: "js",
+						}));
+					},
+				},
+			],
+		});
+		let body = built.outputFiles[0].text;
+		const names: string[] = [];
+		let exportsCode = "";
+		const block = /\nexport \{([^}]*)\};?\s*$/.exec(body);
+		if (block) {
+			body = body.slice(0, block.index);
+			for (const item of block[1].split(",")) {
+				const [local, exported] = item.trim().split(/\s+as\s+/);
+				if (!local) continue;
+				names.push(exported ?? local);
+				exportsCode += `\nexports[${JSON.stringify(exported ?? local)}] = ${local};`;
+			}
+		}
+		// What this module imports, so it can wait for any of those that awaits too.
+		const imported = Object.values(built.metafile.outputs)
+			.flatMap((output) => output.imports.map((i) => i.path))
+			.filter((path) => !path.startsWith("<"));
+		const meta = /__fgMetaUrl/.test(body) ? 'const __fgMetaUrl = require("url").pathToFileURL(__filename).href;\n' : "";
+		// Every export exists from the start, as an import binding that is read later must find it; its value arrives when the
+		// module's own awaits are done, and `Symbol.for("graak.tla")` is the promise that says when.
+		const declare = names
+			.map(
+				(name) =>
+					`Object.defineProperty(exports, ${JSON.stringify(name)}, { enumerable: true, configurable: true, writable: true, value: undefined });`
+			)
+			.join("\n");
+		const waits = imported.length
+			? `await Promise.all([${imported.map((path) => `require(${JSON.stringify(path)})?.[Symbol.for("graak.tla")]`).join(", ")}]);\n`
+			: "";
+		return `${meta}${declare}\nObject.defineProperty(exports, Symbol.for("graak.tla"), { value: (async () => {\n"use strict";\n${waits}${body}${exportsCode}\n})(), enumerable: false });\n`;
+	}
+
+	/**
 	 * What the native host needs: ES modules become CommonJS and TypeScript/JSX become JavaScript, and nothing else
 	 * changes. The host's engine parses current syntax directly, so unlike {@link transpile} no downlevelling happens
 	 * (`target: esnext`), and a file that is already plain CommonJS is left alone without being parsed at all.
@@ -263,7 +340,7 @@ export class LegacyTranspiler {
 						}
 					}
 					if (code === undefined) {
-						const result = await esbuild.transform(original, {
+						const options: import("esbuild").TransformOptions = {
 							target: "esnext",
 							format: "cjs",
 							platform: "node",
@@ -284,7 +361,15 @@ export class LegacyTranspiler {
 										banner: 'const __fgMetaUrl = require("url").pathToFileURL(__filename).href;',
 									}
 								: {}),
-						});
+						};
+						let result: { code: string };
+						try {
+							result = await esbuild.transform(original, options);
+						} catch (error) {
+							// CommonJS cannot express top-level await. The module still can run: as the body of an async function.
+							if (!/top-level await/i.test(error instanceof Error ? error.message : String(error))) throw error;
+							result = { code: await LegacyTranspiler.wrapTopLevelAwait(esbuild, original, options) };
+						}
 						code = result.code;
 						if (file) {
 							try {

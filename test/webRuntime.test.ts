@@ -51,7 +51,14 @@ const DIFFERENTIAL: Array<[string, string[]]> = [
 	["watch-corpus.cjs", []],
 	["sqlite-corpus.cjs", []],
 	["websocket-corpus.cjs", []],
+	["assert-corpus.cjs", []],
+	["extras-corpus.cjs", []],
+	["intl-corpus.cjs", []],
+	["intl-fuzz.cjs", []],
 ];
+
+// The Intl corpora print dates in the machine's zone and use its default locale: pin both, for Node.js and the host alike.
+const PINNED_ENV = { ...process.env, TZ: "America/New_York", LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" };
 
 // node:sqlite arrived in Node.js 22.5; the baseline for that corpus needs it.
 const hasNodeSqlite = spawnSync(process.execPath, ["-e", "require('node:sqlite')"]).status === 0;
@@ -62,11 +69,21 @@ for (const [fixture, extra] of DIFFERENTIAL) {
 		skip: fixture === "sqlite-corpus.cjs" && !hasNodeSqlite && "this Node.js has no node:sqlite",
 	}, async () => {
 		const root = project([fixture, ...extra]);
-		const onNode = spawnSync(process.execPath, [join(root, fixture)], { encoding: "utf-8", timeout: 60_000 });
+		const onNode = spawnSync(process.execPath, [join(root, fixture)], {
+			encoding: "utf-8",
+			timeout: 120_000,
+			env: PINNED_ENV,
+			maxBuffer: 64 * 1024 * 1024,
+		});
 		assert.equal(onNode.status, 0, `Node baseline failed:\n${onNode.stdout}${onNode.stderr}`);
 
 		const launcher = await packaged(root, fixture);
-		const onHost = spawnSync(launcher, [], { encoding: "utf-8", timeout: 120_000 });
+		const onHost = spawnSync(launcher, [], {
+			encoding: "utf-8",
+			timeout: 240_000,
+			env: PINNED_ENV,
+			maxBuffer: 64 * 1024 * 1024,
+		});
 		assert.equal(onHost.status, 0, `host failed:\n${onHost.stdout}${onHost.stderr}`);
 		assert.equal(onHost.stdout, onNode.stdout, `the native host must match Node.js for ${fixture}`);
 		assert.doesNotMatch(onHost.stdout, /FAILED/);

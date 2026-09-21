@@ -279,6 +279,7 @@ class BinaryPackager {
                     entries: project.entries,
                     outputPath: stage ?? outputPath,
                     nativeHostBinary,
+                    intl: options.intl,
                 });
                 lap("Writing the output");
                 let finalPath = res.outputPath;

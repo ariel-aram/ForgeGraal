@@ -28,7 +28,13 @@ export interface QuickJsBuildOptions {
     outputPath: string;
     /** Path to a `graak-c`(.exe) built by `ensureNativeHost()`. */
     nativeHostBinary: string;
+    /**
+     * Whether to ship the data behind `Intl` (about 7 MB, 1.5 MB compressed): `all`, `none`, or `auto` (the default), which
+     * ships it when the program or a package it bundles mentions `Intl`, `toLocale*String` or `localeCompare`.
+     */
+    intl?: IntlData;
 }
+export type IntlData = "auto" | "all" | "none";
 export interface QuickJsBuildResult {
     outputPath: string;
     launcherPath: string;

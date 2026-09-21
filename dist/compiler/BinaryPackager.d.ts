@@ -1,6 +1,6 @@
 import { TargetDevice, type TargetMetadata } from "../structures";
 import { type PackageManager } from "./PolicyEnforcer";
-import { type NativeHostLibc } from "./QuickJsPackager";
+import { type IntlData, type NativeHostLibc } from "./QuickJsPackager";
 import { type StaticSiteOptions } from "./StaticSite";
 export type BuildStrategy = "auto" | "sea" | "portable";
 /** Which engine runs the program: Graak's native host (quickjs-ng), or a Node.js runtime. `auto` follows the target. */
@@ -66,6 +66,11 @@ export interface BuildOptions {
      * program. A directory or `.html` entrypoint is treated this way without this flag.
      */
     staticSite?: boolean | StaticSiteOptions;
+    /**
+     * The data behind `Intl` on the Graak engine (about 7 MB, 1.5 MB compressed): `auto` (default) ships it when the program or
+     * a package it bundles mentions `Intl`, `toLocale*String` or `localeCompare`; `all` always; `none` never.
+     */
+    intl?: IntlData;
     onLog?: (message: string) => void;
 }
 export interface BuildResult {

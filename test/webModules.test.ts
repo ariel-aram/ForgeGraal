@@ -130,3 +130,46 @@ test("system-corpus.cjs prints exactly what Node.js prints (os, vm, module, puny
 	assert.equal(onHost.status, onNode.status, "exit codes match");
 	assert.equal(onHost.stdout, onNode.stdout);
 });
+
+test("an ES module that awaits at its top level runs, as a program and as an ES-module-only dependency's consumer", {
+	timeout: 300_000,
+}, async () => {
+	const root = project({
+		"package.json": JSON.stringify({ name: "tla-app", version: "1.0.0" }),
+		"main.mjs": `import path from "node:path";
+import { readFile } from "node:fs/promises";
+import { later } from "./later.mjs";
+const own = await readFile(new URL(import.meta.url));
+const value = await new Promise((resolve) => setTimeout(() => resolve("waited"), 5));
+console.log(JSON.stringify({ name: path.basename(import.meta.url), own: own.length > 10, value, later }));
+export const done = true;
+`,
+		"later.mjs": `export const later = await Promise.resolve("imported");\n`,
+	});
+	const result = await run(root, "main.mjs");
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(JSON.parse(result.stdout), { name: "main.mjs", own: true, value: "waited", later: "imported" });
+});
+
+test("tsconfig paths and baseUrl resolve at run time, including extends and fallback targets", {
+	timeout: 300_000,
+}, async () => {
+	const root = project({
+		"package.json": JSON.stringify({ name: "paths-app", version: "1.0.0" }),
+		"tsconfig.base.json": `{ // shared
+  "compilerOptions": { "baseUrl": ".", "paths": { "@/*": ["src/*"] } },
+}`,
+		"tsconfig.json": `{ "extends": "./tsconfig.base.json", "compilerOptions": { "paths": { "@/*": ["src/*"], "@lib": ["src/lib/index.ts"], "~u/*": ["nowhere/*", "src/lib/*"] } } }`,
+		"src/components/Button.ts": `import { greet } from "@lib";\nexport const label = (n: string): string => \`[\${greet(n)}]\`;\n`,
+		"src/lib/index.ts": `export const greet = (n: string): string => "hello " + n;\n`,
+		"src/lib/math.ts": `export const twice = (n: number): number => n * 2;\n`,
+		"src/main.ts": `import { label } from "@/components/Button";
+import { twice } from "~u/math";
+import * as lib from "src/lib/index";
+console.log(JSON.stringify([label("paths"), twice(21), typeof lib.greet]));
+`,
+	});
+	const result = await run(root, "src/main.ts");
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(JSON.parse(result.stdout), ["[hello paths]", 42, "function"]);
+});

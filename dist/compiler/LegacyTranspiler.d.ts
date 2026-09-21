@@ -42,6 +42,13 @@ export declare class LegacyTranspiler {
      */
     static transpile(entries: readonly ArchiveEntry[], options: LegacyTranspileOptions): Promise<LegacyTranspileResult>;
     /**
+     * A module that awaits at its top level becomes the body of an async function. Its imports become require() calls
+     * (through esbuild's own interop, so default and namespace imports mean what they do in a converted module) and
+     * its exports are assigned once it has finished. The program's entry point is the case that matters: it runs to
+     * completion. A module that another one requires sees its exports only after its own awaits are done.
+     */
+    private static wrapTopLevelAwait;
+    /**
      * What the native host needs: ES modules become CommonJS and TypeScript/JSX become JavaScript, and nothing else
      * changes. The host's engine parses current syntax directly, so unlike {@link transpile} no downlevelling happens
      * (`target: esnext`), and a file that is already plain CommonJS is left alone without being parsed at all.

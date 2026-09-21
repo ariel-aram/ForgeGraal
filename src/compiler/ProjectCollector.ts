@@ -202,7 +202,6 @@ export class ProjectCollector {
 	}
 
 	private addFile(abs: string, dest: string, stats: Stats, isProjectFile: boolean) {
-		let text = "";
 		this.entries.push({ path: dest, source: abs, mode: stats.mode });
 
 		if (dest.endsWith(".node")) {
@@ -213,14 +212,12 @@ export class ProjectCollector {
 				// Unreadable addon: reported with unknown info
 			}
 			this.nativeAddons.push({ path: dest, info });
-		} else if (
-			isProjectFile &&
-			SOURCE_EXTENSIONS.has(extname(dest)) &&
-			stats.size < 4 * 1024 * 1024 &&
-			BUN_API_PATTERN.test((text = readFileSync(abs, "utf-8")))
-		) {
-			this.usesBunApis.push(dest);
-			if (BUN_GLOBALS_PATTERN.test(text)) this.usesBunGlobals.push(dest);
+		} else if (isProjectFile && SOURCE_EXTENSIONS.has(extname(dest)) && stats.size < 4 * 1024 * 1024) {
+			const text = readFileSync(abs, "utf-8");
+			if (BUN_API_PATTERN.test(text)) {
+				this.usesBunApis.push(dest);
+				if (BUN_GLOBALS_PATTERN.test(text)) this.usesBunGlobals.push(dest);
+			}
 		}
 	}
 

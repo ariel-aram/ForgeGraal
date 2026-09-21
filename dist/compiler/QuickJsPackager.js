@@ -140,12 +140,15 @@ function classifyNativeAddons(addonPaths) {
 const RUNTIME_FILES = [
     "node-compat.js",
     "node-web.js",
+    "web-streams.js",
     "node-http.js",
     "node-stream.js",
     "node-fs.js",
     "node-system.js",
     "node-wasm.js",
     "node-crypto.js",
+    "node-assert.js",
+    "node-extras.js",
     "node-sqlite.js",
     "node-websocket.js",
     "node-fetch.js",
@@ -153,10 +156,31 @@ const RUNTIME_FILES = [
     "node-misc.js",
     "node-inspect.js",
     "node-url.js",
+    "intl.js",
+    "intl-zone.js",
     "segmenter.js",
     "segmenter-tables.js",
     "native-modules.js",
 ];
+const INTL_USE = /\bIntl\b|\btoLocale(?:String|DateString|TimeString|UpperCase|LowerCase)\b|\blocaleCompare\b/;
+const SCANNED_EXTENSIONS = new Set([".js", ".cjs", ".mjs", ".jsx", ".ts", ".cts", ".mts", ".tsx"]);
+/** Whether any bundled source mentions `Intl` or the locale-aware built-ins, which is what needs their data. */
+function mentionsIntl(entries) {
+    for (const entry of entries) {
+        if (!SCANNED_EXTENSIONS.has((0, node_path_1.extname)(entry.path)))
+            continue;
+        try {
+            const text = typeof entry.source === "string" ? (0, node_fs_1.readFileSync)(entry.source, "utf-8") : entry.source.toString("utf-8");
+            if (INTL_USE.test(text))
+                return true;
+        }
+        catch {
+            // Unreadable: cannot tell, so ship the data.
+            return true;
+        }
+    }
+    return false;
+}
 class QuickJsPackager {
     /** Whether this target has a wired-up native host build (see the module doc for why so few do). */
     static supports(target) {
@@ -305,7 +329,10 @@ class QuickJsPackager {
         const runtimeDir = (0, node_path_1.join)(out, "runtime");
         (0, node_fs_1.mkdirSync)(runtimeDir, { recursive: true });
         const repoRoot = (0, node_path_1.dirname)(require.resolve("../../package.json"));
-        for (const file of RUNTIME_FILES) {
+        // The locale data `intl.js` reads on demand: shared tables, and per locale its formats and its display names.
+        const wantsIntl = (options.intl ?? "auto") === "all" || ((options.intl ?? "auto") === "auto" && mentionsIntl(options.entries));
+        const intlData = (wantsIntl ? (0, node_fs_1.readdirSync)((0, node_path_1.join)(repoRoot, "quickjs/runtime")) : []).filter((file) => /^intl-(data|(names-)?[a-z]{2}-([A-Z]{2}|\d{3}))\.js$/.test(file));
+        for (const file of [...RUNTIME_FILES, ...intlData]) {
             const from = (0, node_path_1.join)(repoRoot, "quickjs/runtime", file);
             const to = (0, node_path_1.join)(runtimeDir, file);
             (0, node_fs_1.copyFileSync)(from, to);

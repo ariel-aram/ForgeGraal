@@ -31,6 +31,8 @@ Compile options:
   -e, --engine <name>        auto (default, follows the target), native (Graak's own host) or node.
                               With native, --strategy sea writes ONE self-unpacking executable and
                               portable/auto a folder
+      --intl <mode>          Locale data for Intl on the Graak engine (about 7 MB): auto (default, ships it
+                              when the program mentions Intl, toLocale*String or localeCompare), all or none
   -s, --strategy <name>      auto (default), sea or portable. Without --engine it also opts a native-host
                               target (see below) back onto Node.js, same as --node-binary
       --pm <name>            Package manager override (bun, deno, pnpm, npm, yarn)
@@ -269,6 +271,7 @@ async function main() {
                 output: values.output,
                 strategy: values.strategy,
                 engine: values.engine,
+                intl: values.intl,
                 packageManager: values.pm,
                 nodeBinary: values["node-binary"],
                 nodeVersion: values["node-version"],
@@ -317,6 +320,7 @@ function parse() {
             output: { type: "string", short: "o" },
             strategy: { type: "string", short: "s" },
             engine: { type: "string", short: "e" },
+            intl: { type: "string" },
             pm: { type: "string" },
             db: { type: "string" },
             "node-binary": { type: "string" },

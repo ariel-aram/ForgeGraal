@@ -172,7 +172,25 @@ on Node.js and on the packaged host and compares the output byte for byte.
 | `WebSocket`, `MessageEvent`, `CloseEvent` | The browser's client on RFC 6455 framing over the host's own HTTP upgrade (Node 22 has one; the host and older Node.js did not). Messages, `binaryType`, ping/pong, close codes and the events arrive as they do in Node's. |
 | `fs.watch` | A file or a directory, recursive or not: an appearing or disappearing name is a `rename`, a changed one a `change`. The engine has no change notifications, so the tree is compared with a snapshot at an interval that grows with its size. |
 | `WebAssembly` | [wasm3](https://github.com/wasm3/wasm3), compiled into the host, behind the standard API (`Module`, `Instance`, `Memory`, `Global`, `Table`, `instantiate`, `compile`, `validate`, `i64` as `BigInt`). It interprets, so there is no SIMD, threads or exception handling, and a module that *imports* a memory, table or global is refused with a `LinkError`. This is what lets undici (Node's `fetch` and the HTTP client of discord.js) load. |
+| `assert` | Complete: the loose and strict families, deep equality by Node's rules (Map, Set, Date, RegExp, typed arrays, errors, boxed primitives, circular references, prototypes), `throws`/`rejects` with every form of `expected`, `match`, `ifError`, `partialDeepStrictEqual`, and the message and `AssertionError` fields Node builds. |
+| Web streams | [web-streams-polyfill](https://github.com/MattiasBuelens/web-streams-polyfill) 3.3.3, which follows the WHATWG spec and passes its web-platform-tests: backpressure, byte streams and BYOB readers, `pipeTo`/`pipeThrough`, `tee`, `ReadableStream.from`, and `TextEncoderStream`, `TextDecoderStream`, `CompressionStream`, `DecompressionStream`. |
+| `structuredClone`, `MessageChannel`, `BroadcastChannel`, `events`, timers, `util`, `path.matchesGlob`, `fs.glob` | The statics and members programs and packages reach for, each checked against Node's own output. `structuredClone` handles cycles, `Map`/`Set`, `Date`, `RegExp`, errors, typed arrays and `transfer`. |
+| `Intl` | `NumberFormat` (decimal, percent, currency, unit; compact, scientific and engineering notation; every rounding mode, increment and priority), `DateTimeFormat` (every component combination, `dateStyle`/`timeStyle`, hour cycles, day periods, eras, zone names, `formatRange`), `PluralRules`, `RelativeTimeFormat`, `ListFormat`, `Collator` (Unicode collation with locale tailoring: Swedish å ä ö, Spanish ñ, Turkish dotted i, Russian and Chinese script order, pinyin Han), `DisplayNames`, `DurationFormat`, `Locale`, and `toLocaleString`, `toLocaleDateString`, `toLocaleTimeString`, `localeCompare` and `toLocale{Upper,Lower}Case` on the built-ins. **39 locales** (see below) with every IANA time zone and its history since 1700. Output is compared with Node's ICU across some 30,000 cases. |
 | `Intl.Segmenter` | Grapheme and word granularity per UAX #29, passing Unicode's own conformance files in full. Sentence granularity throws rather than guessing a locale. |
+
+#### Intl locales and limits
+
+quickjs-ng has no ICU, so `Intl` here is built from data read out of one: `tools/gen-intl-data.js` formats sample values with
+Node's ICU and stores what it printed (patterns, names, weights, zone transitions), and `quickjs/runtime/intl.js` assembles
+them. The locales are `en` (US, GB, AU, CA, IN, NZ, IE, ZA, SG), `de` (DE, AT, CH), `fr` (FR, CA, BE, CH), `es` (ES, MX, AR, CO,
+CL, US, 419), `it` (IT, CH), `pt` (BR, PT), `nl` (NL, BE), `sv` (SE, FI), `pl`, `ru`, `tr`, `ja`, `zh` (CN, TW, HK) and `ko`;
+another region of one of those languages uses the nearest of them and reports the locale that was asked for. A language
+outside the list formats as `en-US`, which is also what `supportedLocalesOf` leaves out. Data is loaded a locale at a time, on
+first use, and a build ships it only when the program or a package it bundles mentions `Intl`, `toLocale*String` or
+`localeCompare` (`--intl all` or `--intl none` overrides; about 7 MB, 1.5 MB compressed), so a program that never touches
+`Intl` pays nothing for it. Not covered: calendars other than Gregorian, numbering systems other than Latin, ICU's interval
+patterns (`formatRange` joins two full dates with the locale's range separator instead of merging the shared fields), unit
+compositions beyond `X-per-Y`, and ICU's generic zone names in a few zones (Egypt's disambiguating "(Egypt)").
 
 Verified against real packages, with no Node.js anywhere in the output: **Express 4**, **Fastify** and **Hono**, each
 served from a packaged `linux-modern-x64` build; **`ws`** as a WebSocket server and client exchanging text and 70 KB
@@ -491,7 +509,7 @@ When the target runtime is older than Node.js 20, Graak rewrites the program so 
 - **Code generated at runtime.** esbuild's WebAssembly build ships with the bundle (~3.6 MiB compressed) and lowers
   source a program builds while running (ForgeScript does, via `new Function`), memoised per template.
 
-Deliberately not done: `Intl.Segmenter` throws instead of being approximated; `WeakRef`/`FinalizationRegistry` hold
+Deliberately not done: `Intl.Segmenter` sentence granularity throws instead of being approximated; `WeakRef`/`FinalizationRegistry` hold
 strong references and never finalize; a dependency's `engines.node` floor is overridden and the build says so; below
 Node.js 6 nothing is rewritten.
 

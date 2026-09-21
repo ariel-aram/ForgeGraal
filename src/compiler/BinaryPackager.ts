@@ -34,7 +34,7 @@ import { MIN_SEA_NODE_VERSION, NodeRuntime } from "./NodeRuntime";
 import { type PackageManager, PolicyEnforcer } from "./PolicyEnforcer";
 import { PortablePackager } from "./PortablePackager";
 import { compareVersions, NATIVE_ONLY_ENTRY_EXTENSIONS, ProjectCollector } from "./ProjectCollector";
-import { classifyNativeAddons, type NativeHostLibc, QuickJsPackager } from "./QuickJsPackager";
+import { classifyNativeAddons, type IntlData, type NativeHostLibc, QuickJsPackager } from "./QuickJsPackager";
 import { RuntimeRegistry } from "./RuntimeRegistry";
 import { SeaPackager } from "./SeaPackager";
 import { collectSeaEntries, packSeaPayload, writeSeaExecutable } from "./SeaPayload";
@@ -108,6 +108,11 @@ export interface BuildOptions {
 	 * program. A directory or `.html` entrypoint is treated this way without this flag.
 	 */
 	staticSite?: boolean | StaticSiteOptions;
+	/**
+	 * The data behind `Intl` on the Graak engine (about 7 MB, 1.5 MB compressed): `auto` (default) ships it when the program or
+	 * a package it bundles mentions `Intl`, `toLocale*String` or `localeCompare`; `all` always; `none` never.
+	 */
+	intl?: IntlData;
 	onLog?: (message: string) => void;
 }
 
@@ -403,6 +408,7 @@ export class BinaryPackager {
 					entries: project.entries,
 					outputPath: stage ?? outputPath,
 					nativeHostBinary,
+					intl: options.intl,
 				});
 				lap("Writing the output");
 				let finalPath = res.outputPath;

@@ -163,7 +163,6 @@ class ProjectCollector {
         return this.excluded.some((p) => isInside(abs, p));
     }
     addFile(abs, dest, stats, isProjectFile) {
-        let text = "";
         this.entries.push({ path: dest, source: abs, mode: stats.mode });
         if (dest.endsWith(".node")) {
             let info = null;
@@ -175,13 +174,13 @@ class ProjectCollector {
             }
             this.nativeAddons.push({ path: dest, info });
         }
-        else if (isProjectFile &&
-            SOURCE_EXTENSIONS.has((0, node_path_1.extname)(dest)) &&
-            stats.size < 4 * 1024 * 1024 &&
-            BUN_API_PATTERN.test((text = (0, node_fs_1.readFileSync)(abs, "utf-8")))) {
-            this.usesBunApis.push(dest);
-            if (BUN_GLOBALS_PATTERN.test(text))
-                this.usesBunGlobals.push(dest);
+        else if (isProjectFile && SOURCE_EXTENSIONS.has((0, node_path_1.extname)(dest)) && stats.size < 4 * 1024 * 1024) {
+            const text = (0, node_fs_1.readFileSync)(abs, "utf-8");
+            if (BUN_API_PATTERN.test(text)) {
+                this.usesBunApis.push(dest);
+                if (BUN_GLOBALS_PATTERN.test(text))
+                    this.usesBunGlobals.push(dest);
+            }
         }
     }
     /**

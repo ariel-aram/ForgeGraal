@@ -691,15 +691,30 @@ function makeFetch({ http, https }, zlib) {
 				const encoding = (responseHeaders.get("content-encoding") ?? "").toLowerCase();
 				const decoder = zlib && /gzip|deflate/.test(encoding) && request.method !== "HEAD" && incoming.statusCode !== 204 && incoming.statusCode !== 304;
 				const chunks = [];
+				// Once the consumer cancels, or the stream has ended or failed, later socket events must not touch the
+				// controller: a spec stream refuses enqueue, close and error after that.
+				let over = false;
 				const body = new ReadableStream({
 					start(controller) {
+						const guard = (fn) => {
+							if (over) return;
+							try {
+								fn();
+							} catch {
+								// The stream was closed or cancelled underneath us.
+							}
+						};
+						const finish = (fn) => {
+							guard(fn);
+							over = true;
+						};
 						incoming.on("data", (chunk) => {
 							const bytes = new Uint8Array(chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.length));
 							if (decoder) chunks.push(bytes);
-							else controller.enqueue(bytes);
+							else guard(() => controller.enqueue(bytes));
 						});
 						incoming.on("end", () => {
-							if (decoder) {
+							if (decoder && !over) {
 								try {
 									const raw = concatBytes(chunks);
 									let out;
@@ -711,23 +726,24 @@ function makeFetch({ http, https }, zlib) {
 											out = zlib.inflateRawSync(raw);
 										}
 									}
-									if (out.length) controller.enqueue(new Uint8Array(out));
+									if (out.length) guard(() => controller.enqueue(new Uint8Array(out)));
 								} catch (error) {
-									controller.error(failed(error));
+									finish(() => controller.error(failed(error)));
 									return;
 								}
 							}
 							signal.removeEventListener("abort", onAbort);
-							controller.close();
+							finish(() => controller.close());
 						});
-						incoming.on("error", (error) => controller.error(failed(error)));
-						incoming.on("aborted", () => controller.error(failed(new Error("other side closed"))));
+						incoming.on("error", (error) => finish(() => controller.error(failed(error))));
+						incoming.on("aborted", () => finish(() => controller.error(failed(new Error("other side closed")))));
 						signal.addEventListener("abort", () => {
 							incoming.destroy();
-							controller.error(abortReason(signal));
+							finish(() => controller.error(abortReason(signal)));
 						}, { once: true });
 					},
 					cancel() {
+						over = true;
 						incoming.destroy();
 					},
 				});

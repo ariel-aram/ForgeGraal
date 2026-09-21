@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, extname, join } from "node:path";
 import { OPTIONAL_ACCELERATORS } from "../runtime/nativeShim";
 import { RuntimeError, TARGET_METADATA_MAP, TargetDevice } from "../structures";
 import type { ArchiveEntry } from "./Archive";
@@ -150,12 +150,15 @@ export function classifyNativeAddons(addonPaths: readonly string[]): {
 const RUNTIME_FILES = [
 	"node-compat.js",
 	"node-web.js",
+	"web-streams.js",
 	"node-http.js",
 	"node-stream.js",
 	"node-fs.js",
 	"node-system.js",
 	"node-wasm.js",
 	"node-crypto.js",
+	"node-assert.js",
+	"node-extras.js",
 	"node-sqlite.js",
 	"node-websocket.js",
 	"node-fetch.js",
@@ -163,6 +166,8 @@ const RUNTIME_FILES = [
 	"node-misc.js",
 	"node-inspect.js",
 	"node-url.js",
+	"intl.js",
+	"intl-zone.js",
 	"segmenter.js",
 	"segmenter-tables.js",
 	"native-modules.js",
@@ -177,6 +182,32 @@ export interface QuickJsBuildOptions {
 	outputPath: string;
 	/** Path to a `graak-c`(.exe) built by `ensureNativeHost()`. */
 	nativeHostBinary: string;
+	/**
+	 * Whether to ship the data behind `Intl` (about 7 MB, 1.5 MB compressed): `all`, `none`, or `auto` (the default), which
+	 * ships it when the program or a package it bundles mentions `Intl`, `toLocale*String` or `localeCompare`.
+	 */
+	intl?: IntlData;
+}
+
+export type IntlData = "auto" | "all" | "none";
+
+const INTL_USE = /\bIntl\b|\btoLocale(?:String|DateString|TimeString|UpperCase|LowerCase)\b|\blocaleCompare\b/;
+const SCANNED_EXTENSIONS = new Set([".js", ".cjs", ".mjs", ".jsx", ".ts", ".cts", ".mts", ".tsx"]);
+
+/** Whether any bundled source mentions `Intl` or the locale-aware built-ins, which is what needs their data. */
+function mentionsIntl(entries: ArchiveEntry[]): boolean {
+	for (const entry of entries) {
+		if (!SCANNED_EXTENSIONS.has(extname(entry.path))) continue;
+		try {
+			const text =
+				typeof entry.source === "string" ? readFileSync(entry.source, "utf-8") : entry.source.toString("utf-8");
+			if (INTL_USE.test(text)) return true;
+		} catch {
+			// Unreadable: cannot tell, so ship the data.
+			return true;
+		}
+	}
+	return false;
 }
 
 export interface QuickJsBuildResult {
@@ -369,7 +400,13 @@ export class QuickJsPackager {
 		const runtimeDir = join(out, "runtime");
 		mkdirSync(runtimeDir, { recursive: true });
 		const repoRoot = dirname(require.resolve("../../package.json"));
-		for (const file of RUNTIME_FILES) {
+		// The locale data `intl.js` reads on demand: shared tables, and per locale its formats and its display names.
+		const wantsIntl =
+			(options.intl ?? "auto") === "all" || ((options.intl ?? "auto") === "auto" && mentionsIntl(options.entries));
+		const intlData = (wantsIntl ? readdirSync(join(repoRoot, "quickjs/runtime")) : []).filter((file) =>
+			/^intl-(data|(names-)?[a-z]{2}-([A-Z]{2}|\d{3}))\.js$/.test(file)
+		);
+		for (const file of [...RUNTIME_FILES, ...intlData]) {
 			const from = join(repoRoot, "quickjs/runtime", file);
 			const to = join(runtimeDir, file);
 			copyFileSync(from, to);

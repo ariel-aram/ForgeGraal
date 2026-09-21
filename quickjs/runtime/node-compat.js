@@ -22,6 +22,8 @@
 import * as os from "qjs:os";
 import * as std from "qjs:std";
 import * as web from "./node-web.js";
+import { createAssert } from "./node-assert.js";
+import { installExtras } from "./node-extras.js";
 import * as fetchApi from "./node-fetch.js";
 import { createCrypto } from "./node-crypto.js";
 import { createFs } from "./node-fs.js";
@@ -32,6 +34,7 @@ import * as misc from "./node-misc.js";
 import { Buffer, INSPECT_MAX_BYTES, SlowBuffer, bufferConstants, isAscii, isUtf8, kMaxLength, normalizeEncoding } from "./node-buffer.js";
 import { createConsole, format as inspectFormat, inspect as inspectValue, setPromiseStateReader } from "./node-inspect.js";
 import { URL, URLSearchParams, urlModule } from "./node-url.js";
+import { installIntl } from "./intl.js";
 import { Segmenter } from "./segmenter.js";
 
 const globalObject = globalThis;
@@ -1022,51 +1025,7 @@ function deepEqual(a, b) {
 
 /* ------------------------------------------------------------------- assert */
 
-class AssertionError extends Error {
-	constructor(options) {
-		super(options.message ?? `${util.inspect(options.actual)} ${options.operator} ${util.inspect(options.expected)}`);
-		this.name = "AssertionError";
-		this.actual = options.actual;
-		this.expected = options.expected;
-		this.operator = options.operator;
-	}
-}
-
-function assert(value, message) {
-	if (!value) throw new AssertionError({ message: message ?? "Assertion failed", actual: value, expected: true, operator: "==" });
-}
-Object.assign(assert, {
-	AssertionError,
-	ok: assert,
-	equal: (a, b, m) => {
-		// biome-ignore lint/suspicious/noDoubleEquals: assert.equal is specified as loose equality
-		if (!(a == b)) throw new AssertionError({ message: m, actual: a, expected: b, operator: "==" });
-	},
-	strictEqual: (a, b, m) => {
-		if (!Object.is(a, b)) throw new AssertionError({ message: m, actual: a, expected: b, operator: "strictEqual" });
-	},
-	notStrictEqual: (a, b, m) => {
-		if (Object.is(a, b)) throw new AssertionError({ message: m, actual: a, expected: b, operator: "notStrictEqual" });
-	},
-	deepEqual: (a, b, m) => {
-		if (!deepEqual(a, b)) throw new AssertionError({ message: m, actual: a, expected: b, operator: "deepEqual" });
-	},
-	deepStrictEqual: (a, b, m) => {
-		if (!deepEqual(a, b)) throw new AssertionError({ message: m, actual: a, expected: b, operator: "deepStrictEqual" });
-	},
-	throws: (fn, _expected, m) => {
-		try {
-			fn();
-		} catch {
-			return;
-		}
-		throw new AssertionError({ message: m ?? "Missing expected exception", operator: "throws" });
-	},
-	fail: (m) => {
-		throw new AssertionError({ message: m ?? "Failed" });
-	},
-});
-assert.strict = assert;
+const assert = createAssert({ inspect: (value, options) => util.inspect(value, options) });
 
 /* --------------------------------------------------------- web-ish globals */
 
@@ -1145,35 +1104,63 @@ class AbortController {
 }
 
 /*
- * A real structured clone, not a JSON round-trip: binary data has to survive, or anything built
- * on it silently loses bytes. Handles the cases the algorithm actually guarantees.
+ * A real structured clone, not a JSON round-trip: binary data has to survive, or anything built on it silently loses
+ * bytes. Follows the HTML algorithm's observable rules: circular references and shared references are kept, Date,
+ * RegExp, Map, Set, Error (with its cause), boxed primitives, ArrayBuffer and every typed array view are copied, a class
+ * instance comes back as a plain object, and a function or symbol is a DataCloneError.
  */
-function structuredClone(value, seen = new Map()) {
+function structuredClone(value, options) {
+	if (arguments.length === 0) throw Object.assign(new TypeError('The "value" argument must be specified'), { code: "ERR_MISSING_ARGS" });
+	void options;
+	return cloneValue(value, new Map());
+}
+
+function cloneValue(value, seen) {
+	const fail = () => {
+		const text = typeof value === "symbol" ? value.toString() : String(value).split("\n")[0].slice(0, 80);
+		throw new (globalThis.DOMException ?? Error)(`${text} could not be cloned.`, "DataCloneError");
+	};
+	if (typeof value === "function" || typeof value === "symbol") fail();
 	if (value === null || typeof value !== "object") return value;
 	if (seen.has(value)) return seen.get(value);
-	if (value instanceof Date) return new Date(value.getTime());
-	if (value instanceof RegExp) return new RegExp(value.source, value.flags);
-	if (value instanceof ArrayBuffer) return value.slice(0);
-	if (ArrayBuffer.isView(value)) {
-		const copy = new value.constructor(value.length);
-		copy.set(value);
+	const remember = (copy) => {
+		seen.set(value, copy);
 		return copy;
+	};
+	if (value instanceof Date) return remember(new Date(value.getTime()));
+	if (value instanceof RegExp) return remember(new RegExp(value.source, value.flags));
+	if (value instanceof ArrayBuffer) return remember(value.slice(0));
+	if (typeof SharedArrayBuffer !== "undefined" && value instanceof SharedArrayBuffer) return remember(value);
+	if (ArrayBuffer.isView(value)) {
+		const buffer = cloneValue(value.buffer, seen);
+		if (value instanceof DataView) return remember(new DataView(buffer, value.byteOffset, value.byteLength));
+		const Ctor = Object.getPrototypeOf(Object.getPrototypeOf(value)) === Uint8Array.prototype ? Uint8Array : value.constructor;
+		return remember(new Ctor(buffer, value.byteOffset, value.length));
 	}
 	if (value instanceof Map) {
-		const copy = new Map();
-		seen.set(value, copy);
-		for (const [k, v] of value) copy.set(structuredClone(k, seen), structuredClone(v, seen));
+		const copy = remember(new Map());
+		for (const [k, v] of value) copy.set(cloneValue(k, seen), cloneValue(v, seen));
 		return copy;
 	}
 	if (value instanceof Set) {
-		const copy = new Set();
-		seen.set(value, copy);
-		for (const v of value) copy.add(structuredClone(v, seen));
+		const copy = remember(new Set());
+		for (const v of value) copy.add(cloneValue(v, seen));
 		return copy;
 	}
-	const copy = Array.isArray(value) ? [] : {};
-	seen.set(value, copy);
-	for (const key of Object.keys(value)) copy[key] = structuredClone(value[key], seen);
+	if (value instanceof Error) {
+		const known = ["Error", "EvalError", "RangeError", "ReferenceError", "SyntaxError", "TypeError", "URIError"];
+		const Ctor = known.includes(value.name) ? globalThis[value.name] : Error;
+		const copy = remember(new Ctor(value.message));
+		if (typeof value.stack === "string") Object.defineProperty(copy, "stack", { value: value.stack, writable: true, configurable: true, enumerable: false });
+		if ("cause" in value) Object.defineProperty(copy, "cause", { value: cloneValue(value.cause, seen), writable: true, configurable: true, enumerable: false });
+		return copy;
+	}
+	if (value instanceof Number || value instanceof String || value instanceof Boolean) return remember(Object(value.valueOf()));
+	if (typeof BigInt !== "undefined" && Object.prototype.toString.call(value) === "[object BigInt]") return remember(Object(value.valueOf()));
+	if (value instanceof Promise || value instanceof WeakMap || value instanceof WeakSet || (typeof WeakRef !== "undefined" && value instanceof WeakRef)) fail();
+	if (typeof Blob !== "undefined" && value instanceof Blob) return remember(value);
+	const copy = remember(Array.isArray(value) ? new Array(value.length) : {});
+	for (const key of Object.keys(value)) copy[key] = cloneValue(value[key], seen);
 	return copy;
 }
 
@@ -1564,6 +1551,45 @@ if (typeof globalObject.Intl.Segmenter === "undefined") {
 }
 
 /*
+ * The rest of Intl (NumberFormat, DateTimeFormat, PluralRules, RelativeTimeFormat, ListFormat, Collator, DisplayNames,
+ * DurationFormat, Locale) and the toLocaleString family, in intl.js over data ICU produced (intl-*.js, read on first use).
+ */
+{
+	const runtimeDir = (() => {
+		const script = String((globalObject.scriptArgs ?? [])[0] ?? "");
+		const slash = Math.max(script.lastIndexOf("/"), script.lastIndexOf("\\"));
+		return slash >= 0 ? script.slice(0, slash) : ".";
+	})();
+	const envLocale = () => {
+		const raw = processModule.env.LC_ALL || processModule.env.LC_MESSAGES || processModule.env.LANG || "";
+		const tag = raw.split(".")[0].replace(/_/g, "-");
+		return /^[A-Za-z]{2,3}(-[A-Za-z]{2})?$/.test(tag) ? tag : "en-US";
+	};
+	const envTimeZone = () => {
+		const tz = processModule.env.TZ;
+		if (tz) return tz.replace(/^:/, "");
+		const link = os.readlink?.("/etc/localtime")?.[0];
+		const match = /zoneinfo\/(.+)$/.exec(link ?? "");
+		if (match) return match[1];
+		try {
+			return std.loadFile("/etc/timezone")?.trim() || null;
+		} catch {
+			return null;
+		}
+	};
+	installIntl({
+		global: globalObject,
+		envLocale,
+		envTimeZone,
+		loadScript: (name) => {
+			const text = std.loadFile(`${runtimeDir}/${name}`);
+			if (text == null) throw new Error(`Intl data (${name}) is not in this build: it was made with --intl none, or the locale is not one the data covers`);
+			std.evalScript(text);
+		},
+	});
+}
+
+/*
  * Name resolution. The native layer resolves a host as part of connect(), so the only thing
  * needed here is a way to ask it without opening a connection; where the host exposes no
  * resolver, dns.lookup reports that rather than inventing an address.
@@ -1585,7 +1611,7 @@ function createReadlineModule() {
 
 const builtins = {
 	assert,
-	"assert/strict": assert,
+	"assert/strict": assert.strict,
 	buffer: {
 		Buffer,
 		SlowBuffer,
@@ -1780,6 +1806,120 @@ function resolveInstalledPackage(dir, specifier) {
 	return resolvePackage(pathModule.join(dir, "node_modules", specifier));
 }
 
+/*
+ * tsconfig.json / jsconfig.json `paths` and `baseUrl`: an import such as "@/components/Button" or "lib/util" that names
+ * no installed package. The build converts TypeScript file by file and cannot know a path alias, so the alias is resolved
+ * here, at run time, from the configuration that ships with the program. `extends` is followed (a relative file or a
+ * package), comments and trailing commas are allowed, and only code outside node_modules is aliased.
+ */
+const tsConfigCache = new Map();
+
+function parseJsonc(text) {
+	let out = "";
+	for (let i = 0; i < text.length; ) {
+		const c = text[i];
+		if (c === '"') {
+			let j = i + 1;
+			while (j < text.length && text[j] !== '"') j += text[j] === "\\" ? 2 : 1;
+			out += text.slice(i, j + 1);
+			i = j + 1;
+		} else if (c === "/" && text[i + 1] === "/") {
+			while (i < text.length && text[i] !== "\n") i++;
+		} else if (c === "/" && text[i + 1] === "*") {
+			const end = text.indexOf("*/", i + 2);
+			i = end === -1 ? text.length : end + 2;
+		} else {
+			out += c;
+			i++;
+		}
+	}
+	return JSON.parse(out.replace(/,(\s*[}\]])/g, "$1").replace(/^\uFEFF/, ""));
+}
+
+function readTsConfig(file, seen = new Set()) {
+	if (seen.has(file)) return null;
+	seen.add(file);
+	let config;
+	try {
+		config = parseJsonc(fs.readFileSync(file, "utf8"));
+	} catch {
+		return null;
+	}
+	const dir = pathModule.dirname(file);
+	let merged = { baseUrl: undefined, paths: undefined, pathsBase: undefined };
+	for (const parent of [].concat(config.extends ?? [])) {
+		let target = null;
+		if (parent.startsWith(".") || pathModule.isAbsolute(parent)) target = pathModule.resolve(dir, parent.endsWith(".json") ? parent : `${parent}.json`);
+		else {
+			try {
+				target = resolveModule(parent.endsWith(".json") ? parent : `${parent}/tsconfig.json`, dir).file ?? null;
+			} catch {
+				target = null;
+			}
+		}
+		const inherited = target && readTsConfig(target, seen);
+		if (inherited) merged = { ...merged, ...Object.fromEntries(Object.entries(inherited).filter(([, v]) => v !== undefined)) };
+	}
+	const options = config.compilerOptions ?? {};
+	if (options.baseUrl !== undefined) merged.baseUrl = pathModule.resolve(dir, options.baseUrl);
+	if (options.paths) {
+		merged.paths = options.paths;
+		merged.pathsBase = merged.baseUrl ?? dir;
+	}
+	return merged;
+}
+
+function tsConfigFor(dir) {
+	if (tsConfigCache.has(dir)) return tsConfigCache.get(dir);
+	let found = null;
+	for (const name of ["tsconfig.json", "jsconfig.json"]) {
+		const candidate = pathModule.join(dir, name);
+		if (fs.existsSync(candidate)) {
+			found = readTsConfig(candidate);
+			if (found) break;
+		}
+	}
+	if (!found) {
+		const parent = pathModule.dirname(dir);
+		if (parent !== dir) found = tsConfigFor(parent);
+	}
+	tsConfigCache.set(dir, found);
+	return found;
+}
+
+function resolveTsPaths(specifier, fromDir) {
+	if (fromDir.includes("/node_modules/") || fromDir.includes("\\node_modules\\")) return null;
+	const config = tsConfigFor(fromDir);
+	if (!config?.paths) return null;
+	let best = null;
+	for (const [pattern, targets] of Object.entries(config.paths)) {
+		const star = pattern.indexOf("*");
+		if (star === -1) {
+			if (pattern === specifier) best = { targets, captured: "", length: pattern.length };
+			continue;
+		}
+		const prefix = pattern.slice(0, star);
+		const suffix = pattern.slice(star + 1);
+		if (specifier.startsWith(prefix) && specifier.endsWith(suffix) && specifier.length >= prefix.length + suffix.length) {
+			if (!best || prefix.length > best.length) best = { targets, captured: specifier.slice(prefix.length, specifier.length - suffix.length), length: prefix.length };
+		}
+	}
+	if (!best) return null;
+	for (const target of best.targets) {
+		const found = resolvePackage(pathModule.resolve(config.pathsBase, target.replace("*", best.captured)));
+		if (found) return { file: found };
+	}
+	return null;
+}
+
+function resolveTsBaseUrl(specifier, fromDir) {
+	if (fromDir.includes("/node_modules/") || fromDir.includes("\\node_modules\\")) return null;
+	const config = tsConfigFor(fromDir);
+	if (!config?.baseUrl) return null;
+	const found = resolvePackage(pathModule.resolve(config.baseUrl, specifier));
+	return found ? { file: found } : null;
+}
+
 function resolveModule(specifier, fromDir) {
 	const bare = specifier.startsWith("node:") ? specifier.slice(5) : specifier;
 	if (bare in builtins) return { builtin: bare };
@@ -1793,6 +1933,9 @@ function resolveModule(specifier, fromDir) {
 	if (specifier === "." || specifier === ".." || specifier.startsWith("./") || specifier.startsWith("../") || pathModule.isAbsolute(specifier)) {
 		base = pathModule.resolve(fromDir, specifier);
 	} else {
+		// A path alias from tsconfig.json wins over an installed package of the same name, as it does in TypeScript.
+		const aliased = resolveTsPaths(specifier, fromDir);
+		if (aliased) return aliased;
 		// Walk up node_modules the way Node does, so an installed dependency tree resolves.
 		let dir = fromDir;
 		for (;;) {
@@ -1802,6 +1945,8 @@ function resolveModule(specifier, fromDir) {
 			if (parent === dir) break;
 			dir = parent;
 		}
+		const fromBase = resolveTsBaseUrl(specifier, fromDir);
+		if (fromBase) return fromBase;
 		throw moduleNotFound(specifier, fromDir);
 	}
 
@@ -2071,6 +2216,22 @@ globalObject.clearImmediate = timers.clearImmediate;
 if (typeof globalObject.performance === "undefined") {
 	globalObject.performance = { now: () => os.now(), timeOrigin: Date.now() };
 }
+
+installExtras({
+	builtins,
+	globalObject,
+	EventEmitter: CallableEventEmitter,
+	Buffer,
+	util,
+	processModule,
+	pathModule,
+	os,
+	std,
+	nativeLayer,
+	web,
+	streamModule: CallableStream,
+	fs,
+});
 
 export { Buffer, builtins, createRequire, EventEmitter, fs, pathModule as path, processModule as process, util };
 
