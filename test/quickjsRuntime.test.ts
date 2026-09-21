@@ -242,7 +242,9 @@ test("the native backend delivers real crypto, compression and TLS", {
 	skip: backend ? false : "no native backend built",
 }, () => {
 	const selftest = join(process.cwd(), "quickjs/runtime/native-selftest.js");
-	const run = spawnSync(backend as string, [selftest], { encoding: "utf-8", timeout: 60_000 });
+	// A real program runs through the compatibility layer, so that is how the self-test runs too.
+	const compat = join(process.cwd(), "quickjs/runtime/node-compat.js");
+	const run = spawnSync(backend as string, [compat, selftest], { encoding: "utf-8", timeout: 60_000 });
 	const output = run.stdout;
 
 	// Known vectors, so the backend that quietly computes something else is caught rather

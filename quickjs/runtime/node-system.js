@@ -528,4 +528,57 @@ function createUnavailable(EventEmitter) {
 	};
 }
 
-export { createOs, createStdio, createVm, createModuleModule, createPunycode, createUnavailable };
+/* ------------------------------------------------------------------ util.types */
+
+/* Node's util.types: brand checks that programs (undici, assert libraries, inspectors) use to tell values apart. */
+function createUtilTypes({ isProxy }) {
+	const tag = (v) => Object.prototype.toString.call(v).slice(8, -1);
+	const typed = (name) => (v) => ArrayBuffer.isView(v) && !(v instanceof DataView) && tag(v) === name;
+	const protoTag = (v) => (typeof v === "function" ? Object.getPrototypeOf(v)?.[Symbol.toStringTag] : undefined);
+	return {
+		isProxy: (v) => (v !== null && (typeof v === "object" || typeof v === "function") ? Boolean(isProxy?.(v)) : false),
+		isExternal: () => false,
+		isDate: (v) => v instanceof Date,
+		isRegExp: (v) => v instanceof RegExp,
+		isNativeError: (v) => v instanceof Error,
+		isPromise: (v) => v instanceof Promise,
+		isMap: (v) => v instanceof Map,
+		isSet: (v) => v instanceof Set,
+		isWeakMap: (v) => v instanceof WeakMap,
+		isWeakSet: (v) => v instanceof WeakSet,
+		isMapIterator: (v) => tag(v) === "Map Iterator",
+		isSetIterator: (v) => tag(v) === "Set Iterator",
+		isGeneratorObject: (v) => tag(v) === "Generator",
+		isGeneratorFunction: (v) => protoTag(v) === "GeneratorFunction" || protoTag(v) === "AsyncGeneratorFunction",
+		isAsyncFunction: (v) => protoTag(v) === "AsyncFunction" || protoTag(v) === "AsyncGeneratorFunction",
+		isArgumentsObject: (v) => tag(v) === "Arguments",
+		isArrayBuffer: (v) => v instanceof ArrayBuffer,
+		isSharedArrayBuffer: (v) => typeof SharedArrayBuffer !== "undefined" && v instanceof SharedArrayBuffer,
+		isAnyArrayBuffer: (v) => v instanceof ArrayBuffer || (typeof SharedArrayBuffer !== "undefined" && v instanceof SharedArrayBuffer),
+		isArrayBufferView: (v) => ArrayBuffer.isView(v),
+		isDataView: (v) => v instanceof DataView,
+		isTypedArray: (v) => ArrayBuffer.isView(v) && !(v instanceof DataView),
+		isUint8Array: typed("Uint8Array"),
+		isUint8ClampedArray: typed("Uint8ClampedArray"),
+		isUint16Array: typed("Uint16Array"),
+		isUint32Array: typed("Uint32Array"),
+		isInt8Array: typed("Int8Array"),
+		isInt16Array: typed("Int16Array"),
+		isInt32Array: typed("Int32Array"),
+		isFloat32Array: typed("Float32Array"),
+		isFloat64Array: typed("Float64Array"),
+		isBigInt64Array: typed("BigInt64Array"),
+		isBigUint64Array: typed("BigUint64Array"),
+		isBoxedPrimitive: (v) => v instanceof Number || v instanceof String || v instanceof Boolean || (typeof BigInt !== "undefined" && v instanceof BigInt) || v instanceof Symbol,
+		isNumberObject: (v) => v instanceof Number,
+		isStringObject: (v) => v instanceof String,
+		isBooleanObject: (v) => v instanceof Boolean,
+		isBigIntObject: (v) => typeof BigInt !== "undefined" && v instanceof BigInt,
+		isSymbolObject: (v) => v instanceof Symbol,
+		isModuleNamespaceObject: (v) => tag(v) === "Module",
+		isKeyObject: () => false,
+		isCryptoKey: () => false,
+	};
+}
+
+export { createUtilTypes, createOs, createStdio, createVm, createModuleModule, createPunycode, createUnavailable };

@@ -144,17 +144,29 @@ Node.js prints": the test suite runs the same program on Node.js and on the pack
 | `fetch`, `Request`, `Response`, `Headers`, `FormData` | Streaming bodies, redirects (follow, manual, error), gzip/deflate, `AbortSignal`, `clone()`, multipart, `Response.json()` and `Response.redirect()`. |
 | `stream` | `Readable`, `Writable`, `Duplex`, `Transform`, `PassThrough`, `pipeline`, `finished`, `Readable.from`, async iteration, `stream/promises`, and the web-stream bridges. Backpressure follows Node's reference implementation. |
 | `fs`, `fs/promises` | Sync, callback and promise forms, file descriptors, `Stats`/`Dirent`, streams, `cp`, `rm`, `mkdtemp`, recursive `readdir`, and Node's error codes and messages. |
+| `crypto` | Hash and HMAC (md5, sha1, sha224/256/384/512, ripemd160), `randomBytes`/`randomUUID`/`randomInt`/`getRandomValues`, PBKDF2, HKDF, scrypt, AES (ECB, CBC, CTR, GCM) and ChaCha20-Poly1305 with `setAAD` and auth tags, RSA and ECDSA `createSign`/`createVerify` from PEM keys, `timingSafeEqual`, and Web Crypto (`crypto.subtle`, the global `crypto`) for digest, HMAC, AES-GCM and key derivation. Output is byte-identical to Node's. |
 | `Buffer`, `events`, `zlib`, `string_decoder` | Complete `Buffer` (every encoding, all integer/float/BigInt readers and writers), `EventEmitter` that tolerates being mixed into plain objects, gzip/deflate/raw (sync, callback and stream forms). |
 
 Verified against real packages, with no Node.js anywhere in the output: **Express 4** (routing, JSON body parsing),
-**Fastify** and **Hono** (through `@hono/node-server`), each served from a packaged `linux-modern-x64` build.
+**Fastify** and **Hono** (through `@hono/node-server`), each served from a packaged `linux-modern-x64` build; **`ws`** (a
+WebSocket server and client exchanging text and 70 KB binary frames over an HTTP upgrade); and **discord.js 14** with
+**ForgeScript**, whose REST client makes a real request to Discord.
 
 `os`, `process` (standard streams as real streams, `exitCode`, `beforeExit` and `exit`, signals), `vm` (contexts are
 sandbox objects in the same realm, not a security boundary), `module` (`createRequire`, `builtinModules`), `punycode`, `url`,
 `worker_threads`, `child_process` and `readline` are provided too.
 
+**WebAssembly** is provided by [wasm3](https://github.com/wasm3/wasm3), a small portable interpreter compiled into the
+host, with the standard `WebAssembly` API on top (`Module`, `Instance`, `Memory`, `Global`, `Table`, `instantiate`,
+`compile`, `validate`, the three error classes, `i64` as `BigInt`, memory that grows and detaches its old buffer, JavaScript
+imports that may throw through wasm). This is what lets undici (Node's own `fetch`, and the HTTP client discord.js is built
+on) load: it parses HTTP with a wasm build of llhttp. Verified end to end: discord.js 14 and ForgeScript load from a packaged
+build and discord.js's REST client makes a real request to Discord, with output identical to Node's. wasm3 interprets, so it
+has no SIMD, threads or exception handling, and a module that *imports* a memory, table or global (instead of defining
+one) is refused with a `LinkError`; `validate()` answers honestly about what it can run.
+
 Not provided, and said so when used: HTTP/2, Brotli, unix-domain sockets, UDP (`dgram`), `cluster`, `inspector`, `repl`,
-`wasi` and WebAssembly (the engine has none). An exception nothing catches is handled as Node handles it: `process.on("uncaughtException")` gets it,
+`wasi`, and in `crypto` key generation, Diffie-Hellman, RSA encryption/OAEP/PSS and key objects other than secret keys. An exception nothing catches is handled as Node handles it: `process.on("uncaughtException")` gets it,
 otherwise it is printed and the process exits with status 1, rather than the event loop quietly ending.
 
 A server binds IPv4 unless told otherwise (`listen(port)` is `0.0.0.0`), so `localhost` reaches it over IPv4.
@@ -252,7 +264,8 @@ loaded and then failed somewhere unrelated would be worse than the current messa
 real `structuredClone`, and CommonJS `require` with `node_modules` resolution so an installed dependency tree loads);
 `node-buffer.js` is `Buffer`, `node-stream.js` is `stream`, `node-fs.js` is `fs`, `node-http.js` is `http` and
 `https`, `node-fetch.js` is the Fetch API, `node-web.js` the web streams and `Blob`, `node-url.js` the WHATWG `URL`,
-`node-inspect.js` the console, and `native-modules.js` gives the native sockets, TLS, crypto and zlib their Node shapes.
+`node-inspect.js` the console, `node-system.js` `os`, `vm`, `module`, the standard streams and `util.types`, `node-wasm.js`
+`WebAssembly`, and `native-modules.js` gives the native sockets, TLS, crypto and zlib their Node shapes.
 
 `quickjs/runtime/selftest.js` runs **unmodified on both runtimes** and is the check that matters —
 a layer that merely loads proves nothing. It passes 26/26 on Node, 26/26 on quickjs-ng, and 26/26

@@ -154,6 +154,7 @@ test("linux-modern-x64 is static musl, not dynamic glibc, and really runs on Alp
 			`${join(process.cwd(), "quickjs/runtime")}:/runtime:ro`,
 			"alpine:latest",
 			"/forgegraal-c",
+			"/runtime/node-compat.js",
 			"/runtime/native-selftest.js",
 		],
 		{ encoding: "utf-8", timeout: 60_000 }

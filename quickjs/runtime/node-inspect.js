@@ -170,6 +170,19 @@ function groupArrayElements(ctx, output, value) {
 	return output;
 }
 
+const STYLE_CODES = {
+	bold: [1, 22], italic: [3, 23], underline: [4, 24], inverse: [7, 27], white: [37, 39], grey: [90, 39], black: [30, 39],
+	blue: [34, 39], cyan: [36, 39], green: [32, 39], magenta: [35, 39], red: [31, 39], yellow: [33, 39],
+};
+const STYLES = { special: "cyan", number: "yellow", bigint: "yellow", boolean: "yellow", undefined: "grey", null: "bold", string: "green", symbol: "green", date: "magenta", regexp: "red", module: "underline" };
+
+/* Wraps `text` in the ANSI colour for a kind of value, when the caller asked for colours. */
+function stylize(ctx, text, kind) {
+	if (!ctx.colors) return text;
+	const code = STYLE_CODES[STYLES[kind]];
+	return code ? `\u001b[${code[0]}m${text}\u001b[${code[1]}m` : text;
+}
+
 function formatPrimitive(value, ctx) {
 	if (typeof value === "string") {
 		let trailer = "";
@@ -182,13 +195,15 @@ function formatPrimitive(value, ctx) {
 		if (ctx.compact !== true && value.length > 16 && value.length > ctx.breakLength - ctx.indentationLvl - 4) {
 			return `${value
 				.split(/(?<=\n)/)
-				.map((line) => quote(line))
+				.map((line) => stylize(ctx, quote(line), "string"))
 				.join(` +\n${" ".repeat(ctx.indentationLvl + 2)}`)}${trailer}`;
 		}
-		return quote(value) + trailer;
+		return stylize(ctx, quote(value), "string") + trailer;
 	}
-	if (typeof value === "bigint") return `${value}n`;
-	if (typeof value === "number") return Object.is(value, -0) ? "-0" : `${value}`;
+	if (typeof value === "bigint") return stylize(ctx, `${value}n`, "bigint");
+	if (typeof value === "number") return stylize(ctx, Object.is(value, -0) ? "-0" : `${value}`, "number");
+	if (typeof value === "boolean") return stylize(ctx, String(value), "boolean");
+	if (value === undefined) return stylize(ctx, "undefined", "undefined");
 	return String(value);
 }
 
@@ -196,8 +211,8 @@ function formatValue(ctx, value, recurseTimes, typedArray) {
 	if (typeof value !== "object" && typeof value !== "function" && typeof value !== "symbol") {
 		return formatPrimitive(value, ctx);
 	}
-	if (typeof value === "symbol") return value.toString();
-	if (value === null) return "null";
+	if (typeof value === "symbol") return stylize(ctx, value.toString(), "symbol");
+	if (value === null) return stylize(ctx, "null", "null");
 
 	const proxy = null;
 	const maybeCustom = value[custom];
@@ -223,7 +238,7 @@ function formatValue(ctx, value, recurseTimes, typedArray) {
 				ctx.circular.set(value, index);
 			}
 		}
-		return `[Circular *${index}]`;
+		return stylize(ctx, `[Circular *${index}]`, "special");
 	}
 	return formatRaw(ctx, value, recurseTimes, typedArray);
 }
@@ -585,6 +600,8 @@ export function inspect(value, opts, ...rest) {
 }
 inspect.custom = custom;
 inspect.defaultOptions = defaults;
+inspect.colors = Object.fromEntries(Object.entries(STYLE_CODES));
+inspect.styles = STYLES;
 
 export function format(...args) {
 	const first = args[0];

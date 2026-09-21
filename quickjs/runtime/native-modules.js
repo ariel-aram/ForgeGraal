@@ -78,113 +78,6 @@ function digestOut(bytes, encoding) {
 
 /* -------------------------------------------------------------------- crypto */
 
-class Hash {
-	constructor(algorithm) {
-		this.algorithm = algorithm;
-		this._chunks = [];
-	}
-	update(data, encoding) {
-		this._chunks.push(toBytes(data, encoding));
-		return this;
-	}
-	digest(encoding) {
-		// The native side hashes in one call, so the chunks are joined here rather than
-		// streamed. Same result; it only matters for very large inputs.
-		let total = 0;
-		for (const chunk of this._chunks) total += chunk.length;
-		const joined = new Uint8Array(total);
-		let offset = 0;
-		for (const chunk of this._chunks) {
-			joined.set(chunk, offset);
-			offset += chunk.length;
-		}
-		return digestOut(native.hash(this.algorithm, joined), encoding);
-	}
-}
-
-class Hmac {
-	constructor(algorithm, key) {
-		this.algorithm = algorithm;
-		this._key = toBytes(key);
-		this._chunks = [];
-	}
-	update(data, encoding) {
-		this._chunks.push(toBytes(data, encoding));
-		return this;
-	}
-	digest(encoding) {
-		let total = 0;
-		for (const chunk of this._chunks) total += chunk.length;
-		const joined = new Uint8Array(total);
-		let offset = 0;
-		for (const chunk of this._chunks) {
-			joined.set(chunk, offset);
-			offset += chunk.length;
-		}
-		return digestOut(native.hmac(this.algorithm, this._key, joined), encoding);
-	}
-}
-
-function unavailable(name, reason) {
-	return () => {
-		throw new Error(`crypto.${name} is not implemented in this runtime. ${reason}`);
-	};
-}
-
-const crypto = {
-	createHash: (algorithm) => new Hash(algorithm),
-	createHmac: (algorithm, key) => new Hmac(algorithm, key),
-	randomBytes(size, callback) {
-		const bytes = native.randomBytes(size);
-		const out = typeof Buffer !== "undefined" ? Buffer.from(bytes) : bytes;
-		if (callback) {
-			callback(null, out);
-			return undefined;
-		}
-		return out;
-	},
-	randomUUID() {
-		const bytes = native.randomBytes(16);
-		bytes[6] = (bytes[6] & 0x0f) | 0x40;
-		bytes[8] = (bytes[8] & 0x3f) | 0x80;
-		const hex = toHex(bytes);
-		return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-	},
-	randomInt(min, max) {
-		if (max === undefined) {
-			max = min;
-			min = 0;
-		}
-		const range = max - min;
-		// Rejection sampling: taking a modulus of raw bytes biases the low values.
-		const bytes = native.randomBytes(6);
-		let value = 0;
-		for (const byte of bytes) value = value * 256 + byte;
-		return min + (value % range);
-	},
-	getRandomValues(view) {
-		const bytes = native.randomBytes(view.byteLength);
-		new Uint8Array(view.buffer, view.byteOffset, view.byteLength).set(bytes);
-		return view;
-	},
-	timingSafeEqual(a, b) {
-		const left = toBytes(a);
-		const right = toBytes(b);
-		if (left.length !== right.length) return false;
-		let diff = 0;
-		for (let i = 0; i < left.length; i++) diff |= left[i] ^ right[i];
-		return diff === 0;
-	},
-	createCipheriv: unavailable("createCipheriv", "Symmetric ciphers are not wired through to the native layer yet."),
-	createDecipheriv: unavailable("createDecipheriv", "Symmetric ciphers are not wired through to the native layer yet."),
-	createSign: unavailable("createSign", "Signing is not wired through to the native layer yet."),
-	createVerify: unavailable("createVerify", "Verification is not wired through to the native layer yet."),
-	createDiffieHellman: unavailable("createDiffieHellman", "Key agreement is not wired through to the native layer yet."),
-	constants: {},
-	webcrypto: undefined,
-};
-crypto.webcrypto = { getRandomValues: crypto.getRandomValues, randomUUID: crypto.randomUUID };
-
 /* ---------------------------------------------------------------------- zlib */
 
 const asBuffer = (bytes) => (typeof Buffer !== "undefined" ? Buffer.from(bytes) : bytes);
@@ -472,43 +365,41 @@ function withCode(err, host, port) {
 }
 
 /*
- * A Socket shaped like Node's: an EventEmitter that emits 'connect', 'data', 'end', 'error' and
- * 'close', with write() and end(). Writes are synchronous on the native side (it waits if the peer is
- * slow), so write() reports true and never needs 'drain'.
+ * A Socket that is a real Duplex stream, as Node's is: 'data' and 'end' come from push(), backpressure from the
+ * stream's own high-water marks (the poller stops reading when push() says the reader is behind, and starts again on
+ * the next _read()), writes are queued until the host takes them, and end() half-closes the connection. Libraries
+ * that treat a socket as a stream -- undici reads it with `socket.read()` -- see one.
  */
-function createSocketClass(EventEmitter) {
-	return class Socket extends EventEmitter {
+function createSocketClass(Duplex) {
+	return class Socket extends Duplex {
 		constructor(options = {}) {
-			super();
+			super({
+				allowHalfOpen: Boolean(options.allowHalfOpen),
+				readableHighWaterMark: options.readableHighWaterMark ?? 65536,
+				writableHighWaterMark: options.writableHighWaterMark ?? 16384,
+				emitClose: true,
+				autoDestroy: true,
+			});
 			this.id = null;
-			this.readable = false;
-			this.writable = false;
-			this.destroyed = false;
 			this.connecting = false;
 			this.bytesRead = 0;
 			this.bytesWritten = 0;
-			this.allowHalfOpen = Boolean(options.allowHalfOpen);
-			this._pending = [];
 			this._queue = []; // { bytes, offset, callback } the socket could not take yet
-			this._queued = 0;
-			this._needDrain = false;
-			this._paused = false;
 			this._timeout = 0;
 			this._timer = null;
-			this._encoding = null;
-			this._ended = false;
 			this._tls = false;
+			this._readPaused = false;
+			this._pendingWrite = null;
+			this._addr = null;
+			this._peer = null;
 			if (options.handle !== undefined) this._adopt(options.handle);
 		}
 
-		/* Takes over a socket id the host already opened (an accepted connection). */
+		/* Takes over a socket id the host already opened (an accepted connection, or one that finished connecting). */
 		_adopt(id, tls = false) {
 			this.id = id;
 			this._tls = tls;
-			this.readable = true;
-			this.writable = true;
-			this._addr = null;
-			this._peer = null;
+			this._readPaused = false;
 			watch(id, () => this._readReady());
 		}
 
@@ -525,6 +416,9 @@ function createSocketClass(EventEmitter) {
 		}
 		get authorized() {
 			return this._tls;
+		}
+		get bufferSize() {
+			return this.writableLength;
 		}
 		_address(peer) {
 			if (this.id === null) return null;
@@ -582,8 +476,7 @@ function createSocketClass(EventEmitter) {
 						unwatch(this.id);
 						unwatchWrite(this.id);
 					}
-					this.emit("error", withCode(err, host, portNumber));
-					this.destroy();
+					this.destroy(withCode(err, host, portNumber));
 				};
 				let id;
 				try {
@@ -615,10 +508,9 @@ function createSocketClass(EventEmitter) {
 					this.emit("connect");
 					if (tls) this.emit("secureConnect");
 					this.emit("ready");
-					if (this._paused) unwatch(this.id);
-					for (const [chunk, callback] of this._pending.splice(0)) this._enqueue(chunk, callback);
-					this._flush();
-					if (this._ended) this._maybeShutdown();
+					const pending = this._pendingWrite;
+					this._pendingWrite = null;
+					if (pending) this._writeNow(pending.chunk, pending.callback);
 				};
 				watch(id, step);
 				watchWrite(id, step);
@@ -627,40 +519,54 @@ function createSocketClass(EventEmitter) {
 			return this;
 		}
 
+		/* A read the reader is ready for: the poller found data (or EOF) waiting. */
 		_readReady() {
-			while (!this.destroyed && !this._paused && this.id !== null) {
+			while (!this.destroyed && !this._readPaused && this.id !== null) {
 				let chunk;
 				try {
 					chunk = native.read(this.id);
 				} catch (err) {
-					this.emit("error", withCode(err));
-					this.destroy();
+					this.destroy(withCode(err));
 					return;
 				}
 				if (chunk === null) return;
 				if (chunk.length === 0) {
-					this._onEnd();
+					unwatch(this.id);
+					this.push(null);
 					return;
 				}
 				this.bytesRead += chunk.length;
 				this._resetTimer();
-				const buf = typeof Buffer !== "undefined" ? Buffer.from(chunk) : chunk;
-				this.emit("data", this._encoding && typeof buf.toString === "function" ? buf.toString(this._encoding) : buf);
+				const wantMore = this.push(typeof Buffer !== "undefined" ? Buffer.from(chunk) : chunk);
+				if (!wantMore) {
+					// The reader is behind: stop asking the host until it reads again.
+					this._readPaused = true;
+					unwatch(this.id);
+					return;
+				}
 			}
 		}
 
-		_onEnd() {
-			this.readable = false;
-			if (this.id !== null) unwatch(this.id);
-			this.emit("end");
-			// Without allowHalfOpen the socket goes away once the peer is done, as in Node.
-			if (!this.allowHalfOpen || this._ended) this.destroy();
+		_read() {
+			if (this._readPaused && this.id !== null && !this.destroyed) {
+				this._readPaused = false;
+				watch(this.id, () => this._readReady());
+			}
 		}
 
-		/* Bytes the host would not take at once wait here, and the poller says when it will. */
-		_enqueue(bytes, callback) {
-			this._queue.push({ bytes, offset: 0, callback });
-			this._queued += bytes.length;
+		/* Bytes go to the host as it accepts them; the callback fires once this chunk has all been taken. */
+		_write(chunk, encoding, callback) {
+			if (this.id === null) {
+				// Still connecting: held until it finishes.
+				this._pendingWrite = { chunk, callback };
+				return;
+			}
+			this._writeNow(chunk, callback);
+		}
+
+		_writeNow(chunk, callback) {
+			this._queue.push({ bytes: chunk, offset: 0, callback });
+			this._flush();
 		}
 
 		_flush() {
@@ -672,110 +578,53 @@ function createSocketClass(EventEmitter) {
 				} catch (err) {
 					const error = withCode(err);
 					this._queue = [];
-					this._queued = 0;
-					if (item.callback) queueMicrotask(() => item.callback(error));
-					else queueMicrotask(() => this.emit("error", error));
-					queueMicrotask(() => this.destroy());
-					return false;
+					item.callback(error);
+					return;
 				}
 				if (sent === 0) {
 					watchWrite(this.id, () => this._flush());
-					return false;
+					return;
 				}
 				item.offset += sent;
 				this.bytesWritten += sent;
-				this._queued -= sent;
 				this._resetTimer();
 				if (item.offset >= item.bytes.length) {
 					this._queue.shift();
-					if (item.callback) queueMicrotask(() => item.callback());
+					item.callback();
 				}
 			}
 			if (this.id !== null) unwatchWrite(this.id);
-			if (this._needDrain && !this.destroyed) {
-				this._needDrain = false;
-				queueMicrotask(() => this.emit("drain"));
-			}
-			if (this._ended) this._maybeShutdown();
-			return true;
 		}
 
-		get writableLength() {
-			return this._queued;
-		}
-		get writableNeedDrain() {
-			return this._needDrain;
-		}
-
-		write(data, encoding, callback) {
-			if (typeof encoding === "function") {
-				callback = encoding;
-				encoding = undefined;
-			}
-			if (this._ended || this.destroyed) {
-				const err = new Error("write after end");
-				err.code = "ERR_STREAM_WRITE_AFTER_END";
-				if (callback) queueMicrotask(() => callback(err));
-				else queueMicrotask(() => this.emit("error", err));
-				return false;
-			}
-			const bytes = toBytes(data, encoding);
-			if (this.id === null) {
-				this._pending.push([bytes, callback]);
-				return true;
-			}
-			this._enqueue(bytes, callback);
-			const idle = this._flush();
-			// Past 64 KiB waiting, ask the writer to stop until 'drain' (backpressure).
-			if (this._queued >= 65536) {
-				this._needDrain = true;
-				return false;
-			}
-			return idle || true;
-		}
-
-		_maybeShutdown() {
-			if (this._queue.length || this.id === null || this.destroyed || this._shutDown) return;
-			this._shutDown = true;
-			try {
-				native.shutdown(this.id);
-			} catch {
-				// The peer is gone already; the read side notices.
-			}
-			this.writable = false;
-			this.emit("finish");
-			if (!this.readable) this.destroy();
-			else if (!this.allowHalfOpen) {
+		_final(callback) {
+			const finish = () => {
+				if (this.id !== null && !this.destroyed) {
+					try {
+						native.shutdown(this.id);
+					} catch {
+						// The peer is gone already; the read side notices.
+					}
+				}
+				callback();
+			};
+			if (this._pendingWrite || this.connecting) {
+				// Ending before the connection is up: shut down once it is.
+				this.once("connect", finish);
+				this.once("error", () => callback());
+			} else finish();
+			if (!this.allowHalfOpen && !this.destroyed) {
 				// Do not linger on a peer that never closes its side.
 				const t = startTimer(() => this.destroy(), 5000);
 				this.once("close", () => stopTimer(t));
 			}
 		}
 
-		end(data, encoding, callback) {
-			if (typeof data === "function") {
-				callback = data;
-				data = undefined;
-			}
-			if (data !== undefined && data !== null) this.write(data, encoding);
-			if (callback) this.once("finish", callback);
-			if (this._ended) return this;
-			this._ended = true;
-			this.writable = false;
-			if (this.id !== null) this._maybeShutdown();
-			return this;
-		}
-
-		destroy(err) {
-			if (this.destroyed) return this;
-			this.destroyed = true;
-			this.readable = false;
-			this.writable = false;
+		_destroy(err, callback) {
 			if (this._timer) stopTimer(this._timer);
 			const id = this.id;
 			this.id = null;
+			const pending = this._queue;
 			this._queue = [];
-			this._queued = 0;
 			if (id !== null) {
 				unwatch(id);
 				unwatchWrite(id);
@@ -785,40 +634,15 @@ function createSocketClass(EventEmitter) {
 					// Already closed.
 				}
 			}
-			if (err) queueMicrotask(() => this.emit("error", err));
-			queueMicrotask(() => this.emit("close", Boolean(err)));
-			return this;
+			const stalled = this._pendingWrite;
+			this._pendingWrite = null;
+			for (const item of stalled ? [...pending, stalled] : pending) item.callback?.(err ?? new Error("Socket closed"));
+			callback(err);
 		}
+
 		destroySoon() {
 			if (this.writable) this.end();
 			else this.destroy();
-		}
-
-		pause() {
-			this._paused = true;
-			if (this.id !== null) unwatch(this.id);
-			return this;
-		}
-		resume() {
-			if (!this._paused) return this;
-			this._paused = false;
-			if (this.id !== null && !this.destroyed) watch(this.id, () => this._readReady());
-			return this;
-		}
-		isPaused() {
-			return this._paused;
-		}
-		setEncoding(encoding = "utf8") {
-			this._encoding = encoding;
-			return this;
-		}
-		pipe(destination) {
-			this.on("data", (chunk) => destination.write(chunk));
-			this.on("end", () => destination.end?.());
-			return destination;
-		}
-		unpipe() {
-			return this;
 		}
 
 		_resetTimer() {
@@ -850,8 +674,6 @@ function createSocketClass(EventEmitter) {
 		unref() {
 			return this;
 		}
-		cork() {}
-		uncork() {}
 	};
 }
 
@@ -977,8 +799,8 @@ function createServerClass(EventEmitter, Socket, tlsServer) {
 	};
 }
 
-function createNetModules(EventEmitter) {
-	const Socket = createSocketClass(EventEmitter);
+function createNetModules(EventEmitter, Duplex) {
+	const Socket = createSocketClass(Duplex);
 	const Server = createServerClass(EventEmitter, Socket, false);
 	const TlsServer = createServerClass(EventEmitter, Socket, true);
 
@@ -1032,4 +854,4 @@ function createNetModules(EventEmitter) {
 	return { net, tls };
 }
 
-export { crypto, zlib, createNetModules, createSocketClass };
+export { zlib, createNetModules, createSocketClass, toBytes };

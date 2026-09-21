@@ -42,6 +42,9 @@ const DIFFERENTIAL: Array<[string, string[]]> = [
 	["buffer-corpus.cjs", []],
 	["decoder-corpus.cjs", []],
 	["zlib-corpus.cjs", []],
+	["fs-corpus.cjs", []],
+	["wasm-corpus.cjs", []],
+	["crypto-corpus.cjs", CERTS],
 ];
 
 for (const [fixture, extra] of DIFFERENTIAL) {

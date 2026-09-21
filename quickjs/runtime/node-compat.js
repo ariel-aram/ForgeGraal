@@ -23,8 +23,10 @@ import * as os from "qjs:os";
 import * as std from "qjs:std";
 import * as web from "./node-web.js";
 import * as fetchApi from "./node-fetch.js";
+import { createCrypto } from "./node-crypto.js";
 import { createFs } from "./node-fs.js";
-import { createModuleModule, createOs, createPunycode, createStdio, createUnavailable, createVm } from "./node-system.js";
+import { createWebAssembly } from "./node-wasm.js";
+import { createModuleModule, createOs, createUtilTypes, createPunycode, createStdio, createUnavailable, createVm } from "./node-system.js";
 import { createConsumers, createStreamModule } from "./node-stream.js";
 import * as misc from "./node-misc.js";
 import { Buffer, INSPECT_MAX_BYTES, SlowBuffer, bufferConstants, isAscii, isUtf8, kMaxLength, normalizeEncoding } from "./node-buffer.js";
@@ -846,35 +848,150 @@ const util = {
 		Object.setPrototypeOf(ctor.prototype, superCtor.prototype);
 		Object.setPrototypeOf(ctor, superCtor);
 	},
-	promisify(fn) {
-		return (...args) =>
-			new Promise((resolve, reject) => {
-				fn(...args, (err, value) => (err ? reject(err) : resolve(value)));
-			});
-	},
+	promisify: Object.assign(
+		(fn) => {
+			if (typeof fn !== "function") {
+				throw Object.assign(new TypeError(`The "original" argument must be of type function. Received ${fn === null ? "null" : typeof fn}`), { code: "ERR_INVALID_ARG_TYPE" });
+			}
+			// A function can say how it wants to be promisified (fs.exists, setTimeout, stream.pipeline, ...).
+			const custom = fn[Symbol.for("nodejs.util.promisify.custom")];
+			if (typeof custom === "function") return Object.defineProperty(custom, Symbol.for("nodejs.util.promisify.custom"), { value: custom, enumerable: false });
+			const promisified = function (...args) {
+				return new Promise((resolve, reject) => {
+					fn.call(this, ...args, (err, ...values) => (err ? reject(err) : resolve(values.length > 1 && fn[Symbol.for("nodejs.util.promisify.customArgs")] ? values : values[0])));
+				});
+			};
+			Object.setPrototypeOf(promisified, Object.getPrototypeOf(fn));
+			return Object.defineProperties(promisified, Object.getOwnPropertyDescriptors(fn));
+		},
+		{ custom: Symbol.for("nodejs.util.promisify.custom") }
+	),
 	callbackify(fn) {
-		return (...args) => {
+		return function (...args) {
 			const cb = args.pop();
-			fn(...args).then((value) => cb(null, value), cb);
+			if (typeof cb !== "function") throw Object.assign(new TypeError('The last argument must be of type function.'), { code: "ERR_INVALID_ARG_TYPE" });
+			fn.apply(this, args).then(
+				(value) => queueMicrotask(() => cb(null, value)),
+				(err) => queueMicrotask(() => cb(err ?? Object.assign(new Error("Promise was rejected with a falsy value"), { reason: err, code: "ERR_FALSY_VALUE_REJECTION" })))
+			);
 		};
 	},
 	format: inspectFormat,
+	// The pre-Node-23 type predicates and helpers older packages still call.
+	isArray: Array.isArray,
+	isBoolean: (v) => typeof v === "boolean",
+	isNull: (v) => v === null,
+	isNullOrUndefined: (v) => v === null || v === undefined,
+	isNumber: (v) => typeof v === "number",
+	isString: (v) => typeof v === "string",
+	isSymbol: (v) => typeof v === "symbol",
+	isUndefined: (v) => v === undefined,
+	isRegExp: (v) => v instanceof RegExp,
+	isObject: (v) => v !== null && typeof v === "object",
+	isDate: (v) => v instanceof Date,
+	isError: (v) => v instanceof Error,
+	isFunction: (v) => typeof v === "function",
+	isPrimitive: (v) => v === null || (typeof v !== "object" && typeof v !== "function"),
+	log: (...args) => console.log(`${new Date().toISOString().slice(0, 19).replace("T", " ")} - ${inspectFormat(...args)}`),
+	_extend: (target, source) => Object.assign(target, source),
+	formatWithOptions: (options, ...args) => {
+		// Options apply to the inspected arguments; a plain format is the common case.
+		const { colors } = options ?? {};
+		return colors ? inspectFormat(...args.map((a) => (typeof a === "string" ? a : inspectValue(a, options)))) : inspectFormat(...args);
+	},
+	stripVTControlCharacters: (text) => String(text).replace(/[\u001b\u009b][[()#;?]*(?:\d{1,4}(?:;\d{0,4})*)?[\dA-ORZcf-nqry=><]/g, ""),
+	styleText: (format, text) => {
+		const names = Array.isArray(format) ? format : [format];
+		const codes = { reset: [0, 0], bold: [1, 22], dim: [2, 22], italic: [3, 23], underline: [4, 24], inverse: [7, 27], hidden: [8, 28], strikethrough: [9, 29], black: [30, 39], red: [31, 39], green: [32, 39], yellow: [33, 39], blue: [34, 39], magenta: [35, 39], cyan: [36, 39], white: [37, 39], gray: [90, 39], grey: [90, 39], bgRed: [41, 49], bgGreen: [42, 49], bgYellow: [43, 49], bgBlue: [44, 49] };
+		let out = String(text);
+		for (const name of names) {
+			const code = codes[name];
+			if (!code) throw Object.assign(new TypeError(`The argument 'format' must be one of: ${Object.keys(codes).join(", ")}. Received '${name}'`), { code: "ERR_INVALID_ARG_VALUE" });
+			out = `\u001b[${code[0]}m${out}\u001b[${code[1]}m`;
+		}
+		return out;
+	},
+	toUSVString: (value) => String(value).toWellFormed?.() ?? String(value),
+	getSystemErrorName: (errno) => ({ [-1]: "EPERM", [-2]: "ENOENT", [-13]: "EACCES", [-17]: "EEXIST", [-20]: "ENOTDIR", [-21]: "EISDIR", [-22]: "EINVAL", [-32]: "EPIPE", [-98]: "EADDRINUSE", [-104]: "ECONNRESET", [-110]: "ETIMEDOUT", [-111]: "ECONNREFUSED" })[errno],
+	getSystemErrorMap: () => new Map([[-1, ["EPERM", "operation not permitted"]], [-2, ["ENOENT", "no such file or directory"]], [-13, ["EACCES", "permission denied"]], [-17, ["EEXIST", "file already exists"]], [-98, ["EADDRINUSE", "address already in use"]], [-111, ["ECONNREFUSED", "connection refused"]]]),
+	aborted: (signal) => new Promise((resolve) => (signal.aborted ? resolve() : signal.addEventListener("abort", () => resolve(), { once: true }))),
+	parseEnv: (content) => {
+		const out = {};
+		for (const rawLine of String(content).split(/\r?\n/)) {
+			const line = rawLine.trim();
+			if (!line || line.startsWith("#")) continue;
+			const match = /^(?:export\s+)?([\w.-]+)\s*=\s*(.*)$/.exec(line);
+			if (!match) continue;
+			let value = match[2].trim();
+			const quote = value[0];
+			if ((quote === '"' || quote === "'" || quote === "`") && value.endsWith(quote) && value.length > 1) value = value.slice(1, -1);
+			else value = value.replace(/\s+#.*$/, "");
+			out[match[1]] = quote === '"' ? value.replace(/\\n/g, "\n") : value;
+		}
+		return out;
+	},
+	parseArgs: (config = {}) => {
+		const { args = process.argv.slice(2), options = {}, strict = true, allowPositionals = !strict, allowNegative = false } = config;
+		const values = {};
+		const positionals = [];
+		const short = {};
+		for (const [name, def] of Object.entries(options)) if (def.short) short[def.short] = name;
+		const assign = (name, def, value) => {
+			if (def.multiple) (values[name] ??= []).push(value);
+			else values[name] = value;
+		};
+		for (let i = 0; i < args.length; i++) {
+			const arg = args[i];
+			if (arg === "--") {
+				positionals.push(...args.slice(i + 1));
+				break;
+			}
+			let name;
+			let inline;
+			if (arg.startsWith("--")) {
+				const eq = arg.indexOf("=");
+				name = eq < 0 ? arg.slice(2) : arg.slice(2, eq);
+				inline = eq < 0 ? undefined : arg.slice(eq + 1);
+			} else if (arg.startsWith("-") && arg.length > 1) {
+				name = short[arg[1]] ?? arg[1];
+				inline = arg.length > 2 ? arg.slice(2) : undefined;
+			} else {
+				if (strict && !allowPositionals) throw Object.assign(new TypeError(`Unexpected argument '${arg}'. This command does not take positional arguments`), { code: "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL" });
+				positionals.push(arg);
+				continue;
+			}
+			let def = options[name];
+			if (!def && allowNegative && name.startsWith("no-") && options[name.slice(3)]?.type === "boolean") {
+				assign(name.slice(3), options[name.slice(3)], false);
+				continue;
+			}
+			if (!def) {
+				if (strict) throw Object.assign(new TypeError(`Unknown option '${arg.startsWith("--") ? `--${name}` : `-${name}`}'`), { code: "ERR_PARSE_ARGS_UNKNOWN_OPTION" });
+				def = { type: inline === undefined && (i + 1 >= args.length || args[i + 1].startsWith("-")) ? "boolean" : "string" };
+			}
+			if (def.type === "string") {
+				const value = inline ?? args[++i];
+				if (value === undefined) throw Object.assign(new TypeError(`Option '--${name} <value>' argument missing`), { code: "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" });
+				assign(name, def, value);
+			} else assign(name, def, true);
+		}
+		for (const [name, def] of Object.entries(options)) if (def.default !== undefined && values[name] === undefined) values[name] = def.default;
+		return { values, positionals };
+	},
 	inspect: inspectValue,
 	isDeepStrictEqual(a, b) {
 		return deepEqual(a, b);
 	},
-	types: {
-		isDate: (v) => v instanceof Date,
-		isRegExp: (v) => v instanceof RegExp,
-		isPromise: (v) => v instanceof Promise,
-		isMap: (v) => v instanceof Map,
-		isSet: (v) => v instanceof Set,
-		isTypedArray: (v) => ArrayBuffer.isView(v) && !(v instanceof DataView),
-		isArrayBuffer: (v) => v instanceof ArrayBuffer,
-		isUint8Array: (v) => v instanceof Uint8Array,
-	},
-	deprecate(fn) {
-		return fn;
+	types: createUtilTypes({ isProxy: globalThis.__forgegraal_native?.isProxy }),
+	deprecate(fn, message, code) {
+		let warned = false;
+		return function (...args) {
+			if (!warned) {
+				warned = true;
+				processModule.emitWarning?.(message, "DeprecationWarning", code);
+			}
+			return fn.apply(this, args);
+		};
 	},
 	// NODE_DEBUG=section[,section...] turns a section's log on, as in Node.js.
 	debuglog(section) {
@@ -1331,10 +1448,10 @@ const nativeLayer = globalThis.__forgegraal_native ?? null;
 let nativeModules = null;
 if (nativeLayer) {
 	const nm = await import("./native-modules.js");
-	const { net, tls } = nm.createNetModules(EventEmitter);
+	const { net, tls } = nm.createNetModules(EventEmitter, streamModule.Duplex);
 	const { http, https } = (await import("./node-http.js")).createHttpModules({ net, tls }, EventEmitter, streamModule, Buffer);
 	const fetch = fetchApi.makeFetch({ http, https }, nm.zlib);
-	nativeModules = { net, tls, http, https, fetch, crypto: nm.crypto, zlib: nm.zlib };
+	nativeModules = { net, tls, http, https, fetch, crypto: createCrypto({ native: nativeLayer, Buffer, stream: streamModule, toBytes: nm.toBytes }), zlib: nm.zlib };
 
 	// Loaders for native addons choose between glibc and musl prebuilts by reading this, exactly as
 	// they do under Node.js.
@@ -1379,12 +1496,20 @@ if (nativeLayer) {
 		};
 	}
 
+	// WebAssembly, on the wasm3 interpreter in the host. undici (fetch, discord.js) parses HTTP with a wasm build of llhttp.
+	if (typeof nativeLayer.wasmInstantiate === "function" && typeof globalObject.WebAssembly === "undefined") {
+		globalObject.WebAssembly = createWebAssembly(nativeLayer);
+		// wasm3 has no SIMD: packages that offer a SIMD build first and fall back check this.
+		processModule.env.UNDICI_NO_WASM_SIMD ??= "1";
+	}
+
 	// Web globals that only become real once there is a socket and a compressor behind them.
 	defGlobal("fetch", fetch);
 	defGlobal("Headers", fetchApi.Headers);
 	defGlobal("Request", fetchApi.Request);
 	defGlobal("Response", fetchApi.Response);
 	defGlobal("FormData", fetchApi.FormData);
+	defGlobal("crypto", nativeModules.crypto.webcrypto);
 }
 
 function defGlobal(name, value) {
@@ -1631,7 +1756,7 @@ function resolveModule(specifier, fromDir) {
 	}
 
 	let base;
-	if (specifier.startsWith("./") || specifier.startsWith("../") || pathModule.isAbsolute(specifier)) {
+	if (specifier === "." || specifier === ".." || specifier.startsWith("./") || specifier.startsWith("../") || pathModule.isAbsolute(specifier)) {
 		base = pathModule.resolve(fromDir, specifier);
 	} else {
 		// Walk up node_modules the way Node does, so an installed dependency tree resolves.

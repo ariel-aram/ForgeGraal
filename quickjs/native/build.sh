@@ -45,6 +45,7 @@ QUICKJS_DIR="$SCRIPT_DIR/.."
 QUICKJS_VERSION="${QUICKJS_VERSION:-v0.16.2}"
 MBEDTLS_VERSION="${MBEDTLS_VERSION:-v3.6.2}"
 MINIZ_VERSION="${MINIZ_VERSION:-3.0.2}"
+WASM3_VERSION="${WASM3_VERSION:-v0.5.0}"
 
 if [ -z "$TARGET" ]; then
 	echo "usage: $0 <win-xp-x86|win-x86|win-x64|linux-x86|linux-x64|linux-x64-glibc|linux-x64-musl-dyn|linux-x86-musl-dyn|native> [output-dir]" >&2
@@ -101,6 +102,11 @@ if [ ! -f miniz/miniz.c ]; then
 	(cd miniz && curl -sL -o miniz.zip \
 		"https://github.com/richgel999/miniz/releases/download/$MINIZ_VERSION/miniz-$MINIZ_VERSION.zip" \
 		&& (unzip -oq miniz.zip || python3 -c "import zipfile;zipfile.ZipFile('miniz.zip').extractall('.')"))
+fi
+
+if [ ! -d wasm3 ]; then
+	echo "[build] fetching wasm3 $WASM3_VERSION"
+	git clone -q --depth 1 --branch "$WASM3_VERSION" https://github.com/wasm3/wasm3.git wasm3
 fi
 
 # ---- patches -------------------------------------------------------------------------------
@@ -168,12 +174,16 @@ fi
 "$CC" -O2 -DNDEBUG -std=gnu11 -w $XP_FLAGS \
 	-D_GNU_SOURCE -DMINIZ_NO_TIME -DMINIZ_NO_STDIO \
 	$NAPI_CFLAGS \
-	-I quickjs-ng -I mbedtls/include -I miniz -I "$SCRIPT_DIR" -I "$SCRIPT_DIR/include" \
+	-I quickjs-ng -I mbedtls/include -I miniz -I wasm3/source -I "$SCRIPT_DIR" -I "$SCRIPT_DIR/include" \
 	-o "$EXE" \
 	"$SCRIPT_DIR/fg_main.c" \
 	"$SCRIPT_DIR/fg_sea.c" \
 	"$SCRIPT_DIR/forgegraal_native.c" \
 	"$SCRIPT_DIR/napi.c" \
+	"$SCRIPT_DIR/fg_wasm.c" \
+	wasm3/source/m3_bind.c wasm3/source/m3_code.c wasm3/source/m3_compile.c wasm3/source/m3_core.c \
+	wasm3/source/m3_emit.c wasm3/source/m3_env.c wasm3/source/m3_exec.c wasm3/source/m3_function.c \
+	wasm3/source/m3_info.c wasm3/source/m3_module.c wasm3/source/m3_optimize.c wasm3/source/m3_parse.c \
 	"$SCRIPT_DIR/ca_bundle.c" \
 	miniz/miniz.c \
 	quickjs-ng/quickjs.c quickjs-ng/libregexp.c quickjs-ng/libunicode.c \

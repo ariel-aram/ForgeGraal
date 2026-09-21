@@ -57,7 +57,10 @@ typedef int SOCKET;
 #define INVALID_SOCKET (-1)
 #endif
 
+#include "mbedtls/cipher.h"
 #include "mbedtls/ctr_drbg.h"
+#include "mbedtls/hkdf.h"
+#include "mbedtls/pkcs5.h"
 #include "mbedtls/entropy.h"
 #include "mbedtls/error.h"
 #include "mbedtls/md.h"
@@ -1037,6 +1040,9 @@ static mbedtls_md_type_t fg_md_type(const char *name)
     if (!strcmp(name, "sha256")) return MBEDTLS_MD_SHA256;
     if (!strcmp(name, "sha1")) return MBEDTLS_MD_SHA1;
     if (!strcmp(name, "sha512")) return MBEDTLS_MD_SHA512;
+    if (!strcmp(name, "sha384")) return MBEDTLS_MD_SHA384;
+    if (!strcmp(name, "sha224")) return MBEDTLS_MD_SHA224;
+    if (!strcmp(name, "ripemd160")) return MBEDTLS_MD_RIPEMD160;
     if (!strcmp(name, "md5")) return MBEDTLS_MD_MD5;
     return MBEDTLS_MD_NONE;
 }
@@ -1116,6 +1122,369 @@ static JSValue fg_hmac(JSContext *ctx, JSValueConst this_val, int argc, JSValueC
     return JS_NewUint8ArrayCopy(ctx, out, mbedtls_md_get_size(info));
 }
 
+/* ------------------------------------------------- key derivation, ciphers, signatures */
+
+static int fg_md_from_arg(JSContext *ctx, JSValueConst v, mbedtls_md_type_t *out)
+{
+    const char *name = JS_ToCString(ctx, v);
+    if (!name) {
+        return -1;
+    }
+    *out = fg_md_type(name);
+    if (*out == MBEDTLS_MD_NONE) {
+        JS_ThrowInternalError(ctx, "digest '%s' is not available in this runtime", name);
+        JS_FreeCString(ctx, name);
+        return -1;
+    }
+    JS_FreeCString(ctx, name);
+    return 0;
+}
+
+/* pbkdf2(hash, password, salt, iterations, keylen) -> Uint8Array */
+static JSValue fg_pbkdf2(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    mbedtls_md_type_t md;
+    size_t plen = 0, slen = 0;
+    uint8_t *pw, *salt;
+    uint32_t iterations = 0, keylen = 0;
+    unsigned char *out;
+    JSValue result;
+    int ret;
+
+    if (fg_md_from_arg(ctx, argv[0], &md)) {
+        return JS_EXCEPTION;
+    }
+    pw = JS_GetUint8Array(ctx, &plen, argv[1]);
+    salt = JS_GetUint8Array(ctx, &slen, argv[2]);
+    if (!pw || !salt || JS_ToUint32(ctx, &iterations, argv[3]) || JS_ToUint32(ctx, &keylen, argv[4])) {
+        return JS_EXCEPTION;
+    }
+    out = (unsigned char *) malloc(keylen ? keylen : 1);
+    if (!out) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    ret = mbedtls_pkcs5_pbkdf2_hmac_ext(md, pw, plen, salt, slen, iterations, keylen, out);
+    if (ret != 0) {
+        free(out);
+        return fg_throw_mbedtls(ctx, "pbkdf2", ret);
+    }
+    result = JS_NewUint8ArrayCopy(ctx, out, keylen);
+    free(out);
+    return result;
+}
+
+/* hkdf(hash, ikm, salt, info, length) -> Uint8Array */
+static JSValue fg_hkdf(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    mbedtls_md_type_t md;
+    size_t ilen = 0, slen = 0, nlen = 0;
+    uint8_t *ikm, *salt, *info;
+    uint32_t length = 0;
+    unsigned char *out;
+    JSValue result;
+    int ret;
+
+    if (fg_md_from_arg(ctx, argv[0], &md)) {
+        return JS_EXCEPTION;
+    }
+    ikm = JS_GetUint8Array(ctx, &ilen, argv[1]);
+    salt = JS_GetUint8Array(ctx, &slen, argv[2]);
+    info = JS_GetUint8Array(ctx, &nlen, argv[3]);
+    if (!ikm || !salt || !info || JS_ToUint32(ctx, &length, argv[4])) {
+        return JS_EXCEPTION;
+    }
+    out = (unsigned char *) malloc(length ? length : 1);
+    if (!out) {
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    ret = mbedtls_hkdf(mbedtls_md_info_from_type(md), salt, slen, ikm, ilen, info, nlen, out, length);
+    if (ret != 0) {
+        free(out);
+        return fg_throw_mbedtls(ctx, "hkdf", ret);
+    }
+    result = JS_NewUint8ArrayCopy(ctx, out, length);
+    free(out);
+    return result;
+}
+
+/*
+ * cipher(encrypt, name, key, iv, data, aad, tagOrLen, padding) -> Uint8Array
+ *   Block and stream modes (ECB, CBC, CTR): the whole message at once, PKCS#7 padding unless padding is false.
+ *   AEAD modes (GCM, ChaCha20-Poly1305): encrypt returns ciphertext followed by the 16-byte tag; decrypt takes the
+ *   ciphertext with the tag appended and fails with an authentication error if it does not verify.
+ */
+static JSValue fg_cipher(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    int encrypt = JS_ToBool(ctx, argv[0]);
+    const char *name = JS_ToCString(ctx, argv[1]);
+    size_t klen = 0, ivlen = 0, dlen = 0, alen = 0;
+    uint8_t *key, *iv, *data, *aad = NULL;
+    int padding = argc > 7 ? JS_ToBool(ctx, argv[7]) : 1;
+    char upper[64];
+    const mbedtls_cipher_info_t *info;
+    mbedtls_cipher_context_t cctx;
+    unsigned char *out = NULL;
+    size_t olen = 0, i;
+    int ret = 0, aead;
+    JSValue result;
+
+    if (!name) {
+        return JS_EXCEPTION;
+    }
+    for (i = 0; name[i] && i < sizeof(upper) - 1; i++) {
+        upper[i] = (char) ((name[i] >= 'a' && name[i] <= 'z') ? name[i] - 32 : name[i]);
+    }
+    upper[i] = '\0';
+    JS_FreeCString(ctx, name);
+    key = JS_GetUint8Array(ctx, &klen, argv[2]);
+    iv = JS_GetUint8Array(ctx, &ivlen, argv[3]);
+    data = JS_GetUint8Array(ctx, &dlen, argv[4]);
+    if (!key || !iv || !data) {
+        return JS_EXCEPTION;
+    }
+    if (argc > 5 && !JS_IsUndefined(argv[5]) && !JS_IsNull(argv[5])) {
+        aad = JS_GetUint8Array(ctx, &alen, argv[5]);
+        if (!aad) {
+            return JS_EXCEPTION;
+        }
+    }
+    info = mbedtls_cipher_info_from_string(upper);
+    if (!info) {
+        return JS_ThrowInternalError(ctx, "cipher '%s' is not available in this runtime", upper);
+    }
+    if (mbedtls_cipher_info_get_key_bitlen(info) != klen * 8) {
+        return JS_ThrowRangeError(ctx, "Invalid key length");
+    }
+    aead = mbedtls_cipher_info_get_mode(info) == MBEDTLS_MODE_GCM ||
+           mbedtls_cipher_info_get_type(info) == MBEDTLS_CIPHER_CHACHA20_POLY1305;
+
+    mbedtls_cipher_init(&cctx);
+    if ((ret = mbedtls_cipher_setup(&cctx, info)) != 0 ||
+        (ret = mbedtls_cipher_setkey(&cctx, key, (int) (klen * 8), encrypt ? MBEDTLS_ENCRYPT : MBEDTLS_DECRYPT)) != 0) {
+        mbedtls_cipher_free(&cctx);
+        return fg_throw_mbedtls(ctx, "cipher setup", ret);
+    }
+    out = (unsigned char *) malloc(dlen + 64);
+    if (!out) {
+        mbedtls_cipher_free(&cctx);
+        return JS_ThrowOutOfMemory(ctx);
+    }
+    if (aead) {
+        if (encrypt) {
+            ret = mbedtls_cipher_auth_encrypt_ext(&cctx, iv, ivlen, aad, alen, data, dlen, out, dlen + 64, &olen, 16);
+        } else {
+            ret = mbedtls_cipher_auth_decrypt_ext(&cctx, iv, ivlen, aad, alen, data, dlen, out, dlen + 64, &olen, 16);
+        }
+        if (ret != 0) {
+            free(out);
+            mbedtls_cipher_free(&cctx);
+            if (!encrypt) {
+                JSValue err = JS_NewError(ctx);
+                JS_SetPropertyStr(ctx, err, "message", JS_NewString(ctx, "Unsupported state or unable to authenticate data"));
+                return JS_Throw(ctx, err);
+            }
+            return fg_throw_mbedtls(ctx, "cipher", ret);
+        }
+    } else if (mbedtls_cipher_info_get_mode(info) == MBEDTLS_MODE_ECB) {
+        /* mbedTLS' ECB handles one block per call and never pads, so both are done here (PKCS#7, as Node does). */
+        size_t bs = mbedtls_cipher_info_get_block_size(info);
+        size_t total = dlen;
+        unsigned char *padded = NULL;
+        size_t b;
+        if (encrypt) {
+            size_t pad = padding ? bs - (dlen % bs) : 0;
+            total = dlen + pad;
+            if (!padding && (dlen % bs) != 0) {
+                free(out);
+                mbedtls_cipher_free(&cctx);
+                return JS_ThrowInternalError(ctx, "wrong final block length");
+            }
+            padded = (unsigned char *) malloc(total ? total : 1);
+            if (!padded) {
+                free(out);
+                mbedtls_cipher_free(&cctx);
+                return JS_ThrowOutOfMemory(ctx);
+            }
+            memcpy(padded, data, dlen);
+            memset(padded + dlen, (int) pad, pad);
+            free(out);
+            out = (unsigned char *) malloc(total ? total : 1);
+        } else if (dlen % bs != 0) {
+            free(out);
+            mbedtls_cipher_free(&cctx);
+            return JS_ThrowInternalError(ctx, "wrong final block length");
+        }
+        {
+            const unsigned char *src = encrypt ? padded : data;
+            olen = 0;
+            for (b = 0; out && b + bs <= total; b += bs) {
+                size_t one = 0;
+                ret = mbedtls_cipher_update(&cctx, src + b, bs, out + b, &one);
+                if (ret != 0) {
+                    break;
+                }
+                olen += one;
+            }
+        }
+        free(padded);
+        if (!out || ret != 0) {
+            free(out);
+            mbedtls_cipher_free(&cctx);
+            return fg_throw_mbedtls(ctx, "cipher", ret);
+        }
+        if (!encrypt && padding && olen > 0) {
+            unsigned char pad = out[olen - 1];
+            size_t k;
+            if (pad == 0 || pad > bs || pad > olen) {
+                free(out);
+                mbedtls_cipher_free(&cctx);
+                JSValue err = JS_NewError(ctx);
+                JS_SetPropertyStr(ctx, err, "message", JS_NewString(ctx, "error:1C800064:Provider routines::bad decrypt"));
+                JS_SetPropertyStr(ctx, err, "code", JS_NewString(ctx, "ERR_OSSL_BAD_DECRYPT"));
+                return JS_Throw(ctx, err);
+            }
+            for (k = 0; k < pad; k++) {
+                if (out[olen - 1 - k] != pad) {
+                    free(out);
+                    mbedtls_cipher_free(&cctx);
+                    JSValue err = JS_NewError(ctx);
+                    JS_SetPropertyStr(ctx, err, "message", JS_NewString(ctx, "error:1C800064:Provider routines::bad decrypt"));
+                    JS_SetPropertyStr(ctx, err, "code", JS_NewString(ctx, "ERR_OSSL_BAD_DECRYPT"));
+                    return JS_Throw(ctx, err);
+                }
+            }
+            olen -= pad;
+        }
+    } else {
+        if (mbedtls_cipher_info_get_mode(info) == MBEDTLS_MODE_CBC) {
+            mbedtls_cipher_set_padding_mode(&cctx, padding ? MBEDTLS_PADDING_PKCS7 : MBEDTLS_PADDING_NONE);
+        }
+        ret = mbedtls_cipher_crypt(&cctx, mbedtls_cipher_info_get_mode(info) == MBEDTLS_MODE_ECB ? NULL : iv,
+                                   mbedtls_cipher_info_get_mode(info) == MBEDTLS_MODE_ECB ? 0 : ivlen, data, dlen, out, &olen);
+        if (ret != 0) {
+            free(out);
+            mbedtls_cipher_free(&cctx);
+            if (!encrypt) {
+                JSValue err = JS_NewError(ctx);
+                JS_SetPropertyStr(ctx, err, "message", JS_NewString(ctx, "error:1C800064:Provider routines::bad decrypt"));
+                JS_SetPropertyStr(ctx, err, "code", JS_NewString(ctx, "ERR_OSSL_BAD_DECRYPT"));
+                return JS_Throw(ctx, err);
+            }
+            return fg_throw_mbedtls(ctx, "cipher", ret);
+        }
+    }
+    result = JS_NewUint8ArrayCopy(ctx, out, olen);
+    free(out);
+    mbedtls_cipher_free(&cctx);
+    return result;
+}
+
+/* pkSign(hash, keyPem, passphrase, data) -> signature. RSA gives PKCS#1 v1.5, EC gives DER ECDSA, as Node's default. */
+static JSValue fg_pk_sign(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    mbedtls_md_type_t md;
+    const char *pem, *pass = NULL;
+    size_t dlen = 0, siglen = 0, plen = 0;
+    uint8_t *data;
+    mbedtls_pk_context pk;
+    unsigned char hash[64], sig[MBEDTLS_PK_SIGNATURE_MAX_SIZE];
+    int ret;
+
+    if (fg_md_from_arg(ctx, argv[0], &md)) {
+        return JS_EXCEPTION;
+    }
+    pem = JS_ToCStringLen(ctx, &plen, argv[1]);
+    if (!pem) {
+        return JS_EXCEPTION;
+    }
+    if (!JS_IsUndefined(argv[2]) && !JS_IsNull(argv[2])) {
+        pass = JS_ToCString(ctx, argv[2]);
+    }
+    data = JS_GetUint8Array(ctx, &dlen, argv[3]);
+    if (!data) {
+        JS_FreeCString(ctx, pem);
+        if (pass) JS_FreeCString(ctx, pass);
+        return JS_EXCEPTION;
+    }
+    fg_rng_init();
+    mbedtls_pk_init(&pk);
+    ret = mbedtls_pk_parse_key(&pk, (const unsigned char *) pem, plen + 1, (const unsigned char *) pass, pass ? strlen(pass) : 0,
+                               mbedtls_ctr_drbg_random, &fg_drbg);
+    JS_FreeCString(ctx, pem);
+    if (pass) JS_FreeCString(ctx, pass);
+    if (ret != 0) {
+        mbedtls_pk_free(&pk);
+        return fg_throw_mbedtls(ctx, "private key", ret);
+    }
+    ret = mbedtls_md(mbedtls_md_info_from_type(md), data, dlen, hash);
+    if (ret == 0) {
+        ret = mbedtls_pk_sign(&pk, md, hash, mbedtls_md_get_size(mbedtls_md_info_from_type(md)), sig, sizeof(sig), &siglen,
+                              mbedtls_ctr_drbg_random, &fg_drbg);
+    }
+    mbedtls_pk_free(&pk);
+    if (ret != 0) {
+        return fg_throw_mbedtls(ctx, "sign", ret);
+    }
+    return JS_NewUint8ArrayCopy(ctx, sig, siglen);
+}
+
+/* pkVerify(hash, keyOrCertPem, data, signature) -> boolean */
+static JSValue fg_pk_verify(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    mbedtls_md_type_t md;
+    const char *pem;
+    size_t plen = 0, dlen = 0, slen = 0;
+    uint8_t *data, *sig;
+    mbedtls_pk_context pk;
+    mbedtls_x509_crt crt;
+    unsigned char hash[64];
+    int ret, ok = 0;
+
+    if (fg_md_from_arg(ctx, argv[0], &md)) {
+        return JS_EXCEPTION;
+    }
+    pem = JS_ToCStringLen(ctx, &plen, argv[1]);
+    if (!pem) {
+        return JS_EXCEPTION;
+    }
+    data = JS_GetUint8Array(ctx, &dlen, argv[2]);
+    sig = JS_GetUint8Array(ctx, &slen, argv[3]);
+    if (!data || !sig) {
+        JS_FreeCString(ctx, pem);
+        return JS_EXCEPTION;
+    }
+    mbedtls_pk_init(&pk);
+    mbedtls_x509_crt_init(&crt);
+    ret = mbedtls_pk_parse_public_key(&pk, (const unsigned char *) pem, plen + 1);
+    if (ret != 0) {
+        /* A certificate: its public key is the one to check against. */
+        mbedtls_pk_free(&pk);
+        mbedtls_pk_init(&pk);
+        ret = mbedtls_x509_crt_parse(&crt, (const unsigned char *) pem, plen + 1);
+        if (ret == 0) {
+            ret = mbedtls_pk_setup(&pk, mbedtls_pk_info_from_type(mbedtls_pk_get_type(&crt.pk)));
+            /* Reuse the certificate's key context directly. */
+            mbedtls_pk_free(&pk);
+            pk = crt.pk;
+        }
+    }
+    JS_FreeCString(ctx, pem);
+    if (ret != 0) {
+        mbedtls_x509_crt_free(&crt);
+        return JS_ThrowInternalError(ctx, "cannot read the public key or certificate");
+    }
+    if (mbedtls_md(mbedtls_md_info_from_type(md), data, dlen, hash) == 0) {
+        ok = mbedtls_pk_verify(&pk, md, hash, mbedtls_md_get_size(mbedtls_md_info_from_type(md)), sig, slen) == 0;
+    }
+    if (crt.raw.p) {
+        mbedtls_x509_crt_free(&crt);
+    } else {
+        mbedtls_pk_free(&pk);
+        mbedtls_x509_crt_free(&crt);
+    }
+    return JS_NewBool(ctx, ok);
+}
+
 static JSValue fg_random_bytes(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
 {
     int32_t len;
@@ -1133,7 +1502,19 @@ static JSValue fg_random_bytes(JSContext *ctx, JSValueConst this_val, int argc, 
     if (!buf) {
         return JS_EXCEPTION;
     }
-    ret = mbedtls_ctr_drbg_random(&fg_drbg, buf, (size_t) len);
+    /* CTR_DRBG hands out at most 1024 bytes per request (MBEDTLS_CTR_DRBG_MAX_REQUEST), so a large ask is several. */
+    {
+        size_t done = 0;
+        ret = 0;
+        while (done < (size_t) len && ret == 0) {
+            size_t n = (size_t) len - done;
+            if (n > 1024) {
+                n = 1024;
+            }
+            ret = mbedtls_ctr_drbg_random(&fg_drbg, buf + done, n);
+            done += n;
+        }
+    }
     if (ret != 0) {
         js_free(ctx, buf);
         return fg_throw_mbedtls(ctx, "randomBytes", ret);
@@ -1273,6 +1654,12 @@ static JSValue fg_fsync(JSContext *ctx, JSValueConst this_val, int argc, JSValue
     rc = fsync(fd);
 #endif
     return JS_NewInt32(ctx, rc == 0 ? 0 : -errno);
+}
+
+/* isProxy(value): whether it is a Proxy (JavaScript cannot tell, and util.types.isProxy is asked for by undici). */
+static JSValue fg_is_proxy(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    return JS_NewBool(ctx, argc > 0 && JS_IsProxy(argv[0]));
 }
 
 /* ------------------------------------------------------------------ install */
@@ -1493,6 +1880,7 @@ static const JSCFunctionListEntry fg_native_funcs[] = {
     JS_CFUNC_DEF("evalScript", 2, fg_eval_script),
     JS_CFUNC_DEF("promiseState", 1, fg_promise_state),
     JS_CFUNC_DEF("getpid", 0, fg_getpid),
+    JS_CFUNC_DEF("isProxy", 1, fg_is_proxy),
     JS_CFUNC_DEF("chmod", 2, fg_chmod),
     JS_CFUNC_DEF("ftruncate", 2, fg_ftruncate),
     JS_CFUNC_DEF("fsync", 1, fg_fsync),
@@ -1514,6 +1902,11 @@ static const JSCFunctionListEntry fg_native_funcs[] = {
     JS_CFUNC_DEF("hash", 2, fg_hash),
     JS_CFUNC_DEF("hmac", 3, fg_hmac),
     JS_CFUNC_DEF("randomBytes", 1, fg_random_bytes),
+    JS_CFUNC_DEF("pbkdf2", 5, fg_pbkdf2),
+    JS_CFUNC_DEF("hkdf", 5, fg_hkdf),
+    JS_CFUNC_DEF("cipher", 8, fg_cipher),
+    JS_CFUNC_DEF("pkSign", 4, fg_pk_sign),
+    JS_CFUNC_DEF("pkVerify", 4, fg_pk_verify),
     JS_CFUNC_DEF("inflate", 2, fg_inflate),
     JS_CFUNC_DEF("deflate", 3, fg_deflate),
     JS_CFUNC_DEF("encodeUtf8", 1, fg_encode_utf8),
@@ -1523,6 +1916,8 @@ static const JSCFunctionListEntry fg_native_funcs[] = {
 void forgegraal_napi_init(JSContext *ctx);
 extern const JSCFunctionListEntry forgegraal_napi_funcs[];
 extern const size_t forgegraal_napi_funcs_count;
+extern const JSCFunctionListEntry forgegraal_wasm_funcs[];
+extern const size_t forgegraal_wasm_funcs_count;
 
 void forgegraal_native_init(JSContext *ctx)
 {
@@ -1541,6 +1936,8 @@ void forgegraal_native_init(JSContext *ctx)
     /* Node-API: dlopen/LoadLibrary of `.node` addons plus the pump that delivers their async results. */
     forgegraal_napi_init(ctx);
     JS_SetPropertyFunctionList(ctx, native, forgegraal_napi_funcs, (int) forgegraal_napi_funcs_count);
+    /* WebAssembly (wasm3): instantiate, call exports, linear memory. node-wasm.js builds the WebAssembly API on it. */
+    JS_SetPropertyFunctionList(ctx, native, forgegraal_wasm_funcs, (int) forgegraal_wasm_funcs_count);
     JS_SetPropertyStr(ctx, native, "backend", JS_NewString(ctx, "c"));
 #ifdef _WIN32
     JS_SetPropertyStr(ctx, native, "platform", JS_NewString(ctx, "win32"));
