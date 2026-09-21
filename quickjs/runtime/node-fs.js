@@ -21,6 +21,11 @@ const MESSAGES = {
 	ENAMETOOLONG: "name too long", ENOTEMPTY: "directory not empty", ELOOP: "too many symbolic links encountered",
 };
 
+// POSIX whence values; the engine's os module does not export them, and an undefined whence means SEEK_SET.
+const SEEK_SET = 0;
+const SEEK_CUR = 1;
+const SEEK_END = 2;
+
 const S_IFMT = 0o170000;
 const S_IFREG = 0o100000;
 const S_IFDIR = 0o040000;
@@ -218,13 +223,13 @@ function createFs({ os, std, Buffer, path, stream, EventEmitter, native, platfor
 		if (length === 0) return 0;
 		let saved = null;
 		if (typeof position === "number" || typeof position === "bigint") {
-			saved = os.seek(fd, 0, os.SEEK_CUR);
-			os.seek(fd, Number(position), os.SEEK_SET);
+			saved = os.seek(fd, 0, SEEK_CUR);
+			os.seek(fd, Number(position), SEEK_SET);
 		}
 		const view = buffer instanceof ArrayBuffer ? buffer : buffer.buffer;
 		const start = (buffer instanceof ArrayBuffer ? 0 : buffer.byteOffset) + offset;
 		const n = os.read(fd, view, start, length);
-		if (saved !== null) os.seek(fd, saved, os.SEEK_SET);
+		if (saved !== null) os.seek(fd, saved, SEEK_SET);
 		if (n < 0) throw fsError(n, "read");
 		return n;
 	}
@@ -243,8 +248,8 @@ function createFs({ os, std, Buffer, path, stream, EventEmitter, native, platfor
 		}
 		let saved = null;
 		if (pos !== null) {
-			saved = os.seek(fd, 0, os.SEEK_CUR);
-			os.seek(fd, pos, os.SEEK_SET);
+			saved = os.seek(fd, 0, SEEK_CUR);
+			os.seek(fd, pos, SEEK_SET);
 		}
 		let written = 0;
 		while (written < bytes.length) {
@@ -252,14 +257,14 @@ function createFs({ os, std, Buffer, path, stream, EventEmitter, native, platfor
 			if (n < 0) throw fsError(n, "write");
 			written += n;
 		}
-		if (saved !== null) os.seek(fd, saved, os.SEEK_SET);
+		if (saved !== null) os.seek(fd, saved, SEEK_SET);
 		return written;
 	}
 
 	function fstatSync(fd) {
-		const here = os.seek(fd, 0, os.SEEK_CUR);
-		const size = os.seek(fd, 0, os.SEEK_END);
-		os.seek(fd, here, os.SEEK_SET);
+		const here = os.seek(fd, 0, SEEK_CUR);
+		const size = os.seek(fd, 0, SEEK_END);
+		os.seek(fd, here, SEEK_SET);
 		const now = Date.now();
 		return new Stats({ mode: S_IFREG | 0o644, size: Math.max(0, size), atime: now, mtime: now, ctime: now });
 	}

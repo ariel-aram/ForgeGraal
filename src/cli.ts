@@ -2,6 +2,7 @@
 import { parseArgs } from "node:util";
 import { BinaryInspector } from "./compiler/BinaryInspector";
 import { BinaryPackager, type BuildEngine, type BuildStrategy } from "./compiler/BinaryPackager";
+import { DENO_COMPILE_TARGETS, DenoProject } from "./compiler/DenoProject";
 import { PolicyEnforcer } from "./compiler/PolicyEnforcer";
 import { QuickJsPackager } from "./compiler/QuickJsPackager";
 import { RuntimeRegistry } from "./compiler/RuntimeRegistry";
@@ -32,7 +33,7 @@ Compile options:
                               portable/auto a folder
   -s, --strategy <name>      auto (default), sea or portable. Without --engine it also opts a native-host
                               target (see below) back onto Node.js, same as --node-binary
-      --pm <name>            Package manager override (bun, pnpm, npm, yarn)
+      --pm <name>            Package manager override (bun, deno, pnpm, npm, yarn)
       --node-binary <path>   Node.js runtime to use instead of the target's default. Also opts a
                               native-host target (below) back onto Node.js
       --node-version <ver>   Official Node.js version to download (e.g. 22 or 22.11.0)
@@ -120,6 +121,17 @@ async function main(): Promise<void> {
 							: "portable, --node-binary required";
 				console.log(`  ${target.padEnd(20)} ${tag.padEnd(16)} ${meta.name.padEnd(32)} ${runtime}`);
 			}
+			if (pm === "deno") {
+				const own = Object.entries(DENO_COMPILE_TARGETS)
+					.map(([id]) => id)
+					.join(", ");
+				console.log(
+					"\nDeno projects: every target above is available. Graak reads Deno's own module graph (import map, jsr:, npm: and " +
+						"https: imports, top-level await) and provides the Deno namespace, so 'deno' must be on PATH at build time only. " +
+						`'deno compile' builds ${own} itself; Graak is the way to build the rest (32-bit systems, Windows XP, Vista and 7, ` +
+						"iSH, ARMv7, FreeBSD) and to make one 3 MB file with no Deno on the device."
+				);
+			}
 			if (pm === "bun") {
 				console.log(
 					"\nBun projects: every target above is available. TypeScript/JSX entrypoints are transpiled " +
@@ -157,6 +169,10 @@ async function main(): Promise<void> {
 			const native = QuickJsPackager.supports(meta.id);
 			console.log(`  Engine         : ${native ? "Graak native host (quickjs-ng), no Node.js bundled" : "Node.js"}`);
 			console.log(`  Official Node  : ${meta.officialNodeFile ?? "none"}`);
+			const denoTarget = DenoProject.denoTarget(meta.id);
+			console.log(
+				`  Deno compile   : ${denoTarget ? `deno compile --target ${denoTarget} builds this itself` : "cannot build this target: Graak does"}`
+			);
 			if (meta.pinnedLegacyNode) {
 				console.log(
 					`  ${native ? "Node fallback " : "Pinned runtime"} : Node.js ${meta.pinnedLegacyNode.version} (${meta.pinnedLegacyNode.fileKey}), auto-fetched${native ? " (only with --node-binary or --strategy sea|portable)" : ""}`

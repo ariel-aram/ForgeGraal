@@ -1644,6 +1644,15 @@ const builtins = {
 		misc.createChildProcess(os.exec ? os : { ...os, exec: nativeLayer?.exec, getpid: nativeLayer?.getpid }, EventEmitter, {
 			Buffer,
 			readText: (path) => std.loadFile(path),
+			readBytes: (path) => {
+				const data = std.loadFile(path, { binary: true });
+				return data === null ? null : new Uint8Array(data);
+			},
+			exists: (path) => {
+				const [info, error] = os.stat(path);
+				return error === 0 && (info.mode & 0o170000) !== 0o040000;
+			},
+			env: () => std.getenviron(),
 			tmpdir: () => std.getenv("TMPDIR") ?? std.getenv("TEMP") ?? "/tmp",
 			writeStderr: (text) => std.err.puts(text),
 		}) ??

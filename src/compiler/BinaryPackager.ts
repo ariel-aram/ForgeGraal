@@ -26,6 +26,8 @@ import {
 import { Archive } from "./Archive";
 import { BinaryInspector } from "./BinaryInspector";
 import { BUN_TRANSPILABLE_EXTENSIONS, BunTranspiler } from "./BunTranspiler";
+import { DenoBundler } from "./DenoBundler";
+import { DenoProject } from "./DenoProject";
 import { LEGACY_ASSET_DIR, LegacyRuntimeAssets } from "./LegacyRuntimeAssets";
 import { LegacyTranspiler } from "./LegacyTranspiler";
 import { MIN_SEA_NODE_VERSION, NodeRuntime } from "./NodeRuntime";
@@ -149,6 +151,24 @@ export class BinaryPackager {
 	 * Builds a program into a Node.js Single Executable Application when the target
 	 * runtime supports it, otherwise into a portable bundle (launcher + archive + runtime).
 	 */
+	/**
+	 * The project directory of an entry file: the closest one with a package.json, or with a deno.json(c) when a Deno
+	 * project has no package.json (or keeps its config nearer to the entry).
+	 */
+	public static findRoot(entry: string): string {
+		let node: string | null = null;
+		try {
+			node = ProjectCollector.findProjectRoot(entry);
+		} catch {
+			// A Deno project needs no package.json.
+		}
+		const config = DenoProject.findConfig(dirname(entry));
+		const deno = config ? dirname(config) : null;
+		if (deno && (!node || deno.length >= node.length)) return deno;
+		if (node) return node;
+		return ProjectCollector.findProjectRoot(entry);
+	}
+
 	public static async compile(options: BuildOptions): Promise<BuildResult> {
 		// A folder of built files is a site, not a program: generate the server that serves it and package that.
 		if (options.staticSite || StaticSite.isSiteEntry(options.entrypoint)) {
@@ -181,7 +201,7 @@ export class BinaryPackager {
 			throw new RuntimeError(`Unknown engine '${engine}' (expected auto, native or node)`);
 		}
 
-		const root = ProjectCollector.findProjectRoot(resolve(options.entrypoint));
+		const root = BinaryPackager.findRoot(resolve(options.entrypoint));
 		const pm = PolicyEnforcer.resolvePackageManager(options.packageManager, root);
 		const target = PolicyEnforcer.assertTargetAllowed(options.target, pm);
 		const meta = TARGET_METADATA_MAP[target];
@@ -223,6 +243,37 @@ export class BinaryPackager {
 			});
 			entrypoint = materialized.entrypoint;
 			cleanupPnp = materialized.cleanup;
+		}
+
+		// A Deno project has import maps, `jsr:`/`npm:`/`https:` specifiers and top-level await that neither engine
+		// resolves. Deno itself is asked for the module graph, which becomes one bundle plus a real node_modules
+		// tree -- see DenoBundler. Deno is needed here, at build time, and never on the device.
+		let cleanupDeno: (() => void) | null = null;
+		if (pm === "deno") {
+			if (!DenoBundler.isAvailable()) {
+				throw new RuntimeError(
+					"This is a Deno project and 'deno' is not on PATH. Graak reads Deno's own module graph to build it, the way " +
+						"Bun projects need 'bun' for TypeScript. Install Deno 2 from https://deno.com (build machine only), " +
+						"or pass --pm npm to build the project as a Node.js one."
+				);
+			}
+			const denoTarget = DenoProject.denoTarget(target);
+			log(
+				denoTarget
+					? `Deno can also build ${meta.name} itself ('deno compile --target ${denoTarget}'); Graak builds it here on ${QuickJsPackager.supports(target) ? "its own engine" : "Node.js"}`
+					: `${meta.name} is a target 'deno compile' cannot build: Graak builds it`
+			);
+			log(`Bundling ${options.entrypoint} with Deno's module graph`);
+			const bundled = await DenoBundler.bundle({
+				entrypoint,
+				offline: options.offline,
+				excludePaths,
+				onLog: log,
+			});
+			entrypoint = bundled.entrypoint;
+			cleanupDeno = bundled.cleanup;
+			excludePaths.push(...bundled.bundled);
+			warnings.push(...bundled.warnings);
 		}
 
 		try {
@@ -577,6 +628,7 @@ export class BinaryPackager {
 		} finally {
 			cleanupTranspiled?.();
 			cleanupPnp?.();
+			cleanupDeno?.();
 		}
 	}
 

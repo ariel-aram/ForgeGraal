@@ -1,5 +1,5 @@
 import { type TargetDevice } from "../structures";
-export declare const PACKAGE_MANAGERS: readonly ["bun", "pnpm", "npm", "yarn"];
+export declare const PACKAGE_MANAGERS: readonly ["bun", "deno", "pnpm", "npm", "yarn"];
 export type PackageManager = (typeof PACKAGE_MANAGERS)[number];
 export declare class PolicyEnforcer {
     static parsePackageManager(value: unknown): PackageManager | null;
@@ -9,7 +9,7 @@ export declare class PolicyEnforcer {
      */
     static resolvePackageManager(value: unknown, rootDir?: string): PackageManager;
     /**
-     * Detects the package manager a bot project uses. The project's own declaration wins
+     * Detects the package manager (or runtime) a project uses. The project's own declaration wins
      * over lockfiles, lockfiles win over the invoking environment.
      */
     static detectPackageManager(rootDir?: string): PackageManager;

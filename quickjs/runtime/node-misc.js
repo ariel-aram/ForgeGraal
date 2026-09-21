@@ -458,9 +458,30 @@ function createChildProcess(host, EventEmitter, io = {}) {
 	const isWindows = host.platform === "win32";
 	let counter = 0;
 	const shellArgv = (command) => (isWindows ? ["cmd.exe", "/d", "/s", "/c", command] : ["/bin/sh", "-c", command]);
-	const decode = (text, encoding) => {
-		if (encoding && encoding !== "buffer") return text;
-		return io.Buffer ? io.Buffer.from(text) : text;
+	// Output is read back as bytes (a program may print anything), then decoded only when an encoding is asked for.
+	const decode = (data, encoding) => {
+		const buffer = typeof data === "string" ? (io.Buffer ? io.Buffer.from(data) : data) : data;
+		if (encoding && encoding !== "buffer") return typeof buffer === "string" ? buffer : buffer.toString(encoding);
+		return buffer;
+	};
+	const SIGNAL_NAMES = { 1: "SIGHUP", 2: "SIGINT", 3: "SIGQUIT", 4: "SIGILL", 5: "SIGTRAP", 6: "SIGABRT", 7: "SIGBUS", 8: "SIGFPE", 9: "SIGKILL", 10: "SIGUSR1", 11: "SIGSEGV", 12: "SIGUSR2", 13: "SIGPIPE", 14: "SIGALRM", 15: "SIGTERM" };
+	/** The engine reports a child killed by signal N as status -N. */
+	const exitInfo = (status) => (typeof status === "number" && status < 0 ? { status: null, signal: SIGNAL_NAMES[-status] ?? null } : { status, signal: null });
+	const pathSeparator = isWindows ? ";" : ":";
+	/** Whether `command` names a program that exists, so a missing one is an ENOENT error and not exit status 127. */
+	const findExecutable = (command, options) => {
+		if (!io.exists) return true;
+		const extensions = isWindows ? ["", ".exe", ".cmd", ".bat", ".com"] : [""];
+		const direct = command.includes("/") || (isWindows && command.includes("\\"));
+		const dirs = direct ? [""] : String((options.env ?? io.env?.() ?? {}).PATH ?? (options.env ?? io.env?.() ?? {}).Path ?? "").split(pathSeparator).filter(Boolean);
+		for (const dir of dirs) {
+			for (const extension of extensions) {
+				const candidate = dir ? `${dir}/${command}${extension}` : `${command}${extension}`;
+				const resolved = candidate.startsWith("/") || /^[A-Za-z]:/.test(candidate) || !options.cwd ? candidate : `${options.cwd}/${candidate}`;
+				if (io.exists(resolved)) return true;
+			}
+		}
+		return false;
 	};
 	const inherits = (options, index) => {
 		const stdio = options.stdio;
@@ -523,7 +544,12 @@ function createChildProcess(host, EventEmitter, io = {}) {
 				}
 			}
 		}
-		const read = (path) => (path && io.readText ? (io.readText(path) ?? "") : "");
+		const read = (path) => {
+			if (!path) return io.Buffer.alloc(0);
+			const raw = io.readBytes ? io.readBytes(path) : io.readText?.(path);
+			if (raw === undefined || raw === null) return io.Buffer.alloc(0);
+			return typeof raw === "string" ? io.Buffer.from(raw) : io.Buffer.from(raw);
+		};
 		const stdout = read(outPath);
 		const stderr = read(errPath);
 		for (const path of files) {
@@ -546,9 +572,10 @@ function createChildProcess(host, EventEmitter, io = {}) {
 		const encoding = options.encoding;
 		const stdout = decode(captured.stdout, encoding);
 		const stderr = decode(captured.stderr, encoding);
+		const exit = exitInfo(captured.status);
 		const res = {
-			status: captured.status,
-			signal: null,
+			status: exit.status,
+			signal: exit.signal,
 			pid: 0,
 			stdout,
 			stderr,
@@ -559,22 +586,29 @@ function createChildProcess(host, EventEmitter, io = {}) {
 	}
 
 	function failure(command, captured, options) {
-		const err = new Error(`Command failed: ${command}${captured.stderr ? `\n${captured.stderr}` : ""}`);
+		const err = new Error(`Command failed: ${command}${captured.stderr?.length ? `\n${captured.stderr}` : ""}`);
 		err.status = captured.status;
 		err.stdout = decode(captured.stdout, options.encoding);
 		err.stderr = decode(captured.stderr, options.encoding);
 		return err;
 	}
 
+	const notFound = (command, syscall = "spawnSync") =>
+		Object.assign(new Error(`${syscall} ${command} ENOENT`), { errno: -2, code: "ENOENT", syscall: `${syscall} ${command}`, path: command });
+
 	function spawnSync(command, args, options) {
 		const norm = normalizeArgs(args, options);
+		if (!norm.options.shell && !findExecutable(command, norm.options)) {
+			const error = notFound(command);
+			return { status: null, signal: null, pid: 0, stdout: decode("", norm.options.encoding), stderr: decode("", norm.options.encoding), output: null, error };
+		}
 		const argv = norm.options.shell ? shellArgv([command, ...norm.args].join(" ")) : [command, ...norm.args];
 		return result(run(argv, norm.options), norm.options);
 	}
 
 	function execSync(command, options = {}) {
 		const captured = run(shellArgv(command), options);
-		if (!inherits(options, 2) && captured.stderr) io.writeStderr?.(captured.stderr);
+		if (!inherits(options, 2) && captured.stderr.length) io.writeStderr?.(String(captured.stderr));
 		if (captured.status !== 0) throw failure(command, captured, options);
 		return decode(captured.stdout, options.encoding);
 	}
@@ -586,25 +620,106 @@ function createChildProcess(host, EventEmitter, io = {}) {
 		return decode(captured.stdout, norm.options.encoding);
 	}
 
+	/**
+	 * The engine can only run a child to completion, so `spawn` starts it once the caller has had the chance to
+	 * feed its stdin: when stdin is ended, or on the next turn of the event loop if nothing was written. Output
+	 * then arrives as 'data' events and the child ends with 'exit' and 'close', as Node's does.
+	 */
 	function spawn(command, args, options) {
 		const norm = normalizeArgs(args, options);
 		const emitter = new EventEmitter();
 		emitter.stdout = new EventEmitter();
 		emitter.stderr = new EventEmitter();
-		queueMicrotask(() => {
+		for (const stream of [emitter.stdout, emitter.stderr]) {
+			stream.setEncoding = () => stream;
+			stream.resume = () => stream;
+			stream.pause = () => stream;
+		}
+		const stdio = norm.options.stdio;
+		const stdinMode = Array.isArray(stdio) ? stdio[0] : stdio;
+		const inputs = [];
+		let started = false;
+		let killed = null;
+		emitter.pid = 0;
+		emitter.killed = false;
+		emitter.exitCode = null;
+		emitter.signalCode = null;
+		if (stdinMode === "ignore" || stdinMode === "inherit" || stdinMode === null) emitter.stdin = null;
+		else {
+			const stdin = new EventEmitter();
+			stdin.writable = true;
+			stdin.write = (chunk, encoding, callback) => {
+				inputs.push(typeof chunk === "string" ? io.Buffer.from(chunk, typeof encoding === "string" ? encoding : "utf8") : io.Buffer.from(chunk));
+				const done = typeof encoding === "function" ? encoding : callback;
+				if (done) queueMicrotask(done);
+				return true;
+			};
+			stdin.end = (chunk, encoding, callback) => {
+				if (chunk !== undefined && chunk !== null && typeof chunk !== "function") stdin.write(chunk, encoding);
+				stdin.writable = false;
+				queueMicrotask(() => {
+					stdin.emit("finish");
+					stdin.emit("close");
+					start();
+				});
+				const done = [chunk, encoding, callback].find((x) => typeof x === "function");
+				if (done) queueMicrotask(done);
+			};
+			stdin.destroy = stdin.end;
+			emitter.stdin = stdin;
+		}
+
+		const fail = (error) => {
+			emitter.emit("error", error);
+			emitter.emit("close", -2, null);
+		};
+		const start = () => {
+			if (started) return;
+			started = true;
+			if (killed) {
+				emitter.signalCode = killed;
+				emitter.emit("exit", null, killed);
+				emitter.emit("close", null, killed);
+				return;
+			}
+			if (!norm.options.shell && !findExecutable(command, norm.options)) {
+				fail(notFound(command, "spawn"));
+				return;
+			}
 			try {
-				const res = spawnSync(command, norm.args, norm.options);
+				const options = { ...norm.options };
+				if (inputs.length) options.input = io.Buffer.concat(inputs);
+				const res = spawnSync(command, norm.args, options);
+				if (res.error) return fail(res.error);
 				if (res.stdout?.length) emitter.stdout.emit("data", res.stdout);
 				if (res.stderr?.length) emitter.stderr.emit("data", res.stderr);
 				emitter.stdout.emit("end");
 				emitter.stderr.emit("end");
-				emitter.emit("exit", res.status, null);
-				emitter.emit("close", res.status, null);
+				emitter.stdout.emit("close");
+				emitter.stderr.emit("close");
+				emitter.exitCode = res.status;
+				emitter.signalCode = res.signal;
+				emitter.emit("exit", res.status, res.signal);
+				emitter.emit("close", res.status, res.signal);
 			} catch (err) {
-				emitter.emit("error", err);
+				fail(err);
 			}
+		};
+		const later = typeof globalThis.setImmediate === "function" ? globalThis.setImmediate : (fn) => globalThis.setTimeout(fn, 0);
+		later(() => {
+			// A piped stdin gets one more turn: a program that writes to it after an await still reaches the child.
+			if (emitter.stdin && emitter.stdin.writable && inputs.length === 0) later(start);
+			else if (!emitter.stdin || !emitter.stdin.writable) start();
+			else later(start);
 		});
-		emitter.kill = () => true;
+		emitter.kill = (signal = "SIGTERM") => {
+			if (started) return false;
+			killed = typeof signal === "number" ? (SIGNAL_NAMES[signal] ?? "SIGTERM") : signal;
+			emitter.killed = true;
+			return true;
+		};
+		emitter.ref = () => emitter;
+		emitter.unref = () => emitter;
 		return emitter;
 	}
 
