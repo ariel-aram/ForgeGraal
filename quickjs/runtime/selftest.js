@@ -256,7 +256,7 @@ async function main() {
 	await test("unimplemented modules fail loudly instead of pretending", () => {
 		// Only meaningful on the quickjs layer; on Node these modules genuinely exist.
 		const net = require("net");
-		if (net.__forgegraalUnavailable) {
+		if (net.__graakUnavailable) {
 			assert.throws(() => net.createServer(), /not available on the quickjs-ng runtime/);
 		}
 	});

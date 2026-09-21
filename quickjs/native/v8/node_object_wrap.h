@@ -1,5 +1,5 @@
-#ifndef FORGEGRAAL_NODE_OBJECT_WRAP_H_
-#define FORGEGRAAL_NODE_OBJECT_WRAP_H_
+#ifndef GRAAK_NODE_OBJECT_WRAP_H_
+#define GRAAK_NODE_OBJECT_WRAP_H_
 
 #include "node.h"
 #include <cassert>

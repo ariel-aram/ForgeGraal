@@ -7,11 +7,11 @@
  *              u8 method (0 stored, 1 raw deflate), storedSize bytes
  *   trailer := "FGSEA\0\0\1", u64 payloadOffset, u64 payloadLength, 64 hex characters (payload SHA-256)
  *
- * The entry ".forgegraal" holds the path of the file the host should run.
+ * The entry ".graak" holds the path of the file the host should run.
  */
 export declare const SEA_MAGIC: Buffer<ArrayBuffer>;
 export declare const SEA_TRAILER_BYTES = 88;
-export declare const SEA_ENTRY_MARKER = ".forgegraal";
+export declare const SEA_ENTRY_MARKER = ".graak";
 export interface SeaEntry {
     /** Path inside the unpacked directory, forward slashes. */
     path: string;

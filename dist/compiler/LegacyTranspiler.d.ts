@@ -52,6 +52,7 @@ export declare class LegacyTranspiler {
      */
     static toCommonJs(entries: readonly ArchiveEntry[], options?: {
         onLog?: (message: string) => void;
+        cacheDir?: string;
     }): Promise<{
         entries: ArchiveEntry[];
         renamed: Map<string, string>;

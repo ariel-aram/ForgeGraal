@@ -1,7 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.LegacyTranspiler = void 0;
+const node_crypto_1 = require("node:crypto");
 const node_fs_1 = require("node:fs");
+const node_os_1 = require("node:os");
 const node_path_1 = require("node:path");
 /**
  * Lowers a collected project to syntax an old Node.js runtime can parse.
@@ -166,6 +168,25 @@ class LegacyTranspiler {
             ".tsx": "tsx",
             ".jsx": "jsx",
         };
+        // Converting is deterministic in the file's bytes, so a converted file is kept on disk and the next
+        // build of the same project (or of another one that shares its dependencies) skips esbuild for it.
+        const cacheDir = options.cacheDir;
+        const salt = (0, node_crypto_1.createHash)("sha256").update(`toCommonJs-1:${esbuild.version}`).digest("hex").slice(0, 16);
+        const cached = { hits: 0 };
+        const cachePath = (original, kind, sourcefile, usesMeta) => (0, node_path_1.join)(cacheDir, `${(0, node_crypto_1.createHash)("sha256").update(`${salt}\0${kind}\0${sourcefile}\0${usesMeta}\0`).update(original).digest("hex")}.js`);
+        // esbuild works on many files at once, but not on thousands of source strings held in memory at once.
+        const limit = Math.max(4, (0, node_os_1.availableParallelism)() * 2);
+        let active = 0;
+        const waiting = [];
+        const slot = async () => {
+            if (active >= limit)
+                await new Promise((resolve) => waiting.push(resolve));
+            active++;
+        };
+        const release = () => {
+            active--;
+            waiting.shift()?.();
+        };
         const jobs = [];
         for (let i = 0; i < out.length; i++) {
             const index = i;
@@ -176,7 +197,7 @@ class LegacyTranspiler {
                 continue;
             if (entry.path.endsWith(".d.ts") || entry.path.endsWith(".d.mts") || entry.path.endsWith(".d.cts"))
                 continue;
-            jobs.push((async () => {
+            const convert = async () => {
                 const original = entrySource(entry).toString("utf-8");
                 const isModule = LegacyTranspiler.formatFor(entry.path, declared) === "module";
                 // Plain CommonJS needs no work. A file in a "type": "module" package or a .mjs is converted
@@ -185,41 +206,78 @@ class LegacyTranspiler {
                     return;
                 try {
                     const usesMeta = original.includes("import.meta");
-                    const result = await esbuild.transform(original, {
-                        target: "esnext",
-                        format: "cjs",
-                        platform: "node",
-                        loader: loader ?? "js",
-                        // esbuild reads ".mjs" as "Node ESM importing CommonJS" and then hands `import x from "y"` the whole
-                        // module.exports. Everything here was ES modules that are CommonJS now, so the extension is hidden
-                        // and a default import is the module's `default` export, as it was.
-                        sourcefile: entry.path.replace(/\.mjs$/, ".js").replace(/\.mts$/, ".ts"),
-                        jsx: "automatic",
-                        legalComments: "inline",
-                        // import() becomes Promise.resolve().then(() => require(...)): a real dynamic import would ask the
-                        // engine's own module loader, which knows nothing of node_modules resolution or CommonJS interop.
-                        supported: { "dynamic-import": false },
-                        ...(usesMeta
-                            ? {
-                                define: {
-                                    "import.meta.url": "__fgMetaUrl",
-                                    "import.meta.dirname": "__dirname",
-                                    "import.meta.filename": "__filename",
-                                },
-                                banner: 'const __fgMetaUrl = require("url").pathToFileURL(__filename).href;',
+                    // esbuild reads ".mjs" as "Node ESM importing CommonJS" and then hands `import x from "y"` the whole
+                    // module.exports. Everything here was ES modules that are CommonJS now, so the extension is hidden
+                    // and a default import is the module's `default` export, as it was.
+                    const sourcefile = entry.path.replace(/\.mjs$/, ".js").replace(/\.mts$/, ".ts");
+                    let code;
+                    const file = cacheDir ? cachePath(original, loader ?? "js", sourcefile, usesMeta) : undefined;
+                    if (file) {
+                        try {
+                            code = (0, node_fs_1.readFileSync)(file, "utf-8");
+                            cached.hits++;
+                        }
+                        catch {
+                            // Not converted before.
+                        }
+                    }
+                    if (code === undefined) {
+                        const result = await esbuild.transform(original, {
+                            target: "esnext",
+                            format: "cjs",
+                            platform: "node",
+                            loader: loader ?? "js",
+                            sourcefile,
+                            jsx: "automatic",
+                            legalComments: "inline",
+                            // import() becomes Promise.resolve().then(() => require(...)): a real dynamic import would ask the
+                            // engine's own module loader, which knows nothing of node_modules resolution or CommonJS interop.
+                            supported: { "dynamic-import": false },
+                            ...(usesMeta
+                                ? {
+                                    define: {
+                                        "import.meta.url": "__fgMetaUrl",
+                                        "import.meta.dirname": "__dirname",
+                                        "import.meta.filename": "__filename",
+                                    },
+                                    banner: 'const __fgMetaUrl = require("url").pathToFileURL(__filename).href;',
+                                }
+                                : {}),
+                        });
+                        code = result.code;
+                        if (file) {
+                            try {
+                                (0, node_fs_1.mkdirSync)((0, node_path_1.dirname)(file), { recursive: true });
+                                // Written beside its final name first: a build stopped halfway must not leave a truncated file
+                                // that a later build would trust.
+                                const partial = `${file}.${process.pid}.tmp`;
+                                (0, node_fs_1.writeFileSync)(partial, code);
+                                (0, node_fs_1.renameSync)(partial, file);
                             }
-                            : {}),
-                    });
+                            catch {
+                                // A cache that cannot be written is a slower build, not a failed one.
+                            }
+                        }
+                    }
                     converted++;
                     let path = entry.path;
                     if (loader) {
                         path = entry.path.slice(0, -ext.length) + (ext === ".mts" ? ".mjs" : ext === ".cts" ? ".cjs" : ".js");
                         renamed.set(entry.path, path);
                     }
-                    out[index] = { ...entry, path, source: Buffer.from(result.code, "utf-8") };
+                    out[index] = { ...entry, path, source: Buffer.from(code, "utf-8") };
                 }
                 catch (err) {
                     failures.push(`${entry.path}: ${(err instanceof Error ? err.message : String(err)).split("\n")[0]}`);
+                }
+            };
+            jobs.push((async () => {
+                await slot();
+                try {
+                    await convert();
+                }
+                finally {
+                    release();
                 }
             })());
         }
@@ -242,6 +300,7 @@ class LegacyTranspiler {
         }
         if (converted) {
             options.onLog?.(`Converted ${converted} ES module / TypeScript files to CommonJS for the native host` +
+                (cached.hits ? ` (${cached.hits} from the conversion cache)` : "") +
                 (failures.length ? `, ${failures.length} left as-is (unparseable)` : ""));
         }
         return { entries: out, renamed, converted, failures };

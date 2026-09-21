@@ -1,0 +1,6 @@
+# The prebuilt hosts are binary; the C sources and scripts must digest the same on every checkout.
+quickjs/prebuilt/** binary
+quickjs/native/**/*.sh text eol=lf
+quickjs/native/**/*.c text eol=lf
+quickjs/native/**/*.h text eol=lf
+quickjs/winxp-compat.patch text eol=lf

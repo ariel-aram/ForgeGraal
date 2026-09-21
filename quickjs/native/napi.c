@@ -1,10 +1,10 @@
 /*
- * Node-API (N-API) for the ForgeGraal native host.
+ * Node-API (N-API) for the Graak native host.
  *
  * quickjs-ng has no notion of a native addon, but a `.node` file is only a shared library that
  * imports `napi_*` functions from whatever process loads it and registers itself through one of
  * two entry points. Nothing about that contract needs Node.js: this file exports the same
- * functions from the ForgeGraal executable, on top of the QuickJS C API, and loads the library
+ * functions from the Graak executable, on top of the QuickJS C API, and loads the library
  * with dlopen / LoadLibrary. Addons built on Node-API (lmdb, @napi-rs/canvas, sharp, bcrypt,
  * argon2, sodium-native, bufferutil, ...) then run unmodified, on the architecture they were built
  * for, exactly as they would under Node.js.
@@ -223,7 +223,7 @@ static napi_value H(JSValue v)
     size_t c = g_top / CHUNK;
     JSValue *slot;
     if (c >= MAX_CHUNKS) {
-        fprintf(stderr, "forgegraal: N-API handle arena exhausted\n");
+        fprintf(stderr, "graak: N-API handle arena exhausted\n");
         abort();
     }
     if (!g_chunks[c]) {
@@ -1594,12 +1594,12 @@ napi_status napi_get_reference_value(napi_env env, napi_ref ref, napi_value *res
 
 static JSAtom wrap_atom(void)
 {
-    if (!g_atom_wrap) g_atom_wrap = JS_NewAtom(g_ctx, "__forgegraal_napi_wrap");
+    if (!g_atom_wrap) g_atom_wrap = JS_NewAtom(g_ctx, "__graak_napi_wrap");
     return g_atom_wrap;
 }
 static JSAtom tag_atom(void)
 {
-    if (!g_atom_tag) g_atom_tag = JS_NewAtom(g_ctx, "__forgegraal_napi_tag");
+    if (!g_atom_tag) g_atom_tag = JS_NewAtom(g_ctx, "__graak_napi_tag");
     return g_atom_tag;
 }
 
@@ -2401,7 +2401,7 @@ static void *find_symbol(void *lib, const char *name) { return (void *) GetProcA
 static void *open_library(const char *path, char *err, size_t errlen)
 {
     snprintf(err, errlen,
-             "this ForgeGraal build is statically linked, and a static executable cannot load shared "
+             "this Graak build is statically linked, and a static executable cannot load shared "
              "libraries. Build the dynamic variant for this target to use native addons");
     return NULL;
 }
@@ -2451,7 +2451,7 @@ static JSValue fg_dlopen(JSContext *ctx, JSValueConst this_val, int argc, JSValu
         if (legacy) init = legacy->nm_register_func;
     }
     if (!init) {
-        /* An addon built against ForgeGraal's V8 layer (quickjs/native/v8) whose registration function
+        /* An addon built against Graak's V8 layer (quickjs/native/v8) whose registration function
            is the one NAN generates itself: `node_register_module_v72(exports, module, context)`. The
            layer needs to be told which env it is running in first, which is what fg_v8_set_env is for.
            Its presence also proves the addon was built for this host, so calling the registration
@@ -2489,10 +2489,10 @@ static JSValue fg_dlopen(JSContext *ctx, JSValueConst this_val, int argc, JSValu
     }
     if (!init) {
         JSValue e = JS_ThrowInternalError(ctx,
-            "'%s' is not a Node-API addon, and was not built against ForgeGraal's V8 layer either. An addon "
+            "'%s' is not a Node-API addon, and was not built against Graak's V8 layer either. An addon "
             "compiled against V8 or NAN reads V8's own memory layout, which exists only inside Node.js, so a "
-            "prebuilt binary of one cannot load here. Rebuild it from source with the ForgeGraal V8 headers "
-            "(quickjs/native/v8), which `forgegraal compile` does for a project that ships the source.", path);
+            "prebuilt binary of one cannot load here. Rebuild it from source with the Graak V8 headers "
+            "(quickjs/native/v8), which `graak compile` does for a project that ships the source.", path);
         JS_FreeCString(ctx, path);
         return e;
     }
@@ -2593,14 +2593,14 @@ static JSClassDef def_holder = { "NapiHolder", holder_finalizer };
 static JSClassDef def_ext = { "External", holder_finalizer };
 static JSClassDef def_fn = { "NapiFunctionData", fn_finalizer };
 
-void forgegraal_napi_shutdown(void);
+void graak_napi_shutdown(void);
 
 static void napi_atexit(void)
 {
-    forgegraal_napi_shutdown();
+    graak_napi_shutdown();
 }
 
-void forgegraal_napi_shutdown(void)
+void graak_napi_shutdown(void)
 {
     if (g_shutdown || !g_ready) return;
     g_shutdown = 1;
@@ -2637,14 +2637,14 @@ static JSValue fg_napi_init(JSContext *ctx, JSValueConst this_val, int argc, JSV
     return JS_UNDEFINED;
 }
 
-const JSCFunctionListEntry forgegraal_napi_funcs[] = {
+const JSCFunctionListEntry graak_napi_funcs[] = {
     JS_CFUNC_DEF("dlopen", 2, fg_dlopen),
     JS_CFUNC_DEF("napiDrain", 0, fg_drain),
     JS_CFUNC_DEF("napiInit", 1, fg_napi_init),
 };
-const size_t forgegraal_napi_funcs_count = sizeof(forgegraal_napi_funcs) / sizeof(forgegraal_napi_funcs[0]);
+const size_t graak_napi_funcs_count = sizeof(graak_napi_funcs) / sizeof(graak_napi_funcs[0]);
 
-void forgegraal_napi_init(JSContext *ctx)
+void graak_napi_init(JSContext *ctx)
 {
     JSValue factory;
     if (g_ready) return;

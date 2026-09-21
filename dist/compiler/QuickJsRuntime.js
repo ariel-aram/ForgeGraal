@@ -40,7 +40,7 @@ const NodeRuntime_1 = require("./NodeRuntime");
 exports.QUICKJS_VERSION = "v0.16.2";
 const RELEASE_URL = "https://github.com/quickjs-ng/quickjs/releases/download";
 /**
- * quickjs-ng assets that match a ForgeGraal target. Targets are absent when the release has no
+ * quickjs-ng assets that match a Graak target. Targets are absent when the release has no
  * build for them, which is not the same as the target being unsupported by the engine — it means
  * it would have to be built from source.
  */
@@ -136,7 +136,7 @@ class QuickJsRuntime {
         const version = options.version ?? exports.QUICKJS_VERSION;
         const expected = options.sha256 ?? entry.sha256;
         if (!expected) {
-            throw new structures_1.RuntimeError(`No SHA-256 is pinned for quickjs-ng ${version} '${entry.asset}'. ForgeGraal does not download an ` +
+            throw new structures_1.RuntimeError(`No SHA-256 is pinned for quickjs-ng ${version} '${entry.asset}'. Graak does not download an ` +
                 "executable it cannot verify; record the checksum first.");
         }
         const dir = (0, node_path_1.join)(QuickJsRuntime.cacheDir(), version, target);

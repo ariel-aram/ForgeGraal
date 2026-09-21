@@ -24,7 +24,7 @@ function hasBun(): boolean {
 }
 
 function runOnNode(script: string): { stdout: string; stderr: string; failed: boolean } {
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-buncompat-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-buncompat-"));
 	const file = join(root, "run.cjs");
 	writeFileSync(file, `${SHIM}\n${script}\n`);
 	const res = spawnSync(process.execPath, [file], { cwd: root, encoding: "utf-8" });
@@ -32,7 +32,7 @@ function runOnNode(script: string): { stdout: string; stderr: string; failed: bo
 }
 
 test("bun:sqlite shim persists rows to a real database file via node:sqlite", () => {
-	const dbPath = join(mkdtempSync(join(tmpdir(), "forgegraal-bunsqlite-")), "bot.sqlite");
+	const dbPath = join(mkdtempSync(join(tmpdir(), "graak-bunsqlite-")), "bot.sqlite");
 	const res = runOnNode(
 		`const { Database } = require("bun:sqlite");
 const db = new Database(${JSON.stringify(dbPath)});
@@ -81,15 +81,15 @@ test("other bun: modules fail with an explanation instead of a bare MODULE_NOT_F
 });
 
 test("Bun.env, Bun.file and Bun.write are real, working implementations", () => {
-	const dir = mkdtempSync(join(tmpdir(), "forgegraal-bunfile-"));
+	const dir = mkdtempSync(join(tmpdir(), "graak-bunfile-"));
 	const target = join(dir, "out.txt");
 	const res = runOnNode(
-		`process.env.FORGEGRAAL_TEST_VAR = "hello";
+		`process.env.GRAAK_TEST_VAR = "hello";
 (async () => {
-	await Bun.write(${JSON.stringify(target)}, "written by ForgeGraal");
+	await Bun.write(${JSON.stringify(target)}, "written by Graak");
 	const file = Bun.file(${JSON.stringify(target)});
 	console.log(JSON.stringify({
-		env: Bun.env.FORGEGRAAL_TEST_VAR,
+		env: Bun.env.GRAAK_TEST_VAR,
 		exists: await file.exists(),
 		text: await file.text(),
 		size: file.size,
@@ -100,9 +100,9 @@ test("Bun.env, Bun.file and Bun.write are real, working implementations", () => 
 	const out = JSON.parse(res.stdout.trim());
 	assert.equal(out.env, "hello");
 	assert.equal(out.exists, true);
-	assert.equal(out.text, "written by ForgeGraal");
-	assert.equal(out.size, "written by ForgeGraal".length);
-	assert.equal(readFileSync(target, "utf-8"), "written by ForgeGraal");
+	assert.equal(out.text, "written by Graak");
+	assert.equal(out.size, "written by Graak".length);
+	assert.equal(readFileSync(target, "utf-8"), "written by Graak");
 });
 
 test("Bun.serve() bridges a fetch handler onto a real HTTP server", async () => {
@@ -123,7 +123,7 @@ test("Bun.serve() bridges a fetch handler onto a real HTTP server", async () => 
 		});
 	});
 
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-bunserve-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-bunserve-"));
 	const file = join(root, "server.cjs");
 	writeFileSync(
 		file,
@@ -133,7 +133,7 @@ const server = Bun.serve({
 	fetch(req) {
 		const url = new URL(req.url);
 		if (url.pathname === "/echo" && req.method === "POST") {
-			return req.text().then((body) => new Response("echo:" + body, { status: 201, headers: { "x-forgegraal": "1" } }));
+			return req.text().then((body) => new Response("echo:" + body, { status: 201, headers: { "x-graak": "1" } }));
 		}
 		return new Response("not found", { status: 404 });
 	},
@@ -162,7 +162,7 @@ process.stdout.write("listening:" + server.port + "\\n");`
 
 		const res = await fetch(`http://127.0.0.1:${port}/echo`, { method: "POST", body: "ping" });
 		assert.equal(res.status, 201);
-		assert.equal(res.headers.get("x-forgegraal"), "1");
+		assert.equal(res.headers.get("x-graak"), "1");
 		assert.equal(await res.text(), "echo:ping");
 
 		const notFound = await fetch(`http://127.0.0.1:${port}/nope`);
@@ -200,7 +200,7 @@ test("a Bun-authored TypeScript entrypoint using bun:sqlite is transpiled and ru
 	skip: !hasBun() && "bun is not installed",
 }, async () => {
 	const { BunTranspiler } = await import("../dist/index.js");
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-buntranspile-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-buntranspile-"));
 	const entry = join(root, "index.ts");
 	writeFileSync(
 		entry,
@@ -230,10 +230,10 @@ test("a Bun-authored bot packages for Android (linux-armv7) as a plain Node.js b
 	timeout: 60_000,
 }, async () => {
 	// The point: `bun build --compile` needs Bun's own runtime on the target, which on
-	// Termux/Android needs proot-distro to run at all. ForgeGraal assists instead of
+	// Termux/Android needs proot-distro to run at all. Graak assists instead of
 	// replacing that -- it transpiles the Bun-authored source at build time and ships a
 	// build that runs on a plain Node.js on the device, no Bun and no proot-distro involved.
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-bun-android-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-bun-android-"));
 	mkdirSync(join(root, "node_modules/greet"), { recursive: true });
 	writeFileSync(join(root, "package.json"), JSON.stringify({ name: "bun-android-bot", dependencies: { greet: "1" } }));
 	writeFileSync(join(root, "node_modules/greet/package.json"), JSON.stringify({ name: "greet", version: "1.0.0" }));

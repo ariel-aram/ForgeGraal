@@ -27,7 +27,7 @@ function assertSafeArchivePath(path) {
         /^[a-zA-Z]:/.test(path) ||
         segments.some((s) => s === "" || s === "." || s === "..");
     if (unsafe)
-        throw new structures_1.ForgeGraalError(`Unsafe archive path '${path}'`);
+        throw new structures_1.GraakError(`Unsafe archive path '${path}'`);
 }
 class Archive {
     static pack(entries) {
@@ -39,7 +39,7 @@ class Archive {
             assertSafeArchivePath(entry.path);
             const key = entry.path.toLowerCase();
             if (seen.has(key)) {
-                throw new structures_1.ForgeGraalError(`Duplicate archive path '${entry.path}' (paths must be unique case-insensitively for Windows targets)`);
+                throw new structures_1.GraakError(`Duplicate archive path '${entry.path}' (paths must be unique case-insensitively for Windows targets)`);
             }
             seen.add(key);
             const data = typeof entry.source === "string" ? (0, node_fs_1.readFileSync)(entry.source) : entry.source;
@@ -67,7 +67,7 @@ class Archive {
     static unpack(buffer) {
         const raw = (0, node_zlib_1.gunzipSync)(buffer);
         if (raw.toString("latin1", 0, exports.ARCHIVE_MAGIC.length) !== exports.ARCHIVE_MAGIC) {
-            throw new structures_1.ForgeGraalError("Invalid ForgeGraal archive header");
+            throw new structures_1.GraakError("Invalid Graak archive header");
         }
         const manifestLength = raw.readUInt32LE(exports.ARCHIVE_MAGIC.length);
         let offset = exports.ARCHIVE_MAGIC.length + 4;
@@ -77,7 +77,7 @@ class Archive {
             assertSafeArchivePath(file.path);
             const data = raw.subarray(offset, offset + file.size);
             if (data.length !== file.size)
-                throw new structures_1.ForgeGraalError("Truncated ForgeGraal archive");
+                throw new structures_1.GraakError("Truncated Graak archive");
             offset += file.size;
             return { ...file, data };
         });

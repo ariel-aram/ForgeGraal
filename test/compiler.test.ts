@@ -64,7 +64,7 @@ function pe(machine: number, magic: number): Buffer {
 
 /** npm-style project: root depends on a@1 and b; b depends on a@2 (must nest). */
 function createProject(): string {
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-project-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-project-"));
 	write(
 		join(root, "package.json"),
 		JSON.stringify({
@@ -81,7 +81,7 @@ console.log(JSON.stringify({
 	bA: require("b"),
 	commands: fs.readdirSync("./src/commands"),
 	env: fs.existsSync(".env"),
-	target: process.env.FORGEGRAAL_TARGET,
+	target: process.env.GRAAK_TARGET,
 }));`
 	);
 	write(join(root, "src/commands/ping.js"), "module.exports = 1;");
@@ -182,7 +182,7 @@ test("ProjectCollector bundles production dependencies with correct nesting", ()
 });
 
 test("ProjectCollector follows pnpm-style symlinked node_modules", (t) => {
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-pnpm-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-pnpm-"));
 	write(join(root, "package.json"), JSON.stringify({ name: "pnpm-bot", dependencies: { a: "1" } }));
 	write(join(root, "index.js"), "");
 	const store = join(root, "node_modules/.pnpm");
@@ -242,7 +242,7 @@ test("Portable bundles run with the host Node.js and keep the project layout", a
 		entrypoint: join(root, "src/index.js"),
 		// Fixed rather than matched to the host arch: this only shells out via the host's own
 		// process.execPath below, so any still-Node-based modern target proves the same thing.
-		// linux-modern-x64 specifically now runs on the ForgeGraal native host instead (see
+		// linux-modern-x64 specifically now runs on the Graak native host instead (see
 		// quickJsPackager.test.ts), so it no longer belongs in this test.
 		target: TargetDevice.LinuxModernArm64,
 		strategy: "portable",
@@ -275,14 +275,14 @@ test("Portable bundles run with the host Node.js and keep the project layout", a
 });
 
 test("Portable bundles support ESM entrypoints", async () => {
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-esm-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-esm-"));
 	write(join(root, "package.json"), JSON.stringify({ name: "esm-bot", type: "module" }));
 	write(join(root, "index.js"), `import { readFileSync } from "node:fs"; console.log("esm", typeof readFileSync);`);
 	const result = await BinaryPackager.compile({
 		entrypoint: join(root, "index.js"),
 		target: TargetDevice.IosIshX86,
 		packageManager: "bun",
-		// iSH now defaults to the ForgeGraal native host, whose require() is CJS-only -- ESM
+		// iSH now defaults to the Graak native host, whose require() is CJS-only -- ESM
 		// entrypoints are a Node-portable-pipeline concern, so opt back into it explicitly.
 		strategy: "portable",
 		offline: true,
@@ -294,7 +294,7 @@ test("Portable bundles support ESM entrypoints", async () => {
 });
 
 test("Native addons built for another platform are rejected", async () => {
-	// Not IosIshX86: it now defaults to the ForgeGraal native host, which hard-rejects ANY native
+	// Not IosIshX86: it now defaults to the Graak native host, which hard-rejects ANY native
 	// addon regardless of architecture match (see quickJsPackager.test.ts) -- this test is about
 	// the Node-path arch-mismatch mechanics (NativeAddonMismatchError, allowNativeMismatch)
 	// specifically, so it needs a target still on that path. WinX86 is equally 32-bit.
@@ -330,7 +330,7 @@ test("SEA executables run standalone", { timeout: 300_000 }, async (t) => {
 		return;
 	}
 	if (QuickJsPackager.supports(hostTarget as TargetDevice)) {
-		t.skip(`${hostTarget} now runs on the ForgeGraal native host, not a Node.js SEA — see quickJsPackager.test.ts`);
+		t.skip(`${hostTarget} now runs on the Graak native host, not a Node.js SEA — see quickJsPackager.test.ts`);
 		return;
 	}
 

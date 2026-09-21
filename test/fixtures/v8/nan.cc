@@ -1,5 +1,5 @@
 // A NAN addon, written the way NAN's own documentation shows: Nan::New, NAN_METHOD, Nan::ObjectWrap,
-// Nan::AsyncWorker, Nan::Callback, Nan::Persistent. Built against ForgeGraal's V8 layer, nothing else.
+// Nan::AsyncWorker, Nan::Callback, Nan::Persistent. Built against Graak's V8 layer, nothing else.
 #include <nan.h>
 #include <string>
 

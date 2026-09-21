@@ -11,23 +11,23 @@ const ExtensionRegistry_1 = require("./integrations/ExtensionRegistry");
 const ForgeDBIntegration_1 = require("./integrations/ForgeDBIntegration");
 const TargetDevice_1 = require("./structures/TargetDevice");
 const VERSION = require("../package.json").version;
-const HELP = `ForgeGraal ${VERSION} - standalone executables for ForgeScript bots
+const HELP = `Graak ${VERSION} - standalone executables for JavaScript and TypeScript programs, on every device
 
 Usage:
-  forgegraal compile <entrypoint.js | site-folder> --target <target> [options]
-  forgegraal targets [--pm <package manager>]
-  forgegraal info <target> [--db <driver>]
-  forgegraal extensions
-  forgegraal inspect <file>
-  forgegraal runtimes list [--target <target>]
-  forgegraal runtimes add <target> <version> <url> --sha256 <hex> [--notes <text>] [--global]
-  forgegraal runtimes remove <target> <version> [--global]
-  forgegraal version
+  graak compile <entrypoint.js | site-folder> --target <target> [options]
+  graak targets [--pm <package manager>]
+  graak info <target> [--db <driver>]
+  graak extensions
+  graak inspect <file>
+  graak runtimes list [--target <target>]
+  graak runtimes add <target> <version> <url> --sha256 <hex> [--notes <text>] [--global]
+  graak runtimes remove <target> <version> [--global]
+  graak version
 
 Compile options:
-  -t, --target <name>        Target device (see 'forgegraal targets')
+  -t, --target <name>        Target device (see 'graak targets')
   -o, --output <path>        Output file (single file) or directory (folder)
-  -e, --engine <name>        auto (default, follows the target), native (ForgeGraal's own host) or node.
+  -e, --engine <name>        auto (default, follows the target), native (Graak's own host) or node.
                               With native, --strategy sea writes ONE self-unpacking executable and
                               portable/auto a folder
   -s, --strategy <name>      auto (default), sea or portable. Without --engine it also opts a native-host
@@ -38,7 +38,7 @@ Compile options:
       --node-version <ver>   Official Node.js version to download (e.g. 22 or 22.11.0)
       --ucrt-dir <dir>       Windows SDK Redist\\ucrt\\DLLs\\<arch> folder to ship app-local, for addons
                              that need the Universal C Runtime on Windows 7 (sharp/libvips do)
-      --native-libc <name>   musl (default) or glibc, for targets that build the ForgeGraal
+      --native-libc <name>   musl (default) or glibc, for targets that build the Graak
                               native host. musl runs unmodified on both glibc and musl systems
                               (Alpine included); glibc is only wired up for linux-modern-x64
       --static               Treat the entrypoint as a folder of built static files and serve it
@@ -49,17 +49,17 @@ Compile options:
       --index <file>         Static site: entry page. Default index.html
       --offline              Never download runtimes
       --include-dev          Bundle devDependencies too
-      --include-env          Bundle .env files (they usually contain your bot token)
+      --include-env          Bundle .env files (they usually contain secrets such as tokens)
       --allow-native-mismatch  Bundle native addons built for another platform
   -h, --help                 Show this help
 
-Most targets default to the ForgeGraal native host (quickjs-ng + quickjs/native/), not Node.js:
+Most targets default to the Graak native host (quickjs-ng + quickjs/native/), not Node.js:
 every legacy Windows target (XP, Vista, "Legacy" 7), iSH, 32-bit Linux, and linux-modern-x64.
 No Node.js binary is involved anywhere in that output. Native (.node) addons load there too: the
-host implements Node-API itself. A static host cannot dlopen, so a bot that needs an addon gets the
+host implements Node-API itself. A static host cannot dlopen, so a program that needs an addon gets the
 dynamically linked build (glibc on Linux) automatically. Addons compiled against V8 or NAN are
-rebuilt from their source against ForgeGraal's V8 layer for the target (no source, no rebuild). Pass --node-binary, --strategy
-sea/portable, or register a runtime with 'forgegraal runtimes add', to opt a specific build back
+rebuilt from their source against Graak's V8 layer for the target (no source, no rebuild). Pass --node-binary, --strategy
+sea/portable, or register a runtime with 'graak runtimes add', to opt a specific build back
 onto Node.js instead.
 
 Targets still on Node.js (win-x86, win-modern-x64, linux-armv7, linux-modern-arm64, darwin-x64,
@@ -69,13 +69,13 @@ darwin-arm64, freebsd-x86) handle the runtime automatically:
                             device's own package manager (apk / pkg).
   - Windows 7 / Vista     : (only reached via an explicit opt-out) Node.js 12.22.12 / 5.12.0
                             respectively, downloaded and checksum-verified automatically; see
-                            'forgegraal info win-legacy-x86' / 'win-vista-x86'.
+                            'graak info win-legacy-x86' / 'win-vista-x86'.
 
-Targeting a runtime older than Node.js 20 also rewrites the bot so it can run there at all:
+Targeting a runtime older than Node.js 20 also rewrites the program so it can run there at all:
 bundled code is lowered to that runtime's language level, ES modules are converted to
 CommonJS, the missing platform APIs (Web Streams, AbortController, structuredClone, the
 'node:' prefix, ...) are polyfilled at startup, and esbuild's WebAssembly build is shipped so
-code the bot generates at runtime can be lowered on the device. Things that cannot be done
+code the program generates at runtime can be lowered on the device. Things that cannot be done
 correctly are refused rather than faked: Intl.Segmenter throws on these targets instead of
 mis-splitting emoji. Your node_modules on disk is never modified.
 `;
@@ -99,7 +99,7 @@ async function main() {
     }
     switch (command) {
         case "version":
-            console.log(`forgegraal ${VERSION}`);
+            console.log(`graak ${VERSION}`);
             return;
         case "targets": {
             const pm = PolicyEnforcer_1.PolicyEnforcer.resolvePackageManager(values.pm);
@@ -120,13 +120,13 @@ async function main() {
                 console.log("\nBun projects: every target above is available. TypeScript/JSX entrypoints are transpiled " +
                     "automatically with 'bun build' (packages stay external, so your installed node_modules are " +
                     "used). bun:sqlite and common Bun globals (env, file, write, serve, sleep, which) work in the " +
-                    "compiled executable through a Node.js compatibility layer; run 'forgegraal compile --help' " +
+                    "compiled executable through a Node.js compatibility layer; run 'graak compile --help' " +
                     "for details, or use 'bun build --compile' directly if you only need a modern 64-bit binary.");
             }
             return;
         }
         case "extensions": {
-            console.log("ForgeScript Extensions & Compatibility Matrix:");
+            console.log("ForgeScript extensions and compatibility matrix (Graak works without ForgeScript; this only reads what the project uses):");
             for (const ext of ExtensionRegistry_1.ExtensionRegistry.listExtensions()) {
                 console.log(`\n  ${ext.name.padEnd(16)} [${ext.package}]`);
                 console.log(`    Description: ${ext.description}`);
@@ -146,7 +146,7 @@ async function main() {
             console.log(`  Binary format  : ${meta.binaryFormat}`);
             console.log(`  32-bit/legacy  : ${meta.is32BitOrLegacy ? "yes" : "no"}`);
             const native = QuickJsPackager_1.QuickJsPackager.supports(meta.id);
-            console.log(`  Engine         : ${native ? "ForgeGraal native host (quickjs-ng), no Node.js bundled" : "Node.js"}`);
+            console.log(`  Engine         : ${native ? "Graak native host (quickjs-ng), no Node.js bundled" : "Node.js"}`);
             console.log(`  Official Node  : ${meta.officialNodeFile ?? "none"}`);
             if (meta.pinnedLegacyNode) {
                 console.log(`  ${native ? "Node fallback " : "Pinned runtime"} : Node.js ${meta.pinnedLegacyNode.version} (${meta.pinnedLegacyNode.fileKey}), auto-fetched${native ? " (only with --node-binary or --strategy sea|portable)" : ""}`);
@@ -193,7 +193,7 @@ async function main() {
                     fail(`Unknown target '${rest[0]}'`);
                 const entries = target ? RuntimeRegistry_1.RuntimeRegistry.find(target) : RuntimeRegistry_1.RuntimeRegistry.list();
                 if (!entries.length) {
-                    console.log("No community runtimes registered. Add one with 'forgegraal runtimes add'.");
+                    console.log("No community runtimes registered. Add one with 'graak runtimes add'.");
                     return;
                 }
                 for (const e of entries) {
@@ -205,13 +205,13 @@ async function main() {
             if (sub === "add") {
                 const [targetInput, version, url] = rest;
                 if (!targetInput || !version || !url) {
-                    fail("Usage: forgegraal runtimes add <target> <version> <url> --sha256 <hex> [--notes <text>] [--global]");
+                    fail("Usage: graak runtimes add <target> <version> <url> --sha256 <hex> [--notes <text>] [--global]");
                 }
                 const target = (0, TargetDevice_1.parseTargetDevice)(targetInput);
                 if (!target)
                     fail(`Unknown target '${targetInput}'`);
                 if (!values.sha256) {
-                    fail("--sha256 <hex> is required: ForgeGraal never downloads a community runtime without a pinned checksum");
+                    fail("--sha256 <hex> is required: Graak never downloads a community runtime without a pinned checksum");
                 }
                 try {
                     RuntimeRegistry_1.RuntimeRegistry.add({
@@ -225,13 +225,13 @@ async function main() {
                 catch (err) {
                     fail(err instanceof Error ? err.message : String(err));
                 }
-                console.log(`Registered Node.js ${version} for ${target}${values.global ? " (global)" : " (project: .forgegraal/runtimes.json)"}.`);
+                console.log(`Registered Node.js ${version} for ${target}${values.global ? " (global)" : " (project: .graak/runtimes.json)"}.`);
                 return;
             }
             if (sub === "remove") {
                 const [target, version] = rest;
                 if (!target || !version)
-                    fail("Usage: forgegraal runtimes remove <target> <version> [--global]");
+                    fail("Usage: graak runtimes remove <target> <version> [--global]");
                 const removed = RuntimeRegistry_1.RuntimeRegistry.remove(target, version, {
                     global: values.global,
                 });
@@ -244,7 +244,7 @@ async function main() {
         case "compile":
         case "build": {
             if (!arg)
-                fail("Please provide the bot entrypoint (built .js file)");
+                fail("Please provide the entrypoint (a .js or .ts file, or a folder of built static files)");
             if (!values.target)
                 fail("Please specify the target with --target <name>");
             const nativeLibc = values["native-libc"];
@@ -274,11 +274,11 @@ async function main() {
                         index: values.index,
                     }
                     : undefined,
-                onLog: (msg) => console.log(`[ForgeGraal] ${msg}`),
+                onLog: (msg) => console.log(`[Graak] ${msg}`),
             });
             for (const warning of result.warnings)
-                console.warn(`[ForgeGraal] warning: ${warning}`);
-            console.log(`[ForgeGraal] Built ${result.metadata.name} in ${result.durationMs}ms`);
+                console.warn(`[Graak] warning: ${warning}`);
+            console.log(`[Graak] Built ${result.metadata.name} in ${result.durationMs}ms`);
             console.log(`  Strategy : ${result.strategy}`);
             console.log(`  Output   : ${result.outputPath}`);
             console.log(`  Run      : ${result.launcherPath}`);
@@ -286,7 +286,7 @@ async function main() {
                 console.log(`  Layout   : ${result.outputPath === result.launcherPath ? "one self-unpacking file" : "folder"}`);
             }
             console.log(`  Runtime  : ${result.strategy === "quickjs"
-                ? `ForgeGraal native host (no Node.js)`
+                ? `Graak native host (no Node.js)`
                 : result.runtimeVersion
                     ? `Node.js ${result.runtimeVersion}`
                     : "system Node.js"}`);
@@ -294,7 +294,7 @@ async function main() {
             return;
         }
         default:
-            fail(`Unknown command '${command}'. Run 'forgegraal --help' for usage.`);
+            fail(`Unknown command '${command}'. Run 'graak --help' for usage.`);
     }
 }
 function parse() {
@@ -328,7 +328,7 @@ function parse() {
     });
 }
 main().catch((err) => {
-    console.error(`\n[ForgeGraal] ${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`);
+    console.error(`\n[Graak] ${err instanceof Error ? `${err.name}: ${err.message}` : String(err)}`);
     process.exit(1);
 });
 //# sourceMappingURL=cli.js.map

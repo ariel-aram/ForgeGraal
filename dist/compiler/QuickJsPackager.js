@@ -10,8 +10,10 @@ const node_path_1 = require("node:path");
 const nativeShim_1 = require("../runtime/nativeShim");
 const structures_1 = require("../structures");
 const NodeRuntime_1 = require("./NodeRuntime");
+const Prebuilt_1 = require("./Prebuilt");
+const SpawnOutput_1 = require("./SpawnOutput");
 /**
- * Packages a bot to run on the ForgeGraal native host (quickjs-ng + `quickjs/native/`) instead of
+ * Packages a bot to run on the Graak native host (quickjs-ng + `quickjs/native/`) instead of
  * a bundled Node.js binary.
  *
  * Default for the legacy Windows targets, iSH, and 32-bit Linux: those are exactly the targets
@@ -168,13 +170,48 @@ class QuickJsPackager {
         const buildTarget = buildTargetFor(target, libc);
         return buildTarget !== undefined && (buildTarget.startsWith("win-") || libc !== "musl");
     }
+    /** Every distinct `build.sh` argument a host is built for, in a stable order. */
+    static hostBuildTargets() {
+        return [
+            ...new Set([
+                ...Object.values(NATIVE_HOST_BUILD_TARGET),
+                ...Object.values(NATIVE_HOST_GLIBC_BUILD_TARGET),
+                ...Object.values(NATIVE_HOST_MUSL_DYNAMIC_BUILD_TARGET),
+            ]),
+        ]
+            .filter((t) => Boolean(t))
+            .sort();
+    }
     /**
-     * Builds (and caches) the `forgegraal-c` binary for a target by invoking
-     * `quickjs/native/build.sh`. Not a download: there is no published, checksummed release of
-     * this binary yet (unlike `QuickJsRuntime`'s bare engine builds or Node.js itself), so the
-     * only trustworthy source right now is building it from the pinned quickjs-ng/mbedTLS/miniz
-     * versions the script fetches itself. Slow the first time, instant after — same cache
-     * directory convention as `NodeRuntime`.
+     * Compiles the host for one `build.sh` argument from source into `cacheDir` and returns the
+     * executable. Needs a POSIX shell and the target's C toolchain; `ensureNativeHost` only comes here
+     * when there is no matching prebuilt host.
+     */
+    static compileHost(repoRoot, buildTarget, cacheDir, onLog = () => { }) {
+        const exe = (0, node_path_1.join)(cacheDir, buildTarget.startsWith("win-") ? "graak-c.exe" : "graak-c");
+        if (!(0, SpawnOutput_1.hasPosixShell)()) {
+            throw new structures_1.RuntimeError(`The Graak native host for '${buildTarget}' has to be compiled here, which needs a POSIX shell (sh) and ` +
+                "the target's C toolchain, and this machine has no `sh`. Graak ships prebuilt hosts for that reason " +
+                "(quickjs/prebuilt/hosts), but none matches this checkout's native sources. Reinstall Graak from its " +
+                "published package or a clean checkout, or run the build from WSL or Git Bash.");
+        }
+        onLog(`Building the Graak native host for '${buildTarget}' from source (first run only; cached at ${exe} after)`);
+        (0, node_fs_1.mkdirSync)(cacheDir, { recursive: true });
+        const result = (0, node_child_process_1.spawnSync)("sh", [(0, node_path_1.join)(repoRoot, "quickjs/native/build.sh"), buildTarget, cacheDir], {
+            stdio: "inherit",
+        });
+        if (result.status !== 0 || !(0, node_fs_1.existsSync)(exe)) {
+            throw new structures_1.RuntimeError(`Building the native host for '${buildTarget}' failed (${result.error?.message ?? `exit ${result.status ?? result.signal}`}). ` +
+                "See quickjs/native/build.sh's own output above for the reason.");
+        }
+        return exe;
+    }
+    /**
+     * Returns the `graak-c` binary for a target, from the cheapest place that has it: the cache
+     * (instant), the prebuilt host that ships with Graak (a decompress), or `quickjs/native/build.sh`
+     * (minutes; needs a shell and a C toolchain). Not a download: there is no published, checksummed
+     * release of this binary, so the only trustworthy sources are the ones built from the pinned
+     * quickjs-ng/mbedTLS/miniz/wasm3 versions the script fetches itself.
      */
     static async ensureNativeHost(target, libc = "musl", onLog = () => { }) {
         const buildTarget = buildTargetFor(target, libc);
@@ -188,22 +225,24 @@ class QuickJsPackager {
                 "are, because those are the ones this build can both compile and actually run.");
         }
         const repoRoot = (0, node_path_1.dirname)(require.resolve("../../package.json"));
-        const buildScript = (0, node_path_1.join)(repoRoot, "quickjs/native/build.sh");
         const cacheDir = (0, node_path_1.join)(NodeRuntime_1.NodeRuntime.cacheDir(), "native-host", buildTarget);
-        const exe = (0, node_path_1.join)(cacheDir, buildTarget.startsWith("win-") ? "forgegraal-c.exe" : "forgegraal-c");
+        const exe = (0, node_path_1.join)(cacheDir, buildTarget.startsWith("win-") ? "graak-c.exe" : "graak-c");
         // The cached binary is only good for the sources it was built from: a host cached before the
         // native layer changed would otherwise be reused forever, missing whatever changed.
         const sourceHash = QuickJsPackager.nativeSourceHash(repoRoot);
         const marker = (0, node_path_1.join)(cacheDir, ".native-source-hash");
         if ((0, node_fs_1.existsSync)(exe) && (0, node_fs_1.existsSync)(marker) && (0, node_fs_1.readFileSync)(marker, "utf-8") === sourceHash)
             return exe;
-        onLog(`Building the ForgeGraal native host for '${buildTarget}' (first run only; cached at ${exe} after)`);
-        (0, node_fs_1.mkdirSync)(cacheDir, { recursive: true });
-        const result = (0, node_child_process_1.spawnSync)("sh", [buildScript, buildTarget, cacheDir], { stdio: "inherit" });
-        if (result.status !== 0 || !(0, node_fs_1.existsSync)(exe)) {
-            throw new structures_1.RuntimeError(`Building the native host for '${buildTarget}' failed (exit ${result.status ?? result.signal}). ` +
-                "See quickjs/native/build.sh's own output above for the reason.");
+        const prebuilt = Prebuilt_1.Prebuilt.host(repoRoot, buildTarget, sourceHash);
+        if (prebuilt) {
+            (0, node_fs_1.mkdirSync)(cacheDir, { recursive: true });
+            (0, node_fs_1.writeFileSync)(exe, prebuilt);
+            (0, node_fs_1.chmodSync)(exe, 0o755);
+            (0, node_fs_1.writeFileSync)(marker, sourceHash);
+            onLog(`Using the prebuilt Graak native host for '${buildTarget}'`);
+            return exe;
         }
+        QuickJsPackager.compileHost(repoRoot, buildTarget, cacheDir, onLog);
         (0, node_fs_1.chmodSync)(exe, 0o755);
         (0, node_fs_1.writeFileSync)(marker, sourceHash);
         return exe;
@@ -226,21 +265,16 @@ class QuickJsPackager {
                 return bytes.includes("libc.musl") || bytes.includes("ld-musl") || bytes.includes("libc.so\0");
             }));
     }
-    /** Hash of everything under `quickjs/native/` that ends up inside the host binary. */
+    /**
+     * Hash of everything under `quickjs/native/` that ends up inside the host binary. Line endings do
+     * not count: a Windows checkout with CRLF must still recognise the prebuilt hosts.
+     */
     static nativeSourceHash(repoRoot) {
-        const hash = (0, node_crypto_1.createHash)("sha256");
-        const walk = (dir) => {
-            for (const entry of (0, node_fs_1.readdirSync)(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
-                const path = (0, node_path_1.join)(dir, entry.name);
-                if (entry.isDirectory())
-                    walk(path);
-                else if (/\.(c|h|sh|py)$/.test(entry.name))
-                    hash.update(entry.name).update((0, node_fs_1.readFileSync)(path));
-            }
-        };
-        walk((0, node_path_1.join)(repoRoot, "quickjs/native"));
-        hash.update((0, node_fs_1.readFileSync)((0, node_path_1.join)(repoRoot, "quickjs/winxp-compat.patch")));
-        return hash.digest("hex");
+        return Prebuilt_1.Prebuilt.digest([
+            // ca_bundle.c is generated from the building machine's trust store and is not part of the sources.
+            ...Prebuilt_1.Prebuilt.sourcesUnder((0, node_path_1.join)(repoRoot, "quickjs/native"), "native/").filter(([name]) => name !== "native/ca_bundle.c"),
+            ["winxp-compat.patch", (0, node_path_1.join)(repoRoot, "quickjs/winxp-compat.patch")],
+        ]);
     }
     /**
      * Writes the project, the compatibility layer and the native host into `outputPath`, plus a
@@ -277,21 +311,21 @@ class QuickJsPackager {
             sizeBytes += bytes.length;
             hash.update(file).update(bytes);
         }
-        const hostDest = (0, node_path_1.join)(out, isWindows ? "forgegraal-c.exe" : "forgegraal-c");
+        const hostDest = (0, node_path_1.join)(out, isWindows ? "graak-c.exe" : "graak-c");
         (0, node_fs_1.copyFileSync)(options.nativeHostBinary, hostDest);
         if (!isWindows)
             (0, node_fs_1.chmodSync)(hostDest, 0o755);
         const hostBytes = (0, node_fs_1.readFileSync)(hostDest);
         sizeBytes += hostBytes.length;
-        hash.update("forgegraal-c").update(hostBytes);
+        hash.update("graak-c").update(hostBytes);
         const launcherPath = (0, node_path_1.join)(out, isWindows ? `${options.name}.cmd` : options.name);
         const appEntry = `app/${options.entry}`;
         if (isWindows) {
             (0, node_fs_1.writeFileSync)(launcherPath, [
                 "@echo off",
                 "setlocal",
-                'set "FORGEGRAAL_DIR=%~dp0"',
-                `"%FORGEGRAAL_DIR%forgegraal-c.exe" "%FORGEGRAAL_DIR%runtime\\node-compat.js" "%FORGEGRAAL_DIR%${appEntry.replace(/\//g, "\\")}" %*`,
+                'set "GRAAK_DIR=%~dp0"',
+                `"%GRAAK_DIR%graak-c.exe" "%GRAAK_DIR%runtime\\node-compat.js" "%GRAAK_DIR%${appEntry.replace(/\//g, "\\")}" %*`,
                 "exit /b %ERRORLEVEL%",
                 "",
             ].join("\r\n"));
@@ -299,8 +333,8 @@ class QuickJsPackager {
         else {
             (0, node_fs_1.writeFileSync)(launcherPath, [
                 "#!/bin/sh",
-                'FORGEGRAAL_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1',
-                `exec "$FORGEGRAAL_DIR/forgegraal-c" "$FORGEGRAAL_DIR/runtime/node-compat.js" "$FORGEGRAAL_DIR/${appEntry}" "$@"`,
+                'GRAAK_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1',
+                `exec "$GRAAK_DIR/graak-c" "$GRAAK_DIR/runtime/node-compat.js" "$GRAAK_DIR/${appEntry}" "$@"`,
                 "",
             ].join("\n"));
             (0, node_fs_1.chmodSync)(launcherPath, 0o755);
@@ -312,7 +346,7 @@ class QuickJsPackager {
             sizeBytes,
             sha256: hash.digest("hex"),
             warnings: [
-                "This build ships as loose files (app/, runtime/, forgegraal-c) rather than a single compressed " +
+                "This build ships as loose files (app/, runtime/, graak-c) rather than a single compressed " +
                     "archive: the quickjs path has no in-runtime unarchiver yet. Distribute the whole output directory.",
             ],
         };

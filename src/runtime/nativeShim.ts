@@ -1,5 +1,5 @@
 /**
- * Native addon shim injected into ForgeGraal executables.
+ * Native addon shim injected into Graak executables.
  *
  * Legacy and 32-bit targets (Windows XP / Vista / 7, iSH, linux-x86, FreeBSD) frequently
  * cannot load prebuilt `.node` addons, so `require()` fails with ERR_DLOPEN_FAILED. This
@@ -58,7 +58,7 @@ export const UNSUBSTITUTABLE_NATIVE = [
  * Builds the ES5 shim source embedded in the launcher.
  */
 export function createNativeShimSource(config: NativeShimConfig): string {
-	return `(function installForgeGraalNativeShim() {
+	return `(function installGraakNativeShim() {
 	var Module = require("module");
 	var origLoad = Module._load;
 	var TARGET = ${JSON.stringify(config.target)};
@@ -67,7 +67,7 @@ export function createNativeShimSource(config: NativeShimConfig): string {
 	function note(message) {
 		if (seen[message]) return;
 		seen[message] = true;
-		process.stderr.write("[ForgeGraal] " + message + "\\n");
+		process.stderr.write("[Graak] " + message + "\\n");
 	}
 
 	function isDlopenFailure(err) {
@@ -149,7 +149,7 @@ export function createNativeShimSource(config: NativeShimConfig): string {
 	function unsupported(api) {
 		return function () {
 			throw new Error(
-				"[ForgeGraal] '" + api + "' is not implemented by the node:sqlite compatibility layer used on " +
+				"[Graak] '" + api + "' is not implemented by the node:sqlite compatibility layer used on " +
 					TARGET + ". Use a pure JavaScript ForgeDB driver (mongodb, mysql, postgres), or run this bot " +
 					"on a platform where the native driver installs."
 			);
@@ -381,7 +381,7 @@ export function createNativeShimSource(config: NativeShimConfig): string {
 		return {
 			Database: Database,
 			Statement: function () {
-				throw new Error("[ForgeGraal] sqlite3.Statement cannot be constructed directly in the compatibility layer.");
+				throw new Error("[Graak] sqlite3.Statement cannot be constructed directly in the compatibility layer.");
 			},
 			OPEN_READONLY: 1,
 			OPEN_READWRITE: 2,
@@ -427,7 +427,7 @@ export function createNativeShimSource(config: NativeShimConfig): string {
 				var sqlite = loadNodeSqlite();
 				if (!sqlite) {
 					err.message =
-						"[ForgeGraal] '" + name + "' has no usable native addon on " + TARGET + ", and this runtime has no " +
+						"[Graak] '" + name + "' has no usable native addon on " + TARGET + ", and this runtime has no " +
 						"built-in node:sqlite (Node.js >= 22.5) to fall back to. Use a pure JavaScript ForgeDB driver " +
 						"(mongodb, mysql, postgres), supply a newer runtime with --node-binary, or rebuild '" + name +
 						"' for this platform.\\nOriginal error: " + err.message;
@@ -450,8 +450,8 @@ export function createNativeShimSource(config: NativeShimConfig): string {
 
 			if (inList(name, UNSUBSTITUTABLE)) {
 				err.message =
-					"[ForgeGraal] '" + name + "' needs a native addon built for " + TARGET + ", and no correct pure " +
-					"JavaScript replacement exists. ForgeGraal does not substitute a stub here on purpose: doing so " +
+					"[Graak] '" + name + "' needs a native addon built for " + TARGET + ", and no correct pure " +
+					"JavaScript replacement exists. Graak does not substitute a stub here on purpose: doing so " +
 					"would silently produce empty images, discard database writes, or weaken cryptography. Install or " +
 					"rebuild '" + name + "' for this platform, or drop the feature that needs it.\\nOriginal error: " +
 					err.message;
@@ -459,7 +459,7 @@ export function createNativeShimSource(config: NativeShimConfig): string {
 			}
 
 			err.message =
-				"[ForgeGraal] A native addon ('" + (name || request) + "') could not be loaded on " + TARGET + ". " +
+				"[Graak] A native addon ('" + (name || request) + "') could not be loaded on " + TARGET + ". " +
 				"Rebuild it for this platform, or replace it with a pure JavaScript package.\\nOriginal error: " +
 				err.message;
 			throw err;

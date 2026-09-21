@@ -13,7 +13,7 @@ import {
 } from "../dist/index.js";
 
 function fixture(): string {
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-legacy-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-legacy-"));
 	mkdirSync(join(root, "src"), { recursive: true });
 	writeFileSync(join(root, "package.json"), JSON.stringify({ name: "legacy-bot" }));
 	writeFileSync(join(root, "src/index.js"), 'console.log("ok");');
@@ -33,12 +33,12 @@ async function buildPortable(target: TargetDevice) {
 }
 
 test("every legacy and 32-bit target gets the native shim and the SIMD opt-out", async () => {
-	// Not WinXpX86: it now defaults to the ForgeGraal native host, which produces no boot.cjs at
+	// Not WinXpX86: it now defaults to the Graak native host, which produces no boot.cjs at
 	// all (see quickJsPackager.test.ts). WinX86 is equally 32-bit and still on the Node.js path
 	// these flags apply to. IosIshX86 and LinuxX86 stay here too, for the same reason.
 	for (const target of [TargetDevice.WinX86, TargetDevice.IosIshX86, TargetDevice.LinuxX86]) {
 		const { boot } = await buildPortable(target);
-		assert.match(boot, /installForgeGraalNativeShim/, `${target}: native shim must be installed`);
+		assert.match(boot, /installGraakNativeShim/, `${target}: native shim must be installed`);
 		assert.match(boot, /UNDICI_NO_WASM_SIMD/, `${target}: old CPUs need undici's SIMD parser disabled`);
 		assert.match(boot, /"simdUnsafe":true/, `${target}: simdUnsafe flag must be set from the target metadata`);
 	}
@@ -46,7 +46,7 @@ test("every legacy and 32-bit target gets the native shim and the SIMD opt-out",
 
 test("Windows XP counts as legacy Windows even though its id has no 'legacy' in it", () => {
 	// Direct createLauncherSource rather than buildPortable: WinXpX86 now defaults to the
-	// ForgeGraal native host (no boot.cjs at all), but the classification this test checks --
+	// Graak native host (no boot.cjs at all), but the classification this test checks --
 	// that XP's metadata carries os:"windows-legacy" despite the id containing no "legacy" --
 	// is a property of the target's metadata, not of which backend happens to package it.
 	const meta = TARGET_METADATA_MAP[TargetDevice.WinXpX86];
@@ -67,11 +67,11 @@ test("Windows XP counts as legacy Windows even though its id has no 'legacy' in 
 });
 
 test("modern 64-bit targets carry none of the legacy workarounds", async () => {
-	// Not LinuxModernX64: that target now runs on the ForgeGraal native host and produces no
+	// Not LinuxModernX64: that target now runs on the Graak native host and produces no
 	// boot.cjs at all (see quickJsPackager.test.ts). LinuxModernArm64 is equally modern and still
 	// on the Node.js portable path this test is checking.
 	const { boot } = await buildPortable(TargetDevice.LinuxModernArm64);
-	assert.doesNotMatch(boot, /installForgeGraalNativeShim/);
+	assert.doesNotMatch(boot, /installGraakNativeShim/);
 	assert.match(boot, /"simdUnsafe":false/);
 	assert.match(boot, /"windowsLegacy":false/);
 });
@@ -92,7 +92,7 @@ test("launcher flags are derived from metadata for every target", () => {
 			bunCompat: false,
 		});
 		assert.equal(
-			/installForgeGraalNativeShim/.test(source),
+			/installGraakNativeShim/.test(source),
 			meta.is32BitOrLegacy,
 			`${target}: shim presence must follow is32BitOrLegacy`
 		);
@@ -114,7 +114,7 @@ test("the Bun compatibility layer is independent of the target's legacy status",
 			nativeShim: meta.is32BitOrLegacy,
 			bunCompat: true,
 		});
-		assert.match(source, /installForgeGraalBunCompat/, `${target}: bunCompat must install regardless of legacy status`);
+		assert.match(source, /installGraakBunCompat/, `${target}: bunCompat must install regardless of legacy status`);
 	}
 });
 

@@ -7,7 +7,7 @@ const node_path_1 = require("node:path");
 const structures_1 = require("../structures");
 /**
  * Extensions Bun bots are commonly authored in that plain Node.js cannot `require()`
- * directly. ForgeGraal transpiles these with `bun build` when the project's package manager
+ * directly. Graak transpiles these with `bun build` when the project's package manager
  * is Bun, instead of asking the user to pre-build — Bun projects are frequently run straight
  * from `.ts` with no separate build step, unlike npm/pnpm/yarn projects.
  */
@@ -25,7 +25,7 @@ class BunTranspiler {
     /**
      * Transpiles a Bun-authored entrypoint into plain CommonJS with `bun build`. Local,
      * relative imports are bundled into the single output file; bare package imports
-     * (`require("discord.js")`) are kept as `--packages=external` so ForgeGraal's own
+     * (`require("discord.js")`) are kept as `--packages=external` so Graak's own
      * dependency walk resolves them from the real, installed `node_modules` afterward rather
      * than from a bundler's copy — the same packages the project's lockfile pinned.
      *
@@ -36,7 +36,7 @@ class BunTranspiler {
     static transpile(entrypoint) {
         const dir = (0, node_path_1.dirname)(entrypoint);
         const name = (0, node_path_1.basename)(entrypoint, (0, node_path_1.extname)(entrypoint));
-        const outfile = (0, node_path_1.join)(dir, `${name}.forgegraal-build.cjs`);
+        const outfile = (0, node_path_1.join)(dir, `${name}.graak-build.cjs`);
         try {
             (0, node_child_process_1.execFileSync)("bun", ["build", entrypoint, "--target=node", "--format=cjs", "--packages=external", `--outfile=${outfile}`], { stdio: ["ignore", "pipe", "pipe"], timeout: 120_000 });
         }

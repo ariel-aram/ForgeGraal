@@ -20,11 +20,11 @@ interface DistRelease {
 
 export class NodeRuntime {
 	public static cacheDir(): string {
-		if (process.env.FORGEGRAAL_CACHE) return process.env.FORGEGRAAL_CACHE;
+		if (process.env.GRAAK_CACHE) return process.env.GRAAK_CACHE;
 		if (process.platform === "win32" && process.env.LOCALAPPDATA) {
-			return join(process.env.LOCALAPPDATA, "forgegraal", "cache");
+			return join(process.env.LOCALAPPDATA, "graak", "cache");
 		}
-		return join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "forgegraal");
+		return join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "graak");
 	}
 
 	/** index.json key of an official runtime that runs on this host. */

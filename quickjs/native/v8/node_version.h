@@ -1,8 +1,8 @@
-#ifndef FORGEGRAAL_NODE_VERSION_H_
-#define FORGEGRAAL_NODE_VERSION_H_
+#ifndef GRAAK_NODE_VERSION_H_
+#define GRAAK_NODE_VERSION_H_
 
 /*
- * The Node.js version a V8 addon sees when it is built against ForgeGraal's V8 layer. It claims a
+ * The Node.js version a V8 addon sees when it is built against Graak's V8 layer. It claims a
  * mature API generation (Node 12: Maybe/MaybeLocal everywhere, context arguments) rather than the
  * newest one, because that is the surface NAN and most addons already target, and every one of them
  * still compiles against it.

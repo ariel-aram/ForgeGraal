@@ -5,7 +5,7 @@ import type { ArchiveEntry } from "./Archive";
  * Two things are shipped:
  *
  * - `polyfills.js` — the Web platform implementations the old runtime lacks (Web Streams,
- *   EventTarget, AbortController, Blob/File/FormData), bundled from ForgeGraal's own
+ *   EventTarget, AbortController, Blob/File/FormData), bundled from Graak's own
  *   dependencies into one file and lowered to the target's language level. Bundling matters:
  *   the packages together are about 10 MiB on disk, almost all of it alternate dist builds and
  *   source maps, and what the bot actually needs is a few hundred KiB of code. They are also
@@ -15,7 +15,7 @@ import type { ArchiveEntry } from "./Archive";
  *   bot generates at runtime. Only included when the build asks for it.
  */
 /** Directory inside the application archive that holds these files. */
-export declare const LEGACY_ASSET_DIR = ".forgegraal-legacy";
+export declare const LEGACY_ASSET_DIR = ".graak-legacy";
 export interface LegacyAssetOptions {
     /** esbuild target string, e.g. `node12`. */
     jsTarget: string;

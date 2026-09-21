@@ -48,5 +48,5 @@ export declare const PORTABLE_LAUNCHER_NAME = "boot.cjs";
 export declare function createLauncherSource(config: LauncherConfig): string;
 /** Helper loaded from disk so that dynamic import() works for ESM entrypoints inside a SEA. */
 export declare const IMPORT_HELPER_SOURCE = "\"use strict\";\nmodule.exports = function (url) { return import(url); };\n";
-export declare const IMPORT_HELPER_PATH = ".forgegraal-import.cjs";
+export declare const IMPORT_HELPER_PATH = ".graak-import.cjs";
 //# sourceMappingURL=launcher.d.ts.map

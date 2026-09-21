@@ -4,7 +4,7 @@
  * These three arrived with Windows 8 and live in api-ms-win-core-synch-l1-2-0.dll, an API-set DLL that
  * does not exist on Windows 7. Rust's standard library (so every Rust Node-API addon: @napi-rs/canvas,
  * davey, mediaplex, ...) and current libvips import them, which is why such an addon fails to load
- * there with "The specified module could not be found". ForgeGraal redirects the import to this DLL
+ * there with "The specified module could not be found". Graak redirects the import to this DLL
  * (see src/compiler/Win7Compat.ts), which provides the same three functions on Vista's primitives.
  *
  * Waiters hash into a fixed set of buckets, each a critical section plus a condition variable. A wake

@@ -1,7 +1,7 @@
 /**
  * Bun runtime compatibility layer.
  *
- * ForgeGraal executables always run on Node.js (SEA / portable bundle), even when the bot
+ * Graak executables always run on Node.js (SEA / portable bundle), even when the bot
  * project itself is authored for and developed with Bun. Code written against Bun's own
  * APIs — `import { Database } from "bun:sqlite"`, `Bun.serve`, `Bun.file`, `Bun.env` — does
  * not exist under Node and would otherwise fail at startup with "Cannot find module

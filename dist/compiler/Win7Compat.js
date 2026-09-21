@@ -2,11 +2,12 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.Win7Compat = exports.WIN7_FUNCTION_RENAMES = exports.WIN7_DLL_RENAMES = void 0;
 const node_child_process_1 = require("node:child_process");
-const node_crypto_1 = require("node:crypto");
 const node_fs_1 = require("node:fs");
 const node_path_1 = require("node:path");
 const structures_1 = require("../structures");
 const NodeRuntime_1 = require("./NodeRuntime");
+const Prebuilt_1 = require("./Prebuilt");
+const SpawnOutput_1 = require("./SpawnOutput");
 /**
  * What api-ms-win-core-synch-l1-2-0.dll exports besides the three functions Windows 7 truly lacks: plain
  * kernel32 synchronisation, which fgsynch.dll forwards (see quickjs/native/win-compat/fgsynch.def). A
@@ -243,29 +244,41 @@ class Win7Compat {
     static shimNames() {
         return [...SHIM_FOR_DLL.keys()];
     }
+    /** Digest of the sources the compatibility DLLs are built from (line endings do not count). */
+    static shimSourceHash(repoRoot) {
+        return Prebuilt_1.Prebuilt.digest(["fgsynch.c", "fgprng.c", "fgsynch.def", "build.sh"].map((f) => [f, (0, node_path_1.join)(repoRoot, "quickjs/native/win-compat", f)]));
+    }
     /**
-     * Builds (and caches) the compatibility DLLs for one architecture with quickjs/native/win-compat/.
-     * Returns the directory that holds fgsynch.dll and fgprng.dll.
+     * Returns the directory that holds `fgsynch.dll` and `fgprng.dll` for one architecture: the cache, else
+     * the copy that ships with Graak (`quickjs/prebuilt/win-compat/`), else a fresh build with
+     * quickjs/native/win-compat/, which needs a POSIX shell and mingw-w64.
      */
     static ensureShims(arch) {
         const repoRoot = (0, node_path_1.dirname)(require.resolve("../../package.json"));
-        const script = (0, node_path_1.join)(repoRoot, "quickjs/native/win-compat/build.sh");
-        const hash = (0, node_crypto_1.createHash)("sha256");
-        for (const f of ["fgsynch.c", "fgprng.c", "build.sh"])
-            hash.update((0, node_fs_1.readFileSync)((0, node_path_1.join)(repoRoot, "quickjs/native/win-compat", f)));
-        const current = hash.digest("hex");
-        const cacheDir = (0, node_path_1.join)(NodeRuntime_1.NodeRuntime.cacheDir(), "win-compat", arch === "x64" ? "x64" : "x86");
-        const stamp = (0, node_path_1.join)(cacheDir, ".source");
-        const built = Win7Compat.shimNames().every((n) => (0, node_fs_1.existsSync)((0, node_path_1.join)(cacheDir, n)));
-        if (built && (0, node_fs_1.existsSync)(stamp) && (0, node_fs_1.readFileSync)(stamp, "utf-8") === current)
+        const folder = arch === "x64" ? "x64" : "x86";
+        const current = Win7Compat.shimSourceHash(repoRoot);
+        const upToDate = (dir) => Win7Compat.shimNames().every((n) => (0, node_fs_1.existsSync)((0, node_path_1.join)(dir, n))) &&
+            (0, node_fs_1.existsSync)((0, node_path_1.join)(dir, ".source")) &&
+            (0, node_fs_1.readFileSync)((0, node_path_1.join)(dir, ".source"), "utf-8") === current;
+        const shipped = (0, node_path_1.join)(repoRoot, "quickjs/prebuilt/win-compat", folder);
+        if (upToDate(shipped))
+            return shipped;
+        const cacheDir = (0, node_path_1.join)(NodeRuntime_1.NodeRuntime.cacheDir(), "win-compat", folder);
+        if (upToDate(cacheDir))
             return cacheDir;
+        if (!(0, SpawnOutput_1.hasPosixShell)()) {
+            throw new structures_1.RuntimeError("The Windows 7 compatibility DLLs have to be built here, which needs a POSIX shell and mingw-w64, and this machine " +
+                "has no `sh`. Graak ships them prebuilt (quickjs/prebuilt/win-compat), but those do not match this checkout's " +
+                "sources. Reinstall Graak from its published package or a clean checkout, or run the build from WSL or Git Bash.");
+        }
         (0, node_fs_1.mkdirSync)(cacheDir, { recursive: true });
-        const res = (0, node_child_process_1.spawnSync)("sh", [script, arch === "x64" ? "x64" : "x86", cacheDir], { encoding: "utf-8" });
+        const script = (0, node_path_1.join)(repoRoot, "quickjs/native/win-compat/build.sh");
+        const res = (0, node_child_process_1.spawnSync)("sh", [script, folder, cacheDir], { encoding: "utf-8" });
         if (res.status !== 0) {
-            throw new structures_1.RuntimeError(`Building the Windows 7 compatibility DLLs failed:\n${(res.stderr || res.stdout).trim()}\n` +
+            throw new structures_1.RuntimeError(`Building the Windows 7 compatibility DLLs failed:\n${(0, SpawnOutput_1.spawnOutput)(res)}\n` +
                 "They need mingw-w64 (apt install mingw-w64).");
         }
-        (0, node_fs_1.writeFileSync)(stamp, current);
+        (0, node_fs_1.writeFileSync)((0, node_path_1.join)(cacheDir, ".source"), current);
         return cacheDir;
     }
 }

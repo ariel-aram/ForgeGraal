@@ -1,5 +1,5 @@
 /**
- * Target device architecture and platform definitions for the ForgeGraal compiler.
+ * Target device architecture and platform definitions for the Graak compiler.
  */
 
 export enum TargetDevice {

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { gunzipSync, inflateRawSync } from "node:zlib";
-import { ForgeGraalError, parseTargetDevice, RuntimeError, type TargetDevice } from "../structures";
+import { GraakError, parseTargetDevice, RuntimeError, type TargetDevice } from "../structures";
 import { NodeRuntime } from "./NodeRuntime";
 import { compareVersions } from "./ProjectCollector";
 
@@ -22,7 +22,7 @@ interface RegistryFile {
 const SHA256_RE = /^[0-9a-f]{64}$/i;
 
 function projectManifestPath(root: string): string {
-	return join(root, ".forgegraal", "runtimes.json");
+	return join(root, ".graak", "runtimes.json");
 }
 
 function globalManifestPath(): string {
@@ -35,7 +35,7 @@ function readManifest(path: string): CommunityRuntimeEntry[] {
 	try {
 		data = JSON.parse(readFileSync(path, "utf-8"));
 	} catch {
-		throw new ForgeGraalError(`Malformed runtime registry: ${path}`);
+		throw new GraakError(`Malformed runtime registry: ${path}`);
 	}
 	const runtimes = (data as RegistryFile)?.runtimes;
 	return Array.isArray(runtimes) ? runtimes : [];
@@ -48,12 +48,12 @@ function writeManifest(path: string, entries: CommunityRuntimeEntry[]) {
 
 /**
  * User-managed registry of community Node.js runtimes for targets with no official build
- * (Windows 7 / Vista, 32-bit Linux, FreeBSD, iSH). ForgeGraal does not ship any entries of
+ * (Windows 7 / Vista, 32-bit Linux, FreeBSD, iSH). Graak does not ship any entries of
  * its own: it has no way to verify a third-party binary's authenticity ahead of time, so
  * trust is established once, explicitly, by whoever registers an entry — every entry is
  * pinned to an exact SHA-256 and re-verified on every download.
  *
- * Two manifests are consulted: `<project>/.forgegraal/runtimes.json` (project-local, checked
+ * Two manifests are consulted: `<project>/.graak/runtimes.json` (project-local, checked
  * into the bot's repo so a team shares the same pinned runtime) and `<cache>/runtimes.json`
  * (global, `--global` on the CLI). Project entries are tried first.
  */
@@ -73,15 +73,15 @@ export class RuntimeRegistry {
 		opts: { global?: boolean; root?: string } = {}
 	): void {
 		const target = parseTargetDevice(entry.target);
-		if (!target) throw new ForgeGraalError(`Unknown target '${entry.target}'`);
+		if (!target) throw new GraakError(`Unknown target '${entry.target}'`);
 		if (!SHA256_RE.test(entry.sha256)) {
-			throw new ForgeGraalError(
+			throw new GraakError(
 				"--sha256 must be a 64 character hex SHA-256 digest of the exact file at --url; " +
-					"ForgeGraal never downloads a community runtime without one"
+					"Graak never downloads a community runtime without one"
 			);
 		}
 		if (!/^https:\/\//i.test(entry.url)) {
-			throw new ForgeGraalError("Runtime URLs must use https://");
+			throw new GraakError("Runtime URLs must use https://");
 		}
 
 		const path = opts.global ? globalManifestPath() : projectManifestPath(opts.root ?? process.cwd());

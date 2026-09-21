@@ -2,7 +2,7 @@
  * ProcessPrng for Windows 7.
  *
  * bcryptprimitives.dll exists on Windows 7 but does not export ProcessPrng, which arrived with Windows 10
- * and is what Rust's standard library uses to seed randomness. ForgeGraal redirects the import to this
+ * and is what Rust's standard library uses to seed randomness. Graak redirects the import to this
  * DLL (see src/compiler/Win7Compat.ts). RtlGenRandom (exported as SystemFunction036 by advapi32) has
  * been the system CSPRNG since Windows XP and is what ProcessPrng wraps.
  */

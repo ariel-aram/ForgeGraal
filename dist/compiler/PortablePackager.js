@@ -9,7 +9,7 @@ const structures_1 = require("../structures");
 function shQuote(value) {
     return `'${value.replace(/'/g, "'\\''")}'`;
 }
-exports.BUNDLE_MARKER = ".forgegraal-bundle";
+exports.BUNDLE_MARKER = ".graak-bundle";
 class PortablePackager {
     static windowsLauncher() {
         // `where.exe` does not exist on Windows XP, so the PATH search uses the `%~$PATH:i`
@@ -17,18 +17,18 @@ class PortablePackager {
         return [
             "@echo off",
             "setlocal",
-            'set "FORGEGRAAL_DIR=%~dp0"',
-            'if exist "%FORGEGRAAL_DIR%node.exe" goto bundled',
-            'set "FORGEGRAAL_NODE="',
-            'for %%i in (node.exe) do @if not "%%~$PATH:i"=="" set "FORGEGRAAL_NODE=%%~$PATH:i"',
-            "if not defined FORGEGRAAL_NODE goto missing",
-            `"%FORGEGRAAL_NODE%" "%FORGEGRAAL_DIR%${launcher_1.PORTABLE_LAUNCHER_NAME}" %*`,
+            'set "GRAAK_DIR=%~dp0"',
+            'if exist "%GRAAK_DIR%node.exe" goto bundled',
+            'set "GRAAK_NODE="',
+            'for %%i in (node.exe) do @if not "%%~$PATH:i"=="" set "GRAAK_NODE=%%~$PATH:i"',
+            "if not defined GRAAK_NODE goto missing",
+            `"%GRAAK_NODE%" "%GRAAK_DIR%${launcher_1.PORTABLE_LAUNCHER_NAME}" %*`,
             "exit /b %ERRORLEVEL%",
             ":bundled",
-            `"%FORGEGRAAL_DIR%node.exe" "%FORGEGRAAL_DIR%${launcher_1.PORTABLE_LAUNCHER_NAME}" %*`,
+            `"%GRAAK_DIR%node.exe" "%GRAAK_DIR%${launcher_1.PORTABLE_LAUNCHER_NAME}" %*`,
             "exit /b %ERRORLEVEL%",
             ":missing",
-            "echo [ForgeGraal] Node.js was not found. Place node.exe next to this file or install Node.js. 1>&2",
+            "echo [Graak] Node.js was not found. Place node.exe next to this file or install Node.js. 1>&2",
             "exit /b 127",
             "",
         ].join("\r\n");
@@ -43,22 +43,22 @@ class PortablePackager {
     static unixLauncher(meta) {
         const lines = [
             "#!/bin/sh",
-            'FORGEGRAAL_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1',
-            'if [ -x "$FORGEGRAAL_DIR/node" ]; then',
-            `  exec "$FORGEGRAAL_DIR/node" "$FORGEGRAAL_DIR/${launcher_1.PORTABLE_LAUNCHER_NAME}" "$@"`,
+            'GRAAK_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1',
+            'if [ -x "$GRAAK_DIR/node" ]; then',
+            `  exec "$GRAAK_DIR/node" "$GRAAK_DIR/${launcher_1.PORTABLE_LAUNCHER_NAME}" "$@"`,
             "fi",
             "if command -v node >/dev/null 2>&1; then",
-            `  exec node "$FORGEGRAAL_DIR/${launcher_1.PORTABLE_LAUNCHER_NAME}" "$@"`,
+            `  exec node "$GRAAK_DIR/${launcher_1.PORTABLE_LAUNCHER_NAME}" "$@"`,
             "fi",
         ];
         if (meta.bootstrapInstall) {
             const { command, description } = meta.bootstrapInstall;
             const quoted = command.map(shQuote).join(" ");
-            lines.push(`echo "[ForgeGraal] Node.js was not found; installing ${description} (${quoted})..." >&2`, `if ${quoted} >&2; then`, "  if command -v node >/dev/null 2>&1; then", `    exec node "$FORGEGRAAL_DIR/${launcher_1.PORTABLE_LAUNCHER_NAME}" "$@"`, "  fi", "fi", `echo "[ForgeGraal] Automatic install failed, or node is still not on PATH. Run manually: ${quoted}" >&2`);
+            lines.push(`echo "[Graak] Node.js was not found; installing ${description} (${quoted})..." >&2`, `if ${quoted} >&2; then`, "  if command -v node >/dev/null 2>&1; then", `    exec node "$GRAAK_DIR/${launcher_1.PORTABLE_LAUNCHER_NAME}" "$@"`, "  fi", "fi", `echo "[Graak] Automatic install failed, or node is still not on PATH. Run manually: ${quoted}" >&2`);
         }
         else {
             const hint = meta.runtimeHint.replace(/[`"$\\]/g, "\\$&");
-            lines.push(`echo "[ForgeGraal] Node.js was not found. ${hint}" >&2`);
+            lines.push(`echo "[Graak] Node.js was not found. ${hint}" >&2`);
         }
         lines.push("exit 127", "");
         return lines.join("\n");
@@ -73,7 +73,7 @@ class PortablePackager {
                 throw new structures_1.ProjectError(`Portable output '${out}' exists and is not a directory`);
             }
             if ((0, node_fs_1.readdirSync)(out).length > 0 && !(0, node_fs_1.existsSync)((0, node_path_1.join)(out, exports.BUNDLE_MARKER))) {
-                throw new structures_1.ProjectError(`Refusing to write into non-empty directory '${out}' that is not a ForgeGraal bundle`);
+                throw new structures_1.ProjectError(`Refusing to write into non-empty directory '${out}' that is not a Graak bundle`);
             }
         }
         (0, node_fs_1.mkdirSync)(out, { recursive: true });

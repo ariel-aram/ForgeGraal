@@ -8,7 +8,7 @@ export interface CollectOptions {
 	entrypoint: string;
 	/** Include devDependencies of the root project. */
 	includeDev?: boolean;
-	/** Include `.env*` files (they usually contain the bot token). */
+	/** Include `.env*` files (they usually contain secrets such as tokens). */
 	includeEnv?: boolean;
 	/** Absolute paths that must never be bundled (e.g. the build output). */
 	excludePaths?: readonly string[];
@@ -45,7 +45,7 @@ const ALWAYS_EXCLUDED_NAMES = new Set([
 	".yarnrc.yml",
 	".yarn",
 	".pnpm-store",
-	".forgegraal-cache",
+	".graak-cache",
 	"coverage",
 ]);
 
@@ -161,7 +161,7 @@ export class ProjectCollector {
 		const rawName = typeof pkg.name === "string" ? pkg.name : basename(root);
 		return {
 			root,
-			name: rawName.replace(/^@[^/]+\//, "").replace(/[^a-zA-Z0-9._-]/g, "-") || "bot",
+			name: rawName.replace(/^@[^/]+\//, "").replace(/[^a-zA-Z0-9._-]/g, "-") || "app",
 			entry: toPosix(relative(root, entryReal)),
 			entries: collector.entries,
 			nativeAddons: collector.nativeAddons,
@@ -190,7 +190,7 @@ export class ProjectCollector {
 
 	private isExcluded(abs: string, name: string, isProjectFile: boolean): boolean {
 		if (ALWAYS_EXCLUDED_NAMES.has(name)) return true;
-		if (name.endsWith(".forgegraal")) return true;
+		if (name.endsWith(".graak")) return true;
 		if (isProjectFile && !this.options.includeEnv && /^\.env(\..*)?$/.test(name)) return true;
 		return this.excluded.some((p) => isInside(abs, p));
 	}

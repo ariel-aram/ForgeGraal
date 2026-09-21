@@ -1,6 +1,6 @@
 "use strict";
 /**
- * Target device architecture and platform definitions for the ForgeGraal compiler.
+ * Target device architecture and platform definitions for the Graak compiler.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ALL_TARGETS = exports.TARGET_METADATA_MAP = exports.TargetDevice = void 0;

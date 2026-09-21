@@ -10,7 +10,7 @@ const NodeRuntime_1 = require("./NodeRuntime");
 const ProjectCollector_1 = require("./ProjectCollector");
 const SHA256_RE = /^[0-9a-f]{64}$/i;
 function projectManifestPath(root) {
-    return (0, node_path_1.join)(root, ".forgegraal", "runtimes.json");
+    return (0, node_path_1.join)(root, ".graak", "runtimes.json");
 }
 function globalManifestPath() {
     return (0, node_path_1.join)(NodeRuntime_1.NodeRuntime.cacheDir(), "runtimes.json");
@@ -23,7 +23,7 @@ function readManifest(path) {
         data = JSON.parse((0, node_fs_1.readFileSync)(path, "utf-8"));
     }
     catch {
-        throw new structures_1.ForgeGraalError(`Malformed runtime registry: ${path}`);
+        throw new structures_1.GraakError(`Malformed runtime registry: ${path}`);
     }
     const runtimes = data?.runtimes;
     return Array.isArray(runtimes) ? runtimes : [];
@@ -34,12 +34,12 @@ function writeManifest(path, entries) {
 }
 /**
  * User-managed registry of community Node.js runtimes for targets with no official build
- * (Windows 7 / Vista, 32-bit Linux, FreeBSD, iSH). ForgeGraal does not ship any entries of
+ * (Windows 7 / Vista, 32-bit Linux, FreeBSD, iSH). Graak does not ship any entries of
  * its own: it has no way to verify a third-party binary's authenticity ahead of time, so
  * trust is established once, explicitly, by whoever registers an entry — every entry is
  * pinned to an exact SHA-256 and re-verified on every download.
  *
- * Two manifests are consulted: `<project>/.forgegraal/runtimes.json` (project-local, checked
+ * Two manifests are consulted: `<project>/.graak/runtimes.json` (project-local, checked
  * into the bot's repo so a team shares the same pinned runtime) and `<cache>/runtimes.json`
  * (global, `--global` on the CLI). Project entries are tried first.
  */
@@ -55,13 +55,13 @@ class RuntimeRegistry {
     static add(entry, opts = {}) {
         const target = (0, structures_1.parseTargetDevice)(entry.target);
         if (!target)
-            throw new structures_1.ForgeGraalError(`Unknown target '${entry.target}'`);
+            throw new structures_1.GraakError(`Unknown target '${entry.target}'`);
         if (!SHA256_RE.test(entry.sha256)) {
-            throw new structures_1.ForgeGraalError("--sha256 must be a 64 character hex SHA-256 digest of the exact file at --url; " +
-                "ForgeGraal never downloads a community runtime without one");
+            throw new structures_1.GraakError("--sha256 must be a 64 character hex SHA-256 digest of the exact file at --url; " +
+                "Graak never downloads a community runtime without one");
         }
         if (!/^https:\/\//i.test(entry.url)) {
-            throw new structures_1.ForgeGraalError("Runtime URLs must use https://");
+            throw new structures_1.GraakError("Runtime URLs must use https://");
         }
         const path = opts.global ? globalManifestPath() : projectManifestPath(opts.root ?? process.cwd());
         const entries = readManifest(path).filter((e) => !(e.target === target && e.version === entry.version));

@@ -1,7 +1,7 @@
 #!/bin/sh
-# Builds the ForgeGraal native host: quickjs-ng + mbedTLS + miniz + the ForgeGraal native layer.
+# Builds the Graak native host: quickjs-ng + mbedTLS + miniz + the Graak native layer.
 #
-# This is the only backend ForgeGraal ships -- one C binary, every target, no Node.js and no
+# This is the only backend Graak ships -- one C binary, every target, no Node.js and no
 # second language required to reach it. It uses only Winsock 2 and CryptoAPI on Windows, both
 # present since the 1990s, so the same source serves the oldest machines and the newest ones
 # without a version split.
@@ -21,7 +21,7 @@
 #                which is a common Docker base for exactly the kind of small bot this packages).
 #                Static musl runs unmodified on both, which is the point of shipping one binary.
 #   linux-x64-glibc  64-bit x86 Linux, dynamically linked against glibc instead -- an explicit
-#                opt-in for glibc rather than the default (see ForgeGraal's --native-libc flag),
+#                opt-in for glibc rather than the default (see Graak's --native-libc flag),
 #                using the x86_64-linux-gnu triple rather than plain cc so it stays a named,
 #                reproducible target independent of what the build host happens to be.
 #   linux-x64-musl-dyn, linux-x86-musl-dyn
@@ -39,7 +39,7 @@
 set -eu
 
 TARGET="${1:-}"
-OUT_DIR="${2:-$(pwd)/forgegraal-c-build}"
+OUT_DIR="${2:-$(pwd)/graak-c-build}"
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 QUICKJS_DIR="$SCRIPT_DIR/.."
 QUICKJS_VERSION="${QUICKJS_VERSION:-v0.16.2}"
@@ -154,8 +154,8 @@ fi
 # ---- link ----------------------------------------------------------------------------------
 
 echo "[build] compiling the runtime for $TARGET"
-EXE="forgegraal-c"
-[ "$WINDOWS" = "1" ] && EXE="forgegraal-c.exe"
+EXE="graak-c"
+[ "$WINDOWS" = "1" ] && EXE="graak-c.exe"
 
 WIN_LIBS=""
 [ "$WINDOWS" = "1" ] && WIN_LIBS="-lws2_32 -ladvapi32 -lbcrypt"
@@ -178,7 +178,7 @@ fi
 	-o "$EXE" \
 	"$SCRIPT_DIR/fg_main.c" \
 	"$SCRIPT_DIR/fg_sea.c" \
-	"$SCRIPT_DIR/forgegraal_native.c" \
+	"$SCRIPT_DIR/graak_native.c" \
 	"$SCRIPT_DIR/napi.c" \
 	"$SCRIPT_DIR/fg_wasm.c" \
 	wasm3/source/m3_bind.c wasm3/source/m3_code.c wasm3/source/m3_compile.c wasm3/source/m3_core.c \

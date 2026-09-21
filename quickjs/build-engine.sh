@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds a quickjs-ng engine for a ForgeGraal target from source.
+# Builds a quickjs-ng engine for a Graak target from source.
 #
 # The published quickjs-ng binaries already cover most targets, and QuickJsRuntime fetches those.
 # This exists for the one thing they cannot do: Windows XP. The official 32-bit build imports four

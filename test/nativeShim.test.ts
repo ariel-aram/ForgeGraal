@@ -13,7 +13,7 @@ const SHIM = createNativeShimSource({ target: "win-legacy-x86" });
  * exactly as it would on a legacy target, and runs `script` with the shim installed.
  */
 function runWithFailingAddon(names: string[], script: string): { stdout: string; stderr: string; failed: boolean } {
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-shim-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-shim-"));
 	for (const name of names) {
 		const dir = join(root, "node_modules", name);
 		mkdirSync(dir, { recursive: true });
@@ -31,7 +31,7 @@ function runWithFailingAddon(names: string[], script: string): { stdout: string;
 }
 
 test("better-sqlite3 fallback writes to a real database file", () => {
-	const dbPath = join(mkdtempSync(join(tmpdir(), "forgegraal-db-")), "bot.sqlite");
+	const dbPath = join(mkdtempSync(join(tmpdir(), "graak-db-")), "bot.sqlite");
 	const res = runWithFailingAddon(
 		["better-sqlite3"],
 		`const Database = require("better-sqlite3");
@@ -60,7 +60,7 @@ again.close();`
 });
 
 test("sqlite3 fallback speaks the callback API TypeORM and ForgeDB use", () => {
-	const dbPath = join(mkdtempSync(join(tmpdir(), "forgegraal-db-")), "forge.sqlite");
+	const dbPath = join(mkdtempSync(join(tmpdir(), "graak-db-")), "forge.sqlite");
 	const res = runWithFailingAddon(
 		["sqlite3"],
 		`const sqlite3 = require("sqlite3").verbose();
@@ -97,7 +97,7 @@ test("bufferutil and utf-8-validate fallbacks match the native semantics", () =>
 		`const bufferutil = require("bufferutil");
 const isValidUTF8 = require("utf-8-validate");
 
-const payload = Buffer.from("ForgeGraal");
+const payload = Buffer.from("Graak");
 const mask = Buffer.from([0x0a, 0x1b, 0x2c, 0x3d]);
 const masked = Buffer.alloc(payload.length);
 bufferutil.mask(payload, mask, masked, 0, payload.length);
@@ -115,7 +115,7 @@ console.log(JSON.stringify({
 
 	assert.equal(res.failed, false, res.stderr);
 	const out = JSON.parse(res.stdout.trim());
-	assert.equal(out.roundTrip, "ForgeGraal", "unmask must invert mask");
+	assert.equal(out.roundTrip, "Graak", "unmask must invert mask");
 	assert.equal(out.maskedMatches, true);
 	assert.equal(out.validUtf8, true);
 	assert.equal(out.invalidUtf8, false);

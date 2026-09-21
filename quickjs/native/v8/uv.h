@@ -3,8 +3,8 @@
  * work item, a uv_async_t is a thread-safe function, and the mutex/key types are the platform's own.
  * Loops are not real (there is no libuv here); a uv_loop_t exists only so addons can pass one around.
  */
-#ifndef FORGEGRAAL_UV_H_
-#define FORGEGRAAL_UV_H_
+#ifndef GRAAK_UV_H_
+#define GRAAK_UV_H_
 
 #include <node_api.h>
 #include <cstdlib>

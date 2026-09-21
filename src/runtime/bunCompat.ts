@@ -1,7 +1,7 @@
 /**
  * Bun runtime compatibility layer.
  *
- * ForgeGraal executables always run on Node.js (SEA / portable bundle), even when the bot
+ * Graak executables always run on Node.js (SEA / portable bundle), even when the bot
  * project itself is authored for and developed with Bun. Code written against Bun's own
  * APIs — `import { Database } from "bun:sqlite"`, `Bun.serve`, `Bun.file`, `Bun.env` — does
  * not exist under Node and would otherwise fail at startup with "Cannot find module
@@ -50,20 +50,20 @@ export const BUN_GLOBAL_SHIMMED = [
 export const BUN_GLOBAL_UNSAFE = ["password", "hash", "CryptoHasher"] as const;
 
 export function createBunCompatSource(config: BunCompatConfig): string {
-	return `(function installForgeGraalBunCompat() {
+	return `(function installGraakBunCompat() {
 	var TARGET = ${JSON.stringify(config.target)};
 	var seen = {};
 
 	function note(message) {
 		if (seen[message]) return;
 		seen[message] = true;
-		process.stderr.write("[ForgeGraal] " + message + "\\n");
+		process.stderr.write("[Graak] " + message + "\\n");
 	}
 
 	function unsafe(name, why) {
 		return function () {
 			throw new Error(
-				"[ForgeGraal] 'Bun." + name + "' is not available in the Node.js compatibility layer used on " +
+				"[Graak] 'Bun." + name + "' is not available in the Node.js compatibility layer used on " +
 					TARGET + ": " + why
 			);
 		};
@@ -72,7 +72,7 @@ export function createBunCompatSource(config: BunCompatConfig): string {
 	function unimplemented(name) {
 		return function () {
 			throw new Error(
-				"[ForgeGraal] 'Bun." + name + "' has no Node.js equivalent in this compatibility layer (executables " +
+				"[Graak] 'Bun." + name + "' has no Node.js equivalent in this compatibility layer (executables " +
 					"run on Node.js, not Bun, on " + TARGET + "). Rewrite this part with Node.js APIs."
 			);
 		};
@@ -91,7 +91,7 @@ export function createBunCompatSource(config: BunCompatConfig): string {
 	function unsupportedSqlite(api) {
 		return function () {
 			throw new Error(
-				"[ForgeGraal] '" + api + "' is not implemented by the bun:sqlite compatibility layer (backed by " +
+				"[Graak] '" + api + "' is not implemented by the bun:sqlite compatibility layer (backed by " +
 					"node:sqlite) on " + TARGET + "."
 			);
 		};
@@ -102,7 +102,7 @@ export function createBunCompatSource(config: BunCompatConfig): string {
 		if (!sqlite) {
 			return function () {
 				throw new Error(
-					"[ForgeGraal] 'bun:sqlite' needs Node's built-in node:sqlite (Node.js >= 22.5) on " + TARGET +
+					"[Graak] 'bun:sqlite' needs Node's built-in node:sqlite (Node.js >= 22.5) on " + TARGET +
 						", which this runtime does not have. Supply a newer runtime, or switch to a pure JavaScript " +
 						"ForgeDB driver (mongodb, mysql, postgres)."
 				);
@@ -265,7 +265,7 @@ export function createBunCompatSource(config: BunCompatConfig): string {
 		var http = require("http");
 		var handler = options && options.fetch;
 		if (typeof handler !== "function") {
-			throw new Error("[ForgeGraal] Bun.serve() requires a 'fetch' handler function.");
+			throw new Error("[Graak] Bun.serve() requires a 'fetch' handler function.");
 		}
 
 		var server = http.createServer(function (req, res) {
@@ -379,7 +379,7 @@ export function createBunCompatSource(config: BunCompatConfig): string {
 				if (global.gc) global.gc();
 			},
 			version: process.version.replace(/^v/, ""),
-			revision: "forgegraal-node-compat",
+			revision: "graak-node-compat",
 			password: {
 				hash: unsafe("password.hash", "Node.js has no argon2id/bcrypt implementation to match Bun's output. Use a real bcrypt/argon2 package rebuilt for this platform."),
 				verify: unsafe("password.verify", "Node.js has no argon2id/bcrypt implementation to match Bun's output. Use a real bcrypt/argon2 package rebuilt for this platform.")
@@ -407,7 +407,7 @@ export function createBunCompatSource(config: BunCompatConfig): string {
 		if (request === "bun:sqlite") return installBunSqlite();
 		if (typeof request === "string" && request.indexOf("bun:") === 0) {
 			throw new Error(
-				"[ForgeGraal] '" + request + "' has no Node.js compatibility layer on " + TARGET + ". " +
+				"[Graak] '" + request + "' has no Node.js compatibility layer on " + TARGET + ". " +
 					"Rewrite this part with Node.js APIs, or run this bot with Bun directly instead of the compiled executable."
 			);
 		}

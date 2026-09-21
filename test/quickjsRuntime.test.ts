@@ -25,13 +25,13 @@ async function withFetch<T>(handler: (url: string) => Response, fn: () => Promis
 }
 
 async function withIsolatedCache<T>(fn: () => Promise<T>): Promise<T> {
-	const previous = process.env.FORGEGRAAL_CACHE;
-	process.env.FORGEGRAAL_CACHE = mkdtempSync(join(tmpdir(), "forgegraal-qjs-cache-"));
+	const previous = process.env.GRAAK_CACHE;
+	process.env.GRAAK_CACHE = mkdtempSync(join(tmpdir(), "graak-qjs-cache-"));
 	try {
 		return await fn();
 	} finally {
-		if (previous === undefined) delete process.env.FORGEGRAAL_CACHE;
-		else process.env.FORGEGRAAL_CACHE = previous;
+		if (previous === undefined) delete process.env.GRAAK_CACHE;
+		else process.env.GRAAK_CACHE = previous;
 	}
 }
 
@@ -136,7 +136,7 @@ test("a target with no published build says so instead of guessing", async () =>
 });
 
 test("windowsFloor reads the imports, not the PE header's declared version", () => {
-	const dir = mkdtempSync(join(tmpdir(), "forgegraal-qjs-pe-"));
+	const dir = mkdtempSync(join(tmpdir(), "graak-qjs-pe-"));
 
 	// The published 32-bit build declares subsystem 4.0 yet imports Vista-only functions, so the
 	// header alone would put it on Windows 95. The imports are what decide.
@@ -169,12 +169,12 @@ test("the Vista-only import list is the exact set an XP build has to remove", ()
 /**
  * Behavioural checks for the Node compatibility layer, run against a real quickjs-ng engine.
  *
- * Skipped when no engine is on PATH (set FORGEGRAAL_QJS to point at one, or `qjs`), because the
+ * Skipped when no engine is on PATH (set GRAAK_QJS to point at one, or `qjs`), because the
  * binary is not a build dependency. The same selftest is also run against Node below, which is
  * what makes a pass meaningful: the file is not tailored to either runtime.
  */
 function findEngine(): string | null {
-	const explicit = process.env.FORGEGRAAL_QJS;
+	const explicit = process.env.GRAAK_QJS;
 	if (explicit && existsSync(explicit)) return explicit;
 	const result = spawnSync("sh", ["-c", "command -v qjs"], { encoding: "utf-8" });
 	const found = result.stdout.trim();
@@ -217,22 +217,19 @@ test("modules needing a socket are real with a native layer and explicit without
 	// every entry point that would open a connection throws an explanation instead of pretending.
 	assert.match(source, /Http2ServerRequest/);
 	assert.match(source, /http2\.\$\{name\}\(\) is not implemented/);
-	assert.ok(
-		source.includes("__forgegraalUnavailable"),
-		"unavailable modules must stay detectable by the conformance tool"
-	);
+	assert.ok(source.includes("__graakUnavailable"), "unavailable modules must stay detectable by the conformance tool");
 });
 
 /**
- * The C native host under `quickjs/native/` installs the `__forgegraal_native` surface that
+ * The C native host under `quickjs/native/` installs the `__graak_native` surface that
  * `native-modules.js` builds Node-shaped crypto/zlib/net/tls on top of. This checks the built
  * binary actually delivers what that layer expects, not just that it launches.
  *
- * Skipped unless a built backend is present, since it is not a build dependency: FORGEGRAAL_C
+ * Skipped unless a built backend is present, since it is not a build dependency: GRAAK_C
  * points at one, or it is looked for where `quickjs/native/build.sh` put it.
  */
 function findBackend(): string | null {
-	const bin = process.env.FORGEGRAAL_C ?? "";
+	const bin = process.env.GRAAK_C ?? "";
 	return bin && existsSync(bin) ? bin : null;
 }
 

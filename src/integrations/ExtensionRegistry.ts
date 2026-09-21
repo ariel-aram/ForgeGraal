@@ -3,7 +3,7 @@
  *
  * `legacySafe` means the extension runs on targets that cannot load native addons
  * (Windows XP / Vista / 7, iSH, linux-x86, freebsd-x86) — that is, it either has no native
- * dependency or ForgeGraal's native shim has a replacement that behaves like the real one.
+ * dependency or Graak's native shim has a replacement that behaves like the real one.
  * Extensions whose features genuinely need a native addon are marked unsafe: the shim
  * refuses to stub them, because empty images or broken voice encryption are worse than a
  * clear failure.

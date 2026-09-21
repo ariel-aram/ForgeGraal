@@ -120,9 +120,9 @@ for (var i = 0; i < NODE_MODULES.length; i++) {
 		check("node-modules", name, function () {
 			if (typeof require !== "function") return false;
 			var mod = require(name);
-			// A module that loads but throws the moment it is used is not present. ForgeGraal's
+			// A module that loads but throws the moment it is used is not present. Graak's
 			// quickjs-ng layer marks those explicitly so this count cannot flatter itself.
-			if (mod && mod.__forgegraalUnavailable) return false;
+			if (mod && mod.__graakUnavailable) return false;
 			return true;
 		});
 	})(NODE_MODULES[i]);

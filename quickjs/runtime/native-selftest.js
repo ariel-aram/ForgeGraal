@@ -1,5 +1,5 @@
 // Run through the compatibility layer, as a real program would be:
-//   forgegraal-c quickjs/runtime/node-compat.js quickjs/runtime/native-selftest.js
+//   graak-c quickjs/runtime/node-compat.js quickjs/runtime/native-selftest.js
 const crypto = require("crypto");
 const zlib = require("zlib");
 const tls = require("tls");
@@ -12,7 +12,7 @@ console.log("expected                :", "f7bc83f430538424b13298e6aa6fb143ef4d59
 console.log("randomUUID              :", crypto.randomUUID());
 console.log("timingSafeEqual         :", crypto.timingSafeEqual(Buffer.from("abc"), Buffer.from("abc")), crypto.timingSafeEqual(Buffer.from("abc"), Buffer.from("abd")));
 
-const packed = zlib.deflateSync("ForgeGraal ".repeat(30));
+const packed = zlib.deflateSync("Graak ".repeat(55));
 console.log("zlib deflate/inflate    :", zlib.inflateSync(packed).length === 330, `(330 -> ${packed.length})`);
 
 // Node-shaped TLS: exactly how discord.js would open a connection.
@@ -21,7 +21,7 @@ let body = "";
 (async () => {
 await new Promise((resolve, reject) => {
   socket.on("secureConnect", () => {
-    socket.write("GET /api/v10/gateway HTTP/1.1\r\nHost: discord.com\r\nUser-Agent: ForgeGraal\r\nConnection: close\r\n\r\n");
+    socket.write("GET /api/v10/gateway HTTP/1.1\r\nHost: discord.com\r\nUser-Agent: Graak\r\nConnection: close\r\n\r\n");
   });
   socket.on("data", (chunk) => { body += String.fromCharCode(...chunk); });
   socket.on("end", resolve);

@@ -23,7 +23,7 @@ function hasDocker(): boolean {
 
 /** Same fixture shape as `createProject()` in compiler.test.ts: nested node_modules must resolve. */
 function createProject(): string {
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-qjs-project-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-qjs-project-"));
 	mkdirSync(join(root, "node_modules/a"), { recursive: true });
 	mkdirSync(join(root, "node_modules/b/node_modules/a"), { recursive: true });
 	mkdirSync(join(root, "src/commands"), { recursive: true });
@@ -35,7 +35,7 @@ console.log(JSON.stringify({
 	a: require("a"),
 	bA: require("b"),
 	commands: fs.readdirSync(__dirname + "/commands"),
-	target: process.env.FORGEGRAAL_TARGET ?? null,
+	target: process.env.GRAAK_TARGET ?? null,
 }));`
 	);
 	writeFileSync(join(root, "src/commands/ping.js"), "module.exports = 1;");
@@ -83,7 +83,7 @@ test("QuickJsPackager.supports covers legacy Windows, iSH/32-bit Linux, and the 
 	}
 });
 
-test("a bot packaged for the ForgeGraal native host runs with no Node.js binary anywhere in the output", {
+test("a bot packaged for the Graak native host runs with no Node.js binary anywhere in the output", {
 	timeout: 300_000,
 }, async () => {
 	const root = createProject();
@@ -101,7 +101,7 @@ test("a bot packaged for the ForgeGraal native host runs with no Node.js binary 
 	const files = readdirSync(result.outputPath);
 	assert.ok(!files.includes("node"), "no Node.js binary must be bundled");
 	assert.ok(!files.includes("node.exe"), "no Node.js binary must be bundled");
-	assert.ok(files.includes("forgegraal-c"), "the ForgeGraal native host must be bundled instead");
+	assert.ok(files.includes("graak-c"), "the Graak native host must be bundled instead");
 	assert.ok(files.includes("runtime"), "node-compat.js/native-modules.js must be bundled");
 
 	// Run it for real: the produced launcher, not node, not the entrypoint directly.
@@ -130,7 +130,7 @@ test("linux-modern-x64 is static musl, not dynamic glibc, and really runs on Alp
 		offline: true,
 	});
 
-	const bin = join(result.outputPath, "forgegraal-c");
+	const bin = join(result.outputPath, "graak-c");
 	const ldd = spawnSync("ldd", [bin], { encoding: "utf-8" });
 	assert.match(
 		`${ldd.stdout}${ldd.stderr}`,
@@ -149,17 +149,17 @@ test("linux-modern-x64 is static musl, not dynamic glibc, and really runs on Alp
 			"--platform",
 			"linux/amd64",
 			"-v",
-			`${bin}:/forgegraal-c:ro`,
+			`${bin}:/graak-c:ro`,
 			"-v",
 			`${join(process.cwd(), "quickjs/runtime")}:/runtime:ro`,
 			"alpine:latest",
-			"/forgegraal-c",
+			"/graak-c",
 			"/runtime/node-compat.js",
 			"/runtime/native-selftest.js",
 		],
 		{ encoding: "utf-8", timeout: 60_000 }
 	);
-	assert.equal(run.status, 0, `forgegraal-c must run on real Alpine (musl):\n${run.stdout}${run.stderr}`);
+	assert.equal(run.status, 0, `graak-c must run on real Alpine (musl):\n${run.stdout}${run.stderr}`);
 	assert.match(run.stdout, /tls\.connect status\s+: HTTP\/1\.1 200 OK/, run.stdout);
 });
 
@@ -176,7 +176,7 @@ test("--native-libc glibc is an explicit opt-in, dynamically linked and real to 
 	});
 
 	assert.equal(result.strategy, "quickjs");
-	const bin = join(result.outputPath, "forgegraal-c");
+	const bin = join(result.outputPath, "graak-c");
 	const ldd = spawnSync("ldd", [bin], { encoding: "utf-8" });
 	assert.match(ldd.stdout, /libc\.so\.6/, "an explicit glibc request must actually produce a dynamic glibc binary");
 
@@ -217,9 +217,9 @@ test("iSH and 32-bit Linux share one static musl binary, and it really runs a bo
 		assert.equal(result.strategy, "quickjs", target);
 		const files = readdirSync(result.outputPath);
 		assert.ok(!files.includes("node"), `${target}: no Node.js binary must be bundled`);
-		assert.ok(files.includes("forgegraal-c"), `${target}: the native host must be bundled instead`);
+		assert.ok(files.includes("graak-c"), `${target}: the native host must be bundled instead`);
 
-		const info = BinaryInspector.inspect(join(result.outputPath, "forgegraal-c"));
+		const info = BinaryInspector.inspect(join(result.outputPath, "graak-c"));
 		assert.ok(info, `${target}: the bundled binary must be a recognizable ELF`);
 		assert.ok(
 			BinaryInspector.matchesTarget(info, target),
@@ -258,10 +258,10 @@ test("legacy Windows targets default to the native host, and the bundled binary 
 		assert.equal(result.strategy, "quickjs", target);
 		const files = readdirSync(result.outputPath);
 		assert.ok(!files.includes("node.exe"), `${target}: no Node.js binary must be bundled`);
-		assert.ok(files.includes("forgegraal-c.exe"), `${target}: the native host must be bundled instead`);
+		assert.ok(files.includes("graak-c.exe"), `${target}: the native host must be bundled instead`);
 		assert.ok(files.includes("runtime"), target);
 
-		const info = BinaryInspector.inspect(join(result.outputPath, "forgegraal-c.exe"));
+		const info = BinaryInspector.inspect(join(result.outputPath, "graak-c.exe"));
 		assert.ok(info, `${target}: the bundled binary must be a recognizable PE`);
 		assert.ok(
 			BinaryInspector.matchesTarget(info, target),
@@ -299,7 +299,7 @@ test("a bot that needs a native addon gets the dynamically linked host instead o
 		existsSync(join(result.outputPath, "app/node_modules/lmdb/build/Release/lmdb.node")),
 		"the addon must ship with the bot"
 	);
-	const ldd = spawnSync("ldd", [join(result.outputPath, "forgegraal-c")], { encoding: "utf-8" });
+	const ldd = spawnSync("ldd", [join(result.outputPath, "graak-c")], { encoding: "utf-8" });
 	assert.match(ldd.stdout, /libc\.so\.6/, "an addon-loading host has to be dynamic, since a static one cannot dlopen");
 });
 
@@ -326,10 +326,10 @@ test("32-bit Linux and iSH get the dynamic musl host when an addon needs loading
 	});
 	assert.equal(result.strategy, "quickjs");
 	assert.ok(result.warnings.some((w) => /dynamically linked musl host/.test(w)));
-	const info = BinaryInspector.inspect(join(result.outputPath, "forgegraal-c"));
+	const info = BinaryInspector.inspect(join(result.outputPath, "graak-c"));
 	assert.equal(info?.arch, "x86");
 	assert.match(
-		readFileSync(join(result.outputPath, "forgegraal-c")).toString("latin1"),
+		readFileSync(join(result.outputPath, "graak-c")).toString("latin1"),
 		/ld-musl-i386\.so\.1/,
 		"it is dynamic, so it can dlopen"
 	);
@@ -345,7 +345,7 @@ test("a real Node-API addon loads and behaves exactly as it does under Node.js",
 	// time, which is precisely the contract the host's Node-API layer has to honour. It covers values,
 	// strings, objects, buffers, callbacks, exceptions, wrapped classes, references, BigInt, async work
 	// resolving a promise, and a thread-safe function called from a second OS thread.
-	const work = mkdtempSync(join(tmpdir(), "forgegraal-napi-"));
+	const work = mkdtempSync(join(tmpdir(), "graak-napi-"));
 	const addon = join(work, "addon.node");
 	const build = spawnSync(
 		"gcc",
@@ -364,7 +364,7 @@ test("a real Node-API addon loads and behaves exactly as it does under Node.js",
 	);
 	assert.equal(build.status, 0, build.stderr);
 
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-napi-project-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-napi-project-"));
 	mkdirSync(join(root, "node_modules/napi-fixture"), { recursive: true });
 	writeFileSync(
 		join(root, "package.json"),
@@ -456,7 +456,7 @@ test("a musl-linked addon gets the dynamic musl host and runs on real Alpine", {
 }, async () => {
 	// On Alpine a native addon is a musl-linked shared library, and a static host cannot load it. The
 	// addon's own libc decides which dynamic host it gets, so it works there instead of being refused.
-	const work = mkdtempSync(join(tmpdir(), "forgegraal-muslnapi-"));
+	const work = mkdtempSync(join(tmpdir(), "graak-muslnapi-"));
 	const addon = join(work, "addon.node");
 	const source = join(process.cwd(), "test/fixtures/napi/addon.c");
 	const include = join(process.cwd(), "quickjs/native/include");
@@ -467,7 +467,7 @@ test("a musl-linked addon gets the dynamic musl host and runs on real Alpine", {
 	);
 	assert.equal(build.status, 0, build.stderr);
 
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-muslnapi-project-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-muslnapi-project-"));
 	mkdirSync(join(root, "node_modules/napi-fixture"), { recursive: true });
 	writeFileSync(
 		join(root, "package.json"),
@@ -521,7 +521,7 @@ test("a musl-linked addon gets the dynamic musl host and runs on real Alpine", {
 			"-w",
 			"/app",
 			"alpine:latest",
-			"./forgegraal-c",
+			"./graak-c",
 			"/app/runtime/node-compat.js",
 			"/app/app/index.js",
 		],

@@ -1,15 +1,27 @@
 {
-  "name": "forgegraal",
+  "name": "graak",
   "version": "1.0.0",
-  "description": "ForgeScript extension and CLI that turns ForgeScript bots into standalone executables, including 32-bit (iSH, x86, ARMv7) and legacy Windows (7 / Vista) targets",
+  "description": "Package JavaScript and TypeScript programs (servers, websites, CLIs, bots) into standalone executables for every device, including legacy Windows and 32-bit systems, on Graak's own engine or Node.js",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./forgescript": {
+      "types": "./dist/forgescript/index.d.ts",
+      "default": "./dist/forgescript/index.js"
+    },
+    "./package.json": "./package.json"
+  },
   "bin": {
-    "forgegraal": "dist/cli.js"
+    "graak": "dist/cli.js"
   },
   "files": [
     "dist",
     "metadata",
+    "quickjs",
     "README.md",
     "tools"
   ],
@@ -18,18 +30,26 @@
     "typecheck": "tsc --noEmit",
     "check": "biome check src test",
     "format": "biome format --write src test",
-    "docgen": "tsc && node dist/docgen.js",
+    "docgen": "tsc && node dist/forgescript/docgen.js",
     "test": "tsc && node --test \"test/**/*.test.ts\"",
-    "conformance": "node tools/engine-conformance.js"
+    "conformance": "node tools/engine-conformance.js",
+    "prebuilts": "tsc && node tools/build-prebuilts.js"
   },
   "keywords": [
-    "forgescript",
-    "graal",
+    "graak",
+    "executable",
+    "standalone",
     "binary",
+    "packager",
+    "quickjs",
     "sea",
-    "ish",
+    "legacy-windows",
     "windows7",
-    "32bit"
+    "32bit",
+    "ish",
+    "static-site",
+    "typescript",
+    "forgescript"
   ],
   "author": "Ariel Aram",
   "license": "GPL-3.0-or-later",

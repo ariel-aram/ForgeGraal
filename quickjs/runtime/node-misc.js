@@ -473,7 +473,7 @@ function createChildProcess(host, EventEmitter, io = {}) {
 	 * exits: unlike a pipe this cannot deadlock on output larger than the pipe buffer.
 	 */
 	function run(argv, options = {}) {
-		const base = `${io.tmpdir?.() ?? "/tmp"}/forgegraal-cp-${host.getpid?.() ?? 0}-${counter++}`;
+		const base = `${io.tmpdir?.() ?? "/tmp"}/graak-cp-${host.getpid?.() ?? 0}-${counter++}`;
 		const write = host.O_WRONLY | host.O_CREAT | host.O_TRUNC;
 		const files = [];
 		const open = (suffix, flags) => {

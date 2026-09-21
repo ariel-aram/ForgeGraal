@@ -3,7 +3,7 @@ import { type PackageManager } from "./PolicyEnforcer";
 import { type NativeHostLibc } from "./QuickJsPackager";
 import { type StaticSiteOptions } from "./StaticSite";
 export type BuildStrategy = "auto" | "sea" | "portable";
-/** Which engine runs the program: ForgeGraal's native host (quickjs-ng), or a Node.js runtime. `auto` follows the target. */
+/** Which engine runs the program: Graak's native host (quickjs-ng), or a Node.js runtime. `auto` follows the target. */
 export type BuildEngine = "auto" | "native" | "node";
 /**
  * Runtimes below this major need their bundled code lowered and the modern platform APIs
@@ -36,7 +36,7 @@ export interface BuildOptions {
     packageManager?: PackageManager | string;
     strategy?: BuildStrategy;
     /**
-     * `native` runs the program on the ForgeGraal native host and `node` on a Node.js runtime; `auto` (the default) follows
+     * `native` runs the program on the Graak native host and `node` on a Node.js runtime; `auto` (the default) follows
      * the target. With `engine: "native"`, `strategy: "sea"` writes one self-unpacking executable and `portable` (or `auto`)
      * a folder. Without it, an explicit `strategy` still means a Node.js build, as it always has.
      */
@@ -51,7 +51,7 @@ export interface BuildOptions {
     includeEnv?: boolean;
     allowNativeMismatch?: boolean;
     /**
-     * Which libc the ForgeGraal native host is built against, for targets that default to it
+     * Which libc the Graak native host is built against, for targets that default to it
      * (see QuickJsPackager). Defaults to "musl": the one build that runs unmodified on both glibc
      * and musl systems. "glibc" is an explicit opt-in, only wired up where it has actually been
      * built and run — see NATIVE_HOST_GLIBC_BUILD_TARGET.
@@ -86,10 +86,10 @@ export interface BuildResult {
     durationMs: number;
     warnings: string[];
 }
-export declare const DEFAULT_OUTPUT_DIR = "forgegraal-out";
+export declare const DEFAULT_OUTPUT_DIR = "graak-out";
 export declare class BinaryPackager {
     /**
-     * Builds a ForgeScript bot into a Node.js Single Executable Application when the target
+     * Builds a program into a Node.js Single Executable Application when the target
      * runtime supports it, otherwise into a portable bundle (launcher + archive + runtime).
      */
     static compile(options: BuildOptions): Promise<BuildResult>;
@@ -103,7 +103,7 @@ export declare class BinaryPackager {
     static legacyRuntimePlan(runtimeVersion: string | null): LegacyRuntimePlan;
     /**
      * A prebuilt addon compiled against V8 cannot load outside Node.js, but the package that ships it
-     * usually ships its source too. That source is rebuilt here against ForgeGraal's V8 layer for the
+     * usually ships its source too. That source is rebuilt here against Graak's V8 layer for the
      * target -- from any build machine, whatever platform the installed prebuild was for.
      *
      * Packages that are only optional accelerators, with a host that cannot load addons anyway, are

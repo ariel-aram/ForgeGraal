@@ -1,5 +1,5 @@
 /**
- * Target device architecture and platform definitions for the ForgeGraal compiler.
+ * Target device architecture and platform definitions for the Graak compiler.
  */
 export declare enum TargetDevice {
     WinXpX86 = "win-xp-x86",

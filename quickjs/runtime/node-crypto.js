@@ -18,7 +18,7 @@ const ALIASES = { "rsa-sha256": "sha256", "rsa-sha1": "sha1", "rsa-sha384": "sha
 
 function notSupported(name, why) {
 	return () => {
-		throw Object.assign(new Error(`crypto.${name} is not available in the ForgeGraal native host: ${why}`), { code: "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM" });
+		throw Object.assign(new Error(`crypto.${name} is not available in the Graak native host: ${why}`), { code: "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM" });
 	};
 }
 

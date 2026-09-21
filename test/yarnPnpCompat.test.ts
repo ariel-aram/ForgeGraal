@@ -14,7 +14,7 @@ import { BinaryPackager, TargetDevice, YarnPnpCompat } from "../dist/index.js";
  */
 function setupPnpProject(): string | null {
 	try {
-		const root = mkdtempSync(join(tmpdir(), "forgegraal-yarn-pnp-fixture-"));
+		const root = mkdtempSync(join(tmpdir(), "graak-yarn-pnp-fixture-"));
 		writeFileSync(join(root, "package.json"), JSON.stringify({ name: "pnp-bot", private: true }));
 		execFileSync("npx", ["--yes", "yarn@1.22.22", "set", "version", "berry"], {
 			cwd: root,

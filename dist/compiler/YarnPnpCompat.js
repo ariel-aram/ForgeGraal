@@ -39,7 +39,7 @@ class YarnPnpCompat {
         if (!(0, node_fs_1.existsSync)(yarnScript)) {
             throw new structures_1.RuntimeError(`.yarnrc.yml points 'yarnPath' at '${yarnPathRel}', which does not exist.`);
         }
-        const tmp = (0, node_fs_1.mkdtempSync)((0, node_path_1.join)((0, node_os_1.tmpdir)(), "forgegraal-yarn-pnp-"));
+        const tmp = (0, node_fs_1.mkdtempSync)((0, node_path_1.join)((0, node_os_1.tmpdir)(), "graak-yarn-pnp-"));
         let cleaned = false;
         const cleanup = () => {
             if (cleaned)

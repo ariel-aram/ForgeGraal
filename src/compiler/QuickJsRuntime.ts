@@ -52,7 +52,7 @@ export interface QuickJsAsset {
 }
 
 /**
- * quickjs-ng assets that match a ForgeGraal target. Targets are absent when the release has no
+ * quickjs-ng assets that match a Graak target. Targets are absent when the release has no
  * build for them, which is not the same as the target being unsupported by the engine — it means
  * it would have to be built from source.
  */
@@ -160,7 +160,7 @@ export class QuickJsRuntime {
 		const expected = options.sha256 ?? entry.sha256;
 		if (!expected) {
 			throw new RuntimeError(
-				`No SHA-256 is pinned for quickjs-ng ${version} '${entry.asset}'. ForgeGraal does not download an ` +
+				`No SHA-256 is pinned for quickjs-ng ${version} '${entry.asset}'. Graak does not download an ` +
 					"executable it cannot verify; record the checksum first."
 			);
 		}

@@ -15,12 +15,12 @@ exports.SEA_FUSE = "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2";
 const DIST_URL = "https://nodejs.org/dist";
 class NodeRuntime {
     static cacheDir() {
-        if (process.env.FORGEGRAAL_CACHE)
-            return process.env.FORGEGRAAL_CACHE;
+        if (process.env.GRAAK_CACHE)
+            return process.env.GRAAK_CACHE;
         if (process.platform === "win32" && process.env.LOCALAPPDATA) {
-            return (0, node_path_1.join)(process.env.LOCALAPPDATA, "forgegraal", "cache");
+            return (0, node_path_1.join)(process.env.LOCALAPPDATA, "graak", "cache");
         }
-        return (0, node_path_1.join)(process.env.XDG_CACHE_HOME ?? (0, node_path_1.join)((0, node_os_1.homedir)(), ".cache"), "forgegraal");
+        return (0, node_path_1.join)(process.env.XDG_CACHE_HOME ?? (0, node_path_1.join)((0, node_os_1.homedir)(), ".cache"), "graak");
     }
     /** index.json key of an official runtime that runs on this host. */
     static hostFileKey() {

@@ -16,7 +16,7 @@ export interface PortableBuildResult {
     bundledRuntime: boolean;
     warnings: string[];
 }
-export declare const BUNDLE_MARKER = ".forgegraal-bundle";
+export declare const BUNDLE_MARKER = ".graak-bundle";
 export declare class PortablePackager {
     static windowsLauncher(): string;
     /**

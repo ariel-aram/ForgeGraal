@@ -1,12 +1,12 @@
 /*
- * ForgeGraal's implementation of the V8 embedder API, written on top of Node-API.
+ * Graak's implementation of the V8 embedder API, written on top of Node-API.
  *
  * WHY THIS EXISTS. A native addon written against V8 directly, or through NAN, cannot be loaded as
  * a prebuilt binary anywhere but Node.js: the compiled code reads V8's own heap layout. What it can
  * do is be *compiled* against a different implementation of the same C++ API. This header is that
  * implementation. `v8::Local<v8::Value>` here is a Node-API `napi_value`, `v8::FunctionTemplate` is
  * `napi_define_class`, `v8::Persistent` is a `napi_ref`, and so on; the addon that results imports
- * only `napi_*` symbols, which the ForgeGraal host (and Node.js itself) provides. Because it is
+ * only `napi_*` symbols, which the Graak host (and Node.js itself) provides. Because it is
  * header-only there is no library to link, and the same source builds for every target.
  *
  * SCOPE. This is the API surface addons and NAN actually use, not all of V8: values, strings, objects,
@@ -15,8 +15,8 @@
  * NAN wraps. Anything outside it fails to compile with a normal "not a member" error, so a gap is
  * visible when the addon is built, never at runtime.
  */
-#ifndef FORGEGRAAL_V8_H_
-#define FORGEGRAAL_V8_H_
+#ifndef GRAAK_V8_H_
+#define GRAAK_V8_H_
 
 #include <node_api.h>
 #include "v8-version.h"
@@ -3106,11 +3106,11 @@ inline Local<Script> UnboundScriptBind(Local<UnboundScript> u) { return Local<Sc
 
 }  // namespace v8
 
-/* Called by the ForgeGraal host before it runs an addon's registration function, so that the V8 layer
+/* Called by the Graak host before it runs an addon's registration function, so that the V8 layer
    knows which environment the addon is in. Real Node.js never calls it and does not need to. Its
    presence is also how the host recognises an addon built against this layer. */
 extern "C" FG_EXPORT __attribute__((used)) inline void fg_v8_set_env(napi_env env) { v8::internal::Env() = env; }
 #if defined(__GNUC__) && !defined(_WIN32)
 #pragma GCC visibility pop
 #endif
-#endif  // FORGEGRAAL_V8_H_
+#endif  // GRAAK_V8_H_

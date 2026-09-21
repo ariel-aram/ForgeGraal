@@ -38,7 +38,7 @@ test("parseGyp reads what real binding.gyp files contain", () => {
 });
 
 test("isV8Addon tells a V8 binary from a Node-API one", () => {
-	const dir = mkdtempSync(join(tmpdir(), "forgegraal-v8sig-"));
+	const dir = mkdtempSync(join(tmpdir(), "graak-v8sig-"));
 	const write = (name: string, text: string) => {
 		const file = join(dir, name);
 		writeFileSync(file, Buffer.concat([Buffer.from("\x7fELF"), Buffer.from(text)]));
@@ -77,14 +77,14 @@ function compileFixture(source: string, out: string, extra: string[] = []): void
 	assert.equal(res.status, 0, res.stderr);
 }
 
-test("a package that ships V8 source is rebuilt against ForgeGraal's V8 layer and runs with no Node.js", {
+test("a package that ships V8 source is rebuilt against Graak's V8 layer and runs with no Node.js", {
 	skip: !hasGxx && "g++ (native and x86_64-linux-gnu) is not installed",
 	timeout: 600_000,
 }, async () => {
 	// The fixture uses the V8 API directly: FunctionTemplate, ObjectWrap, Persistent, TryCatch, Buffer,
 	// accessors, exceptions. Node.js itself runs the same source, built against the same layer, which is
 	// what the host's output is compared to.
-	const work = mkdtempSync(join(tmpdir(), "forgegraal-v8-"));
+	const work = mkdtempSync(join(tmpdir(), "graak-v8-"));
 	const oracleAddon = join(work, "oracle.node");
 	compileFixture(join(fixtures, "raw.cc"), oracleAddon);
 	writeFileSync(
@@ -95,7 +95,7 @@ test("a package that ships V8 source is rebuilt against ForgeGraal's V8 layer an
 	assert.equal(expected.status, 0, `Node baseline failed: ${expected.stderr}`);
 
 	// A project whose dependency ships a *prebuilt V8 binary* (recognised by its symbols) plus source.
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-v8-project-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-v8-project-"));
 	const pkg = join(root, "node_modules/v8-fixture");
 	mkdirSync(join(pkg, "build/Release"), { recursive: true });
 	writeFileSync(join(root, "package.json"), JSON.stringify({ name: "v8-bot", dependencies: { "v8-fixture": "1" } }));
@@ -141,7 +141,7 @@ test("a package that ships V8 source is rebuilt against ForgeGraal's V8 layer an
 test("a package that ships only a prebuilt V8 binary says exactly that, not a linker error", {
 	skip: !hasGxx && "g++ is not installed",
 }, async () => {
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-v8-nosrc-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-v8-nosrc-"));
 	const pkg = join(root, "node_modules/binary-only/build/Release");
 	mkdirSync(pkg, { recursive: true });
 	writeFileSync(join(root, "package.json"), JSON.stringify({ name: "bot", dependencies: { "binary-only": "1" } }));
@@ -173,7 +173,7 @@ test("a V8 addon that ships only its binary is rebuilt from the source in its re
 	skip: !hasGxx && "g++ (native and x86_64-linux-gnu) is not installed",
 	timeout: 600_000,
 }, async () => {
-	const work = mkdtempSync(join(tmpdir(), "forgegraal-v8fetch-"));
+	const work = mkdtempSync(join(tmpdir(), "graak-v8fetch-"));
 	compileFixture(join(fixtures, "raw.cc"), join(work, "oracle.node"));
 	writeFileSync(
 		join(work, "oracle.js"),
@@ -204,7 +204,7 @@ test("a V8 addon that ships only its binary is rebuilt from the source in its re
 	const port = (server.address() as { port: number }).port;
 
 	try {
-		const root = mkdtempSync(join(tmpdir(), "forgegraal-v8fetch-project-"));
+		const root = mkdtempSync(join(tmpdir(), "graak-v8fetch-project-"));
 		const pkg = join(root, "node_modules/widget");
 		mkdirSync(join(pkg, "build/Release"), { recursive: true });
 		writeFileSync(join(root, "package.json"), JSON.stringify({ name: "bot", dependencies: { widget: "1.0.0" } }));
@@ -267,7 +267,7 @@ test("V8 property interceptors work, as a Proxy over the plain object", {
 	// The interceptors of a template have no Node-API equivalent, so the object is handed out behind a
 	// Proxy whose traps call them. Expectations are V8's documented semantics: a callback that sets no
 	// return value declines and the access falls through to the plain object.
-	const work = mkdtempSync(join(tmpdir(), "forgegraal-interceptors-"));
+	const work = mkdtempSync(join(tmpdir(), "graak-interceptors-"));
 	compileFixture(join(fixtures, "interceptors.cc"), join(work, "interceptors.node"));
 	copyFileSync(join(fixtures, "interceptors-run.js"), join(work, "run.js"));
 
@@ -292,16 +292,16 @@ test("V8 property interceptors work, as a Proxy over the plain object", {
 });
 
 // NAN itself is not a dependency of this repository, so this runs only where it is installed
-// (FORGEGRAAL_NAN_DIR, or a `nan` in node_modules).
+// (GRAAK_NAN_DIR, or a `nan` in node_modules).
 const nanDir =
-	process.env.FORGEGRAAL_NAN_DIR ??
+	process.env.GRAAK_NAN_DIR ??
 	(existsSync(join(process.cwd(), "node_modules/nan/nan.h")) ? join(process.cwd(), "node_modules/nan") : "");
 
 test("a NAN addon compiles against the V8 layer and behaves as it does under Node.js", {
-	skip: (!hasGxx && "g++ is not installed") || (!nanDir && "NAN is not installed (set FORGEGRAAL_NAN_DIR)"),
+	skip: (!hasGxx && "g++ is not installed") || (!nanDir && "NAN is not installed (set GRAAK_NAN_DIR)"),
 	timeout: 300_000,
 }, async () => {
-	const work = mkdtempSync(join(tmpdir(), "forgegraal-nan-"));
+	const work = mkdtempSync(join(tmpdir(), "graak-nan-"));
 	const addon = join(work, "nan.node");
 	compileFixture(join(fixtures, "nan.cc"), addon, [`-I${nanDir}`]);
 	writeFileSync(join(work, "run.js"), readFileSync(join(fixtures, "nan-run.js"), "utf-8"));

@@ -1,6 +1,6 @@
 /**
  * Turns a folder of static files (a `vite build`, Create React App or `next export` output, a plain
- * HTML site) into something ForgeGraal can package like any other program: a generated web server plus
+ * HTML site) into something Graak can package like any other program: a generated web server plus
  * the files it serves.
  *
  * The server is plain JavaScript over `http`, `fs`, `path` and `zlib`, so the same source runs on the

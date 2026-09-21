@@ -8,7 +8,7 @@ import { gzipSync } from "node:zlib";
 import {
 	BinaryInspector,
 	BinaryPackager,
-	ForgeGraalError,
+	GraakError,
 	RuntimeError,
 	RuntimeRegistry,
 	TargetDevice,
@@ -97,7 +97,7 @@ function zip(name: string, content: Buffer): Buffer {
 }
 
 test("RuntimeRegistry.add rejects unpinned or non-https entries", () => {
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-registry-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-registry-"));
 	assert.throws(
 		() =>
 			RuntimeRegistry.add(
@@ -109,7 +109,7 @@ test("RuntimeRegistry.add rejects unpinned or non-https entries", () => {
 				},
 				{ root }
 			),
-		ForgeGraalError
+		GraakError
 	);
 	assert.throws(
 		() =>
@@ -122,13 +122,13 @@ test("RuntimeRegistry.add rejects unpinned or non-https entries", () => {
 				},
 				{ root }
 			),
-		ForgeGraalError
+		GraakError
 	);
 	assert.equal(RuntimeRegistry.list(root).length, 0);
 });
 
 test("RuntimeRegistry add/find/remove round-trip via the project manifest", () => {
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-registry-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-registry-"));
 	RuntimeRegistry.add(
 		{
 			target: TargetDevice.WinLegacyX86,
@@ -227,7 +227,7 @@ test("RuntimeRegistry.ensure extracts node/node.exe from .tar.gz and .zip archiv
 });
 
 test("BinaryPackager uses a registered community runtime for targets with no official build", async () => {
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-registry-project-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-registry-project-"));
 	writeFileSync(join(root, "package.json"), JSON.stringify({ name: "legacy-bot" }));
 	writeFileSync(join(root, "index.js"), "console.log('hi')");
 

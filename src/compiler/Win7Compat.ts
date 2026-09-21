@@ -1,14 +1,15 @@
 import { spawnSync } from "node:child_process";
-import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { RuntimeError } from "../structures";
 import { NodeRuntime } from "./NodeRuntime";
+import { Prebuilt } from "./Prebuilt";
+import { hasPosixShell, spawnOutput } from "./SpawnOutput";
 
 /**
  * Lets addons built for a newer Windows load on Windows Vista and 7.
  *
- * A native addon is a DLL, and the operating system -- not ForgeGraal -- binds its imports when it is
+ * A native addon is a DLL, and the operating system -- not Graak -- binds its imports when it is
  * loaded. Prebuilt addons are compiled for whatever Windows their authors target, and the Rust ones
  * (@napi-rs/canvas, davey, mediaplex, ...) and libvips reach for a handful of functions Windows 7 does
  * not have. Measured on the real prebuilds of lmdb, better-sqlite3, msgpackr-extract, @napi-rs/canvas,
@@ -22,7 +23,7 @@ import { NodeRuntime } from "./NodeRuntime";
  * addons, the bundle is patched at build time: an import that Windows 7 cannot satisfy is pointed at
  * something it can. The edit is in place and never changes a file's layout:
  *
- *   - a whole imported DLL is renamed to one of ForgeGraal's compatibility DLLs (`fgsynch.dll`,
+ *   - a whole imported DLL is renamed to one of Graak's compatibility DLLs (`fgsynch.dll`,
  *     `fgprng.dll`, built from quickjs/native/win-compat/), which ships beside the addon -- Windows looks
  *     next to the loaded DLL first;
  *   - a single imported function is renamed to a signature-compatible one the same DLL does have
@@ -301,31 +302,51 @@ export class Win7Compat {
 		return [...SHIM_FOR_DLL.keys()];
 	}
 
+	/** Digest of the sources the compatibility DLLs are built from (line endings do not count). */
+	public static shimSourceHash(repoRoot: string): string {
+		return Prebuilt.digest(
+			["fgsynch.c", "fgprng.c", "fgsynch.def", "build.sh"].map(
+				(f) => [f, join(repoRoot, "quickjs/native/win-compat", f)] as const
+			)
+		);
+	}
+
 	/**
-	 * Builds (and caches) the compatibility DLLs for one architecture with quickjs/native/win-compat/.
-	 * Returns the directory that holds fgsynch.dll and fgprng.dll.
+	 * Returns the directory that holds `fgsynch.dll` and `fgprng.dll` for one architecture: the cache, else
+	 * the copy that ships with Graak (`quickjs/prebuilt/win-compat/`), else a fresh build with
+	 * quickjs/native/win-compat/, which needs a POSIX shell and mingw-w64.
 	 */
 	public static ensureShims(arch: "x64" | "ia32"): string {
 		const repoRoot = dirname(require.resolve("../../package.json"));
-		const script = join(repoRoot, "quickjs/native/win-compat/build.sh");
-		const hash = createHash("sha256");
-		for (const f of ["fgsynch.c", "fgprng.c", "build.sh"])
-			hash.update(readFileSync(join(repoRoot, "quickjs/native/win-compat", f)));
-		const current = hash.digest("hex");
-		const cacheDir = join(NodeRuntime.cacheDir(), "win-compat", arch === "x64" ? "x64" : "x86");
-		const stamp = join(cacheDir, ".source");
-		const built = Win7Compat.shimNames().every((n) => existsSync(join(cacheDir, n)));
-		if (built && existsSync(stamp) && readFileSync(stamp, "utf-8") === current) return cacheDir;
+		const folder = arch === "x64" ? "x64" : "x86";
+		const current = Win7Compat.shimSourceHash(repoRoot);
+		const upToDate = (dir: string) =>
+			Win7Compat.shimNames().every((n) => existsSync(join(dir, n))) &&
+			existsSync(join(dir, ".source")) &&
+			readFileSync(join(dir, ".source"), "utf-8") === current;
 
+		const shipped = join(repoRoot, "quickjs/prebuilt/win-compat", folder);
+		if (upToDate(shipped)) return shipped;
+		const cacheDir = join(NodeRuntime.cacheDir(), "win-compat", folder);
+		if (upToDate(cacheDir)) return cacheDir;
+
+		if (!hasPosixShell()) {
+			throw new RuntimeError(
+				"The Windows 7 compatibility DLLs have to be built here, which needs a POSIX shell and mingw-w64, and this machine " +
+					"has no `sh`. Graak ships them prebuilt (quickjs/prebuilt/win-compat), but those do not match this checkout's " +
+					"sources. Reinstall Graak from its published package or a clean checkout, or run the build from WSL or Git Bash."
+			);
+		}
 		mkdirSync(cacheDir, { recursive: true });
-		const res = spawnSync("sh", [script, arch === "x64" ? "x64" : "x86", cacheDir], { encoding: "utf-8" });
+		const script = join(repoRoot, "quickjs/native/win-compat/build.sh");
+		const res = spawnSync("sh", [script, folder, cacheDir], { encoding: "utf-8" });
 		if (res.status !== 0) {
 			throw new RuntimeError(
-				`Building the Windows 7 compatibility DLLs failed:\n${(res.stderr || res.stdout).trim()}\n` +
+				`Building the Windows 7 compatibility DLLs failed:\n${spawnOutput(res)}\n` +
 					"They need mingw-w64 (apt install mingw-w64)."
 			);
 		}
-		writeFileSync(stamp, current);
+		writeFileSync(join(cacheDir, ".source"), current);
 		return cacheDir;
 	}
 }

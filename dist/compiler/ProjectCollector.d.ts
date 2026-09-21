@@ -4,7 +4,7 @@ export interface CollectOptions {
     entrypoint: string;
     /** Include devDependencies of the root project. */
     includeDev?: boolean;
-    /** Include `.env*` files (they usually contain the bot token). */
+    /** Include `.env*` files (they usually contain secrets such as tokens). */
     includeEnv?: boolean;
     /** Absolute paths that must never be bundled (e.g. the build output). */
     excludePaths?: readonly string[];

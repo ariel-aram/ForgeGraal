@@ -646,7 +646,7 @@ static JSValue fg_wasm_free(JSContext *ctx, JSValueConst this_val, int argc, JSV
     return JS_UNDEFINED;
 }
 
-const JSCFunctionListEntry forgegraal_wasm_funcs[] = {
+const JSCFunctionListEntry graak_wasm_funcs[] = {
     JS_CFUNC_DEF("wasmInstantiate", 3, fg_wasm_instantiate),
     JS_CFUNC_DEF("wasmFind", 2, fg_wasm_find),
     JS_CFUNC_DEF("wasmCall", 3, fg_wasm_call),
@@ -655,4 +655,4 @@ const JSCFunctionListEntry forgegraal_wasm_funcs[] = {
     JS_CFUNC_DEF("wasmGlobal", 3, fg_wasm_global),
     JS_CFUNC_DEF("wasmFree", 1, fg_wasm_free),
 };
-const size_t forgegraal_wasm_funcs_count = sizeof(forgegraal_wasm_funcs) / sizeof(forgegraal_wasm_funcs[0]);
+const size_t graak_wasm_funcs_count = sizeof(graak_wasm_funcs) / sizeof(graak_wasm_funcs[0]);

@@ -37,7 +37,7 @@ class SeaPackager {
             throw new structures_1.RuntimeError(`'${options.runtimeBinary}' is already a Single Executable Application.`);
         }
         const warnings = [];
-        const work = (0, node_fs_1.mkdtempSync)((0, node_path_1.join)((0, node_os_1.tmpdir)(), "forgegraal-sea-"));
+        const work = (0, node_fs_1.mkdtempSync)((0, node_path_1.join)((0, node_os_1.tmpdir)(), "graak-sea-"));
         const partial = `${options.outputPath}.${process.pid}.partial`;
         try {
             const mainPath = (0, node_path_1.join)(work, "boot.cjs");

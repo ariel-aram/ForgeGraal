@@ -44,7 +44,7 @@ if (typeof globalThis.URL === "undefined") {
 
 // The engine's console prints every object as "[object Object]"; this one formats like Node's.
 {
-	const promiseState = globalThis.__forgegraal_native?.promiseState;
+	const promiseState = globalThis.__graak_native?.promiseState;
 	if (promiseState) setPromiseStateReader(promiseState);
 	// Until process.stdout/stderr exist (they are streams, built later) console writes straight to the C streams;
 	// after that it goes through them, so a program that replaces process.stdout.write sees its console output too.
@@ -71,7 +71,7 @@ if (typeof globalThis.URL === "undefined") {
 }
 
 /*
- * Timers. The stock `qjs` binary puts these on the global object; the ForgeGraal host embeds only the
+ * Timers. The stock `qjs` binary puts these on the global object; the Graak host embeds only the
  * engine's `os` module, where they live as os.setTimeout and friends. Node hands back an object rather
  * than a number, and libraries call .unref() on it, so the same shape is returned here. The engine has
  * no unref'd timers, so ref/unref are accepted and keep the loop alive either way.
@@ -272,10 +272,10 @@ function notImplemented(moduleName, reason) {
 		{},
 		{
 			get(_target, prop) {
-				if (prop === "__forgegraalUnavailable") return true;
+				if (prop === "__graakUnavailable") return true;
 				throw new Error(
 					`'${moduleName}' is not available on the quickjs-ng runtime yet. ${reason} ` +
-						"ForgeGraal does not stub it, because a module that appears to load and then misbehaves is " +
+						"Graak does not stub it, because a module that appears to load and then misbehaves is " +
 						"harder to diagnose than one that says what is missing."
 				);
 			},
@@ -742,13 +742,13 @@ Object.assign(processModule, {
 	exitCode: undefined,
 	env: std.getenviron(),
 	platform: os.platform === "win32" ? "win32" : os.platform,
-	arch: globalThis.__forgegraal_native?.arch ?? "ia32",
+	arch: globalThis.__graak_native?.arch ?? "ia32",
 	version: "v20.18.0",
 	versions: { node: "20.18.0", v8: "0.0.0-quickjs-ng", quickjs: "0.16.2", uv: "1.48.0", modules: "115", napi: "10", openssl: "mbedtls-3.6.2", zlib: "miniz-3.0.2" },
 	release: { name: "node", lts: "Iron" },
 	config: { target_defaults: {}, variables: {} },
 	features: { inspector: false, debug: false, uv: true, ipv6: true, tls_alpn: false, tls_sni: true, tls_ocsp: false, tls: true },
-	pid: os.getpid?.() ?? globalThis.__forgegraal_native?.getpid?.() ?? 0,
+	pid: os.getpid?.() ?? globalThis.__graak_native?.getpid?.() ?? 0,
 	execPath: os.exePath?.()[0] ?? "qjs",
 	cwd: () => os.getcwd()[0],
 	chdir: (dir) => os.chdir(dir),
@@ -794,7 +794,7 @@ Object.assign(processModule, {
 	},
 	abort: () => std.exit(134),
 	binding: () => {
-		throw new Error("process.binding is not available in the ForgeGraal native host");
+		throw new Error("process.binding is not available in the Graak native host");
 	},
 	setUncaughtExceptionCaptureCallback: () => {},
 	hasUncaughtExceptionCaptureCallback: () => false,
@@ -823,12 +823,12 @@ function reportUncaught(error) {
 	processModule.exitCode = 1;
 	processModule.exit(1);
 }
-globalObject.__forgegraal_reportUncaught = reportUncaught;
+globalObject.__graak_reportUncaught = reportUncaught;
 /* Called by the host when the event loop runs dry (a listener may schedule more work) and again just before it exits. */
-globalObject.__forgegraal_beforeExit = () => {
+globalObject.__graak_beforeExit = () => {
 	processModule.emit("beforeExit", processModule.exitCode ?? 0);
 };
-globalObject.__forgegraal_exit = () => {
+globalObject.__graak_exit = () => {
 	if (!processModule._exiting) {
 		processModule._exiting = true;
 		try {
@@ -982,7 +982,7 @@ const util = {
 	isDeepStrictEqual(a, b) {
 		return deepEqual(a, b);
 	},
-	types: createUtilTypes({ isProxy: globalThis.__forgegraal_native?.isProxy }),
+	types: createUtilTypes({ isProxy: globalThis.__graak_native?.isProxy }),
 	deprecate(fn, message, code) {
 		let warned = false;
 		return function (...args) {
@@ -1429,22 +1429,22 @@ const streamModule = CallableStream;
 }
 Object.assign(
 	fs,
-	createFs({ os, std, Buffer, path: pathModule, stream: streamModule, EventEmitter: CallableEventEmitter, native: globalThis.__forgegraal_native, platform: os.platform })
+	createFs({ os, std, Buffer, path: pathModule, stream: streamModule, EventEmitter: CallableEventEmitter, native: globalThis.__graak_native, platform: os.platform })
 );
-if (globalThis.__forgegraal_native) (await import("./native-modules.js")).zlib.attachStreams(streamModule.Transform);
+if (globalThis.__graak_native) (await import("./native-modules.js")).zlib.attachStreams(streamModule.Transform);
 
 /* ---------------------------------------------------------- module registry */
 
 const NEEDS_NATIVE_WORK =
 	"It needs native support the engine does not have yet (quickjs-ng exposes no socket API), " +
-	"so ForgeGraal cannot provide it in JavaScript.";
+	"so Graak cannot provide it in JavaScript.";
 
 /*
- * Modules that need the native layer. Present only when running under a ForgeGraal host (the C
+ * Modules that need the native layer. Present only when running under a Graak host (the C
  * build or the Rust one); on a bare `qjs` there are no sockets, so these stay unavailable and say
  * so rather than half-working.
  */
-const nativeLayer = globalThis.__forgegraal_native ?? null;
+const nativeLayer = globalThis.__graak_native ?? null;
 let nativeModules = null;
 if (nativeLayer) {
 	const nm = await import("./native-modules.js");
@@ -1611,7 +1611,7 @@ const builtins = {
 		const unsupported = (name) => () => {
 			throw Object.assign(
 				new Error(
-					`http2.${name}() is not implemented: HTTP/2 needs HPACK and stream multiplexing, which ForgeGraal's ` +
+					`http2.${name}() is not implemented: HTTP/2 needs HPACK and stream multiplexing, which Graak's ` +
 						"native host does not provide. HTTP/1.1 (http, https) and WebSocket are supported."
 				),
 				{ code: "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM" }
@@ -1957,7 +1957,7 @@ function createRequire(fromFile, parentModule) {
 			if (typeof processModule.dlopen !== "function") {
 				moduleCache.delete(file);
 				throw new Error(
-					`Cannot load native addon '${file}': this ForgeGraal runtime has no native host to load it with.`
+					`Cannot load native addon '${file}': this Graak runtime has no native host to load it with.`
 				);
 			}
 			try {

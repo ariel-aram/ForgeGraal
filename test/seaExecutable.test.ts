@@ -19,7 +19,7 @@ const mingw = spawnSync("x86_64-w64-mingw32-gcc", ["--version"]).status === 0;
 const hasWine = spawnSync("docker", ["image", "inspect", "fg-wine"]).status === 0;
 
 function project(): string {
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-sea-project-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-sea-project-"));
 	mkdirSync(join(root, "data"));
 	writeFileSync(join(root, "package.json"), JSON.stringify({ name: "sea-app", version: "1.0.0" }));
 	writeFileSync(join(root, "data/greeting.txt"), "hello from inside the executable");
@@ -52,7 +52,7 @@ test("--engine native --strategy sea writes one file that unpacks itself and run
 	timeout: 300_000,
 }, async () => {
 	const root = project();
-	const out = mkdtempSync(join(tmpdir(), "forgegraal-sea-out-"));
+	const out = mkdtempSync(join(tmpdir(), "graak-sea-out-"));
 	const file = join(out, "app");
 	const result = await build(root, file);
 
@@ -63,7 +63,7 @@ test("--engine native --strategy sea writes one file that unpacks itself and run
 	assert.ok(statSync(file).size < 12 * 1024 * 1024, "host plus a small program stays small");
 
 	// Run it from somewhere unrelated, with arguments: nothing but the file is needed.
-	const elsewhere = mkdtempSync(join(tmpdir(), "forgegraal-sea-cwd-"));
+	const elsewhere = mkdtempSync(join(tmpdir(), "graak-sea-cwd-"));
 	const run = spawnSync(file, ["one", "two words"], {
 		cwd: elsewhere,
 		encoding: "utf-8",
@@ -75,7 +75,7 @@ test("--engine native --strategy sea writes one file that unpacks itself and run
 	assert.equal(printed.greeting, "hello from inside the executable", "bundled files are reachable from __dirname");
 
 	// It unpacked beside itself, and a second start reuses that instead of unpacking again.
-	const marker = join(`${file}.forgegraal`, ".sea");
+	const marker = join(`${file}.graak`, ".sea");
 	assert.ok(existsSync(marker), "unpacked next to the executable");
 	const before = statSync(marker).mtimeMs;
 	const again = spawnSync(file, [], { encoding: "utf-8" });
@@ -88,10 +88,10 @@ test("a single-file build whose folder is read-only unpacks into the temp direct
 	skip: process.getuid?.() === 0 ? "root can write anywhere" : false,
 }, async () => {
 	const root = project();
-	const out = mkdtempSync(join(tmpdir(), "forgegraal-sea-out-"));
+	const out = mkdtempSync(join(tmpdir(), "graak-sea-out-"));
 	const built = join(out, "built");
 	await build(root, built);
-	const locked = join(mkdtempSync(join(tmpdir(), "forgegraal-sea-ro-")), "bin");
+	const locked = join(mkdtempSync(join(tmpdir(), "graak-sea-ro-")), "bin");
 	mkdirSync(locked);
 	copyFileSync(built, join(locked, "app"));
 	chmodSync(join(locked, "app"), 0o755);
@@ -100,11 +100,7 @@ test("a single-file build whose folder is read-only unpacks into the temp direct
 		const run = spawnSync(join(locked, "app"), [], { encoding: "utf-8" });
 		assert.equal(run.status, 0, run.stderr);
 		assert.match(run.stdout, /hello from inside the executable/);
-		assert.equal(
-			existsSync(join(locked, "app.forgegraal")),
-			false,
-			"nothing was written beside a read-only executable"
-		);
+		assert.equal(existsSync(join(locked, "app.graak")), false, "nothing was written beside a read-only executable");
 	} finally {
 		chmodSync(locked, 0o755);
 	}
@@ -114,7 +110,7 @@ test("a damaged single-file build says so and exits non-zero instead of running 
 	timeout: 300_000,
 }, async () => {
 	const root = project();
-	const out = mkdtempSync(join(tmpdir(), "forgegraal-sea-out-"));
+	const out = mkdtempSync(join(tmpdir(), "graak-sea-out-"));
 	const file = join(out, "app");
 	await build(root, file);
 	const bytes = readFileSync(file);
@@ -169,7 +165,7 @@ test("--engine is validated, and native is refused where there is no native host
 			offline: true,
 			engine: "native",
 		}),
-		/no ForgeGraal native host build for/i
+		/no Graak native host build for/i
 	);
 });
 
@@ -180,7 +176,7 @@ test("a single-file Windows build unpacks itself and runs (Wine)", {
 	timeout: 600_000,
 }, async () => {
 	const root = project();
-	const out = mkdtempSync(join(tmpdir(), "forgegraal-sea-win-"));
+	const out = mkdtempSync(join(tmpdir(), "graak-sea-win-"));
 	const file = join(out, "app.exe");
 	const result = await BinaryPackager.compile({
 		entrypoint: join(root, "index.js"),
@@ -216,5 +212,5 @@ test("a single-file Windows build unpacks itself and runs (Wine)", {
 	assert.ok(line, `no output from the Windows build:\n${run.stdout}${run.stderr}`);
 	assert.deepEqual(JSON.parse(line).args, ["first", "second"]);
 	assert.equal(JSON.parse(line).greeting, "hello from inside the executable");
-	assert.ok(existsSync(join(out, "app.exe.forgegraal", ".sea")), "unpacked beside the executable");
+	assert.ok(existsSync(join(out, "app.exe.graak", ".sea")), "unpacked beside the executable");
 });

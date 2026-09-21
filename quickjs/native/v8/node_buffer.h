@@ -1,5 +1,5 @@
-#ifndef FORGEGRAAL_NODE_BUFFER_H_
-#define FORGEGRAAL_NODE_BUFFER_H_
+#ifndef GRAAK_NODE_BUFFER_H_
+#define GRAAK_NODE_BUFFER_H_
 
 #include "node.h"
 #if defined(__GNUC__) && !defined(_WIN32)

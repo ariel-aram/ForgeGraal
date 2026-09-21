@@ -1,5 +1,5 @@
 /*
- * A small Node-API addon used to test the ForgeGraal native host's Node-API layer. It is compiled
+ * A small Node-API addon used to test the Graak native host's Node-API layer. It is compiled
  * against the vendored headers with nothing else linked: every napi_* function it calls is resolved
  * from the host executable when the library is loaded, exactly as a real addon's would be.
  */

@@ -8,7 +8,7 @@
  */
 
 const unavailable = (what, why) =>
-	Object.assign(new Error(`${what} is not available in the ForgeGraal native host: ${why}`), {
+	Object.assign(new Error(`${what} is not available in the Graak native host: ${why}`), {
 		code: "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM",
 	});
 
@@ -27,12 +27,12 @@ function createOs({ std, processModule, readText }) {
 
 	const cpus = () => {
 		let count = 0;
-		let model = "ForgeGraal CPU";
+		let model = "Graak CPU";
 		const info = isWindows ? null : read("/proc/cpuinfo");
 		if (info) {
 			for (const line of info.split("\n")) {
 				if (line.startsWith("processor")) count++;
-				else if (line.startsWith("model name") && model === "ForgeGraal CPU") model = line.split(":")[1].trim();
+				else if (line.startsWith("model name") && model === "Graak CPU") model = line.split(":")[1].trim();
 			}
 		}
 		if (!count) count = Number(env.NUMBER_OF_PROCESSORS) || 1;

@@ -1,6 +1,6 @@
 /**
  * Extensions Bun bots are commonly authored in that plain Node.js cannot `require()`
- * directly. ForgeGraal transpiles these with `bun build` when the project's package manager
+ * directly. Graak transpiles these with `bun build` when the project's package manager
  * is Bun, instead of asking the user to pre-build — Bun projects are frequently run straight
  * from `.ts` with no separate build step, unlike npm/pnpm/yarn projects.
  */
@@ -16,7 +16,7 @@ export declare class BunTranspiler {
     /**
      * Transpiles a Bun-authored entrypoint into plain CommonJS with `bun build`. Local,
      * relative imports are bundled into the single output file; bare package imports
-     * (`require("discord.js")`) are kept as `--packages=external` so ForgeGraal's own
+     * (`require("discord.js")`) are kept as `--packages=external` so Graak's own
      * dependency walk resolves them from the real, installed `node_modules` afterward rather
      * than from a bundler's copy — the same packages the project's lockfile pinned.
      *

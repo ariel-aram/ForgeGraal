@@ -40,7 +40,7 @@ test("No package manager is restricted to a subset of targets", () => {
 
 test("PNPM, Yarn and Bun projects build the Node.js targets, including the ARM ones Android runs under", () => {
 	// LinuxArmV7 and LinuxModernArm64 are what an Android device (Termux or similar) actually is:
-	// ARM Linux. They stay on the Node.js path rather than the ForgeGraal native host, so a bot
+	// ARM Linux. They stay on the Node.js path rather than the Graak native host, so a bot
 	// author's package manager choice has to keep working here specifically, not just in the
 	// generic ALL_TARGETS sweep above.
 	for (const pm of ["pnpm", "yarn", "bun"] as const) {
@@ -83,7 +83,7 @@ test("Target parsing is case and whitespace insensitive", () => {
 });
 
 test("Package manager detection prefers the project's declaration and lockfiles", () => {
-	const dir = mkdtempSync(join(tmpdir(), "forgegraal-pm-"));
+	const dir = mkdtempSync(join(tmpdir(), "graak-pm-"));
 	writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "x" }));
 	writeFileSync(join(dir, "bun.lock"), "");
 	assert.equal(PolicyEnforcer.detectPackageManager(dir), "bun");

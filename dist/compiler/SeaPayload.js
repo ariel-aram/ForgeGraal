@@ -18,11 +18,11 @@ const structures_1 = require("../structures");
  *              u8 method (0 stored, 1 raw deflate), storedSize bytes
  *   trailer := "FGSEA\0\0\1", u64 payloadOffset, u64 payloadLength, 64 hex characters (payload SHA-256)
  *
- * The entry ".forgegraal" holds the path of the file the host should run.
+ * The entry ".graak" holds the path of the file the host should run.
  */
 exports.SEA_MAGIC = Buffer.from("FGSEA\0\0\u0001", "latin1");
 exports.SEA_TRAILER_BYTES = 88;
-exports.SEA_ENTRY_MARKER = ".forgegraal";
+exports.SEA_ENTRY_MARKER = ".graak";
 /** Every file under `dirs` (relative to `root`), skipping anything in `exclude` (root-relative paths). */
 function collectSeaEntries(root, dirs, exclude = new Set()) {
     const entries = [];

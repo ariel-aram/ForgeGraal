@@ -20,7 +20,7 @@ const ALWAYS_EXCLUDED_NAMES = new Set([
     ".yarnrc.yml",
     ".yarn",
     ".pnpm-store",
-    ".forgegraal-cache",
+    ".graak-cache",
     "coverage",
 ]);
 const SUPPORTED_ENTRY_EXTENSIONS = new Set([".js", ".cjs", ".mjs", ".ts", ".mts", ".cts", ".tsx", ".jsx"]);
@@ -126,7 +126,7 @@ class ProjectCollector {
         const rawName = typeof pkg.name === "string" ? pkg.name : (0, node_path_1.basename)(root);
         return {
             root,
-            name: rawName.replace(/^@[^/]+\//, "").replace(/[^a-zA-Z0-9._-]/g, "-") || "bot",
+            name: rawName.replace(/^@[^/]+\//, "").replace(/[^a-zA-Z0-9._-]/g, "-") || "app",
             entry: toPosix((0, node_path_1.relative)(root, entryReal)),
             entries: collector.entries,
             nativeAddons: collector.nativeAddons,
@@ -152,7 +152,7 @@ class ProjectCollector {
     isExcluded(abs, name, isProjectFile) {
         if (ALWAYS_EXCLUDED_NAMES.has(name))
             return true;
-        if (name.endsWith(".forgegraal"))
+        if (name.endsWith(".graak"))
             return true;
         if (isProjectFile && !this.options.includeEnv && /^\.env(\..*)?$/.test(name))
             return true;

@@ -46,7 +46,7 @@ export const POLYFILL_PACKAGES = [
 ] as const;
 
 export function createLegacyPolyfillSource(config: LegacyPolyfillConfig): string {
-	return `(function installForgeGraalLegacyPolyfills() {
+	return `(function installGraakLegacyPolyfills() {
 	var g = typeof globalThis !== "undefined" ? globalThis : global;
 	var TARGET = ${JSON.stringify(config.target)};
 	var ASSET_DIR = path.join(appDir, ${JSON.stringify(config.assetDir)});
@@ -352,7 +352,7 @@ export function createLegacyPolyfillSource(config: LegacyPolyfillConfig): string
 		SegmenterShim.prototype.segment = function () {
 			throw new Error(
 				"Intl.Segmenter is not available on " + TARGET + " (added in Node.js 16, and it needs full ICU). " +
-				"ForgeGraal does not emulate it, because approximating Unicode segmentation would split emoji and " +
+				"Graak does not emulate it, because approximating Unicode segmentation would split emoji and " +
 				"combining characters incorrectly while appearing to work. Avoid text-segmentation functions such as " +
 				"$segmentTextSplit on this target, or build for a modern target instead."
 			);
@@ -397,7 +397,7 @@ export function createLegacyPolyfillSource(config: LegacyPolyfillConfig): string
 			};
 		}
 	}
-${config.runtimeCodegen ? runtimeCodegenSource(config) : "\n\tg.__forgegraalLegacyReady = null;\n"}
+${config.runtimeCodegen ? runtimeCodegenSource(config) : "\n\tg.__graakLegacyReady = null;\n"}
 })();
 `;
 }
@@ -416,7 +416,7 @@ function runtimeCodegenSource(config: LegacyPolyfillConfig): string {
 	return `
 	// ---- runtime code generation ---------------------------------------------------------
 	var esbuildWasm = require(path.join(ASSET_DIR, "esbuild-wasm", "lib", "main.js"));
-	var JS_TARGET = process.env.FORGEGRAAL_JS_TARGET || ${JSON.stringify(config.jsTarget)};
+	var JS_TARGET = process.env.GRAAK_JS_TARGET || ${JSON.stringify(config.jsTarget)};
 	var transpilerReady = false;
 	var NativeFunction = Function;
 
@@ -460,13 +460,13 @@ function runtimeCodegenSource(config: LegacyPolyfillConfig): string {
 	PatchedFunction.prototype.constructor = PatchedFunction;
 	g.Function = PatchedFunction;
 
-	g.__forgegraalLegacyReady = esbuildWasm
+	g.__graakLegacyReady = esbuildWasm
 		.initialize({ worker: false })
 		.then(function () { transpilerReady = true; })
 		.catch(function (err) {
 			process.stderr.write(
-				"[ForgeGraal] Could not start the runtime transpiler: " + (err && err.message ? err.message : err) + "\\n" +
-				"[ForgeGraal] Code generated at runtime (ForgeScript compiles its functions this way) will fail to " +
+				"[Graak] Could not start the runtime transpiler: " + (err && err.message ? err.message : err) + "\\n" +
+				"[Graak] Code generated at runtime (ForgeScript compiles its functions this way) will fail to " +
 				"parse on this runtime.\\n"
 			);
 		});

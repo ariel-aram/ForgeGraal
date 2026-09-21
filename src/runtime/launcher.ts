@@ -66,7 +66,7 @@ var MAGIC = ${JSON.stringify(ARCHIVE_MAGIC)};
 var IS_WINDOWS = process.platform === "win32";
 
 function fail(message) {
-	process.stderr.write("[ForgeGraal] " + message + "\\n");
+	process.stderr.write("[Graak] " + message + "\\n");
 	process.exit(1);
 }
 
@@ -120,7 +120,7 @@ function extract(archive, appDir, baseDir) {
 	var manifest = JSON.parse(raw.toString("utf8", offset, offset + manifestLength));
 	offset += manifestLength;
 
-	var listFile = path.join(baseDir, ".forgegraal-files.json");
+	var listFile = path.join(baseDir, ".graak-files.json");
 	var previous = readJson(listFile, []);
 	var current = {};
 
@@ -149,7 +149,7 @@ function extract(archive, appDir, baseDir) {
 
 function main() {
 	if (CONFIG.minNode && compareVersions(process.versions.node, CONFIG.minNode) < 0) {
-		fail("This bot requires Node.js >= " + CONFIG.minNode + " but the runtime is " + process.version + ".");
+		fail("This program requires Node.js >= " + CONFIG.minNode + " but the runtime is " + process.version + ".");
 	}
 
 	// Node.js verifies TLS against its own bundled Mozilla CA snapshot by default, not the
@@ -160,7 +160,7 @@ function main() {
 		var nodeOptions = process.env.NODE_OPTIONS || "";
 		if (nodeOptions.indexOf("--use-system-ca") !== -1 || nodeOptions.indexOf("--use-openssl-ca") !== -1) {
 			process.stderr.write(
-				"[ForgeGraal] Warning: NODE_OPTIONS forces the OS certificate store, which is likely outdated on " +
+				"[Graak] Warning: NODE_OPTIONS forces the OS certificate store, which is likely outdated on " +
 					"this platform and can fail TLS handshakes (e.g. to Discord). Unset --use-system-ca / " +
 					"--use-openssl-ca to use Node's bundled CA store instead.\\n",
 			);
@@ -168,13 +168,13 @@ function main() {
 	}
 
 	var sea = getSea();
-	var baseDir = process.env.FORGEGRAAL_HOME
-		? path.resolve(process.env.FORGEGRAAL_HOME)
+	var baseDir = process.env.GRAAK_HOME
+		? path.resolve(process.env.GRAAK_HOME)
 		: sea
-			? path.join(path.dirname(process.execPath), CONFIG.name + ".forgegraal")
+			? path.join(path.dirname(process.execPath), CONFIG.name + ".graak")
 			: __dirname;
 	var appDir = path.join(baseDir, "app");
-	var stampFile = path.join(baseDir, ".forgegraal-stamp");
+	var stampFile = path.join(baseDir, ".graak-stamp");
 
 	var stamp = null;
 	try {
@@ -192,10 +192,10 @@ function main() {
 
 	var entry = path.join(appDir, CONFIG.entry);
 	process.chdir(appDir);
-	process.env.FORGEGRAAL = "1";
-	process.env.FORGEGRAAL_TARGET = CONFIG.target;
-	process.env.FORGEGRAAL_APP_DIR = appDir;
-	process.env.FORGEGRAAL_EXECUTABLE = sea ? process.execPath : __filename;
+	process.env.GRAAK = "1";
+	process.env.GRAAK_TARGET = CONFIG.target;
+	process.env.GRAAK_APP_DIR = appDir;
+	process.env.GRAAK_EXECUTABLE = sea ? process.execPath : __filename;
 	process.argv[1] = entry;
 
 	// undici picks a SIMD build of its HTTP parser when the CPU claims support; older 32-bit
@@ -215,7 +215,7 @@ ${legacyShim}
 			load(entry);
 		} catch (err) {
 			if (!err || (err.code !== "ERR_REQUIRE_ESM" && err.code !== "ERR_REQUIRE_ASYNC_MODULE")) throw err;
-			var importer = load(path.join(appDir, ".forgegraal-import.cjs"));
+			var importer = load(path.join(appDir, ".graak-import.cjs"));
 			importer(require("url").pathToFileURL(entry).href).catch(function (e) {
 				process.stderr.write((e && e.stack ? e.stack : String(e)) + "\\n");
 				process.exit(1);
@@ -226,7 +226,7 @@ ${legacyShim}
 	// The legacy transpiler starts asynchronously but patches the synchronous Function
 	// constructor, so the bot must not be loaded until it is live -- ForgeScript compiles its
 	// functions through new Function() while its own modules are still being required.
-	var legacyReady = global.__forgegraalLegacyReady;
+	var legacyReady = global.__graakLegacyReady;
 	if (legacyReady && typeof legacyReady.then === "function") {
 		legacyReady.then(loadEntry, function (err) {
 			process.stderr.write((err && err.stack ? err.stack : String(err)) + "\\n");
@@ -243,4 +243,4 @@ main();
 
 /** Helper loaded from disk so that dynamic import() works for ESM entrypoints inside a SEA. */
 export const IMPORT_HELPER_SOURCE = `"use strict";\nmodule.exports = function (url) { return import(url); };\n`;
-export const IMPORT_HELPER_PATH = ".forgegraal-import.cjs";
+export const IMPORT_HELPER_PATH = ".graak-import.cjs";

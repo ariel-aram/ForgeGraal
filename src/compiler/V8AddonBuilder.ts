@@ -16,13 +16,14 @@ import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 
 import { RuntimeError, TARGET_METADATA_MAP, TargetDevice } from "../structures";
 import type { ArchiveEntry } from "./Archive";
 import { NodeRuntime } from "./NodeRuntime";
+import { spawnOutput } from "./SpawnOutput";
 
 /**
- * Builds native addons written against V8 or NAN from their source, for a ForgeGraal native host.
+ * Builds native addons written against V8 or NAN from their source, for a Graak native host.
  *
  * WHY. Such an addon, as a prebuilt binary, reads V8's own object layout, which exists only inside
  * Node.js; no other host can run it. Its *source* is another matter: it is C++ written against a
- * documented API, and ForgeGraal ships an implementation of that API on top of Node-API
+ * documented API, and Graak ships an implementation of that API on top of Node-API
  * (`quickjs/native/v8/`). Compiling the same source against that implementation yields an addon that
  * imports only `napi_*` functions -- the same kind every other addon this host loads already is.
  *
@@ -326,7 +327,7 @@ export interface V8BuildResult {
 	relativePath: string;
 }
 
-const HOST_EXE_NAME = "forgegraal-c.exe";
+const HOST_EXE_NAME = "graak-c.exe";
 
 export class V8AddonBuilder {
 	/** Whether V8 addons can be built for this target at all (needs the target's cross toolchain). */
@@ -397,7 +398,7 @@ export class V8AddonBuilder {
 			}
 			if (!response.ok) continue;
 			options.onLog?.(`${pkg.name} ships no source: fetching ${owner}/${name}@${ref} from its repository`);
-			const work = mkdtempSync(join(tmpdir(), "forgegraal-v8src-"));
+			const work = mkdtempSync(join(tmpdir(), "graak-v8src-"));
 			try {
 				const archive = join(work, "source.tar.gz");
 				writeFileSync(archive, Buffer.from(await response.arrayBuffer()));
@@ -440,7 +441,7 @@ export class V8AddonBuilder {
 		const meta = TARGET_METADATA_MAP[target];
 		if (!toolchain) {
 			throw new RuntimeError(
-				`${pkg.name} is a native addon compiled against V8, and ForgeGraal builds those from source with the ` +
+				`${pkg.name} is a native addon compiled against V8, and Graak builds those from source with the ` +
 					`target's own C++ toolchain, which is not wired up for ${meta.name} yet.`
 			);
 		}
@@ -449,7 +450,7 @@ export class V8AddonBuilder {
 		if (!existsSync(gypFile)) {
 			throw new RuntimeError(
 				`${pkg.name} ships only a prebuilt addon compiled against V8 -- there is no binding.gyp or source next to it -- ` +
-					"and a V8 binary cannot load outside Node.js. ForgeGraal looks for the source in the package's " +
+					"and a V8 binary cannot load outside Node.js. Graak looks for the source in the package's " +
 					"repository too (a GitHub tag matching its version); that found nothing or was not allowed (offline). " +
 					"Use a version of the package that ships its source, or a Node-API build of it."
 			);
@@ -489,8 +490,8 @@ export class V8AddonBuilder {
 		const relativePath = `build/Release/${settings.name}.node`;
 		if (existsSync(outFile)) return { file: outFile, relativePath };
 
-		log(`Building ${pkg.name} (${settings.name}) from source against ForgeGraal's V8 layer for ${meta.name}`);
-		const work = mkdtempSync(join(tmpdir(), "forgegraal-v8addon-"));
+		log(`Building ${pkg.name} (${settings.name}) from source against Graak's V8 layer for ${meta.name}`);
+		const work = mkdtempSync(join(tmpdir(), "graak-v8addon-"));
 		try {
 			const objects: string[] = [];
 			const nan = V8AddonBuilder.findNan(pkg.packageDir);
@@ -540,7 +541,7 @@ export class V8AddonBuilder {
 					const res = spawnSync(cxx ? toolchain.cxx : toolchain.cc, filtered, { encoding: "utf-8" });
 					if (res.status !== 0) {
 						throw new RuntimeError(
-							`Compiling ${relative(root, source)} of ${pkg.name} for ${meta.name} failed:\n${(res.stderr || res.stdout).trim().split("\n").slice(0, 25).join("\n")}`
+							`Compiling ${relative(root, source)} of ${pkg.name} for ${meta.name} failed:\n${spawnOutput(res).split("\n").slice(0, 25).join("\n")}`
 						);
 					}
 					objects.push(object);
@@ -569,7 +570,7 @@ export class V8AddonBuilder {
 			const link = spawnSync(toolchain.cxx, linkArgs, { encoding: "utf-8" });
 			if (link.status !== 0) {
 				throw new RuntimeError(
-					`Linking ${pkg.name} for ${meta.name} failed:\n${(link.stderr || link.stdout).trim().split("\n").slice(0, 25).join("\n")}`
+					`Linking ${pkg.name} for ${meta.name} failed:\n${spawnOutput(link).split("\n").slice(0, 25).join("\n")}`
 				);
 			}
 		} finally {
@@ -630,12 +631,10 @@ export class V8AddonBuilder {
 			if (name === "module_root_dir") return vars.module_root_dir ?? packageDir;
 			if (name === "DEPTH") return gypDir;
 			if (name in vars) return vars[name];
-			throw new RuntimeError(
-				`binding.gyp uses the variable '<(${name})', which ForgeGraal's gyp reader does not define.`
-			);
+			throw new RuntimeError(`binding.gyp uses the variable '<(${name})', which Graak's gyp reader does not define.`);
 		});
 		if (/<!?\(/.test(out)) {
-			throw new RuntimeError(`binding.gyp uses a command expansion ForgeGraal's gyp reader does not support: ${value}`);
+			throw new RuntimeError(`binding.gyp uses a command expansion Graak's gyp reader does not support: ${value}`);
 		}
 		return out;
 	}
@@ -699,7 +698,7 @@ export class V8AddonBuilder {
 
 	/**
 	 * Windows addons import their Node-API functions from a named module. Naming the host's own
-	 * executable makes the loader bind them to the running ForgeGraal host, which exports them.
+	 * executable makes the loader bind them to the running Graak host, which exports them.
 	 */
 	private static writeImportLibrary(dir: string, toolchain: Toolchain, apiDir: string): string {
 		const names = new Set<string>();
@@ -711,7 +710,7 @@ export class V8AddonBuilder {
 		writeFileSync(def, `LIBRARY "${HOST_EXE_NAME}"\nEXPORTS\n${[...names].sort().join("\n")}\n`);
 		const lib = join(dir, "libhost.a");
 		const res = spawnSync(toolchain.dlltool as string, ["-d", def, "-l", lib], { encoding: "utf-8" });
-		if (res.status !== 0) throw new RuntimeError(`Could not create the Node-API import library:\n${res.stderr}`);
+		if (res.status !== 0) throw new RuntimeError(`Could not create the Node-API import library:\n${spawnOutput(res)}`);
 		return lib;
 	}
 

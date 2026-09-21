@@ -2,8 +2,8 @@
  * Node-shaped `crypto`, `zlib`, `net` and `tls`, built on the native host.
  *
  * These are the four modules `node-compat.js` cannot implement, because the engine alone has no
- * sockets, no compression and no secure randomness. `forgegraal-c` (`quickjs/native/`) supplies
- * those as `globalThis.__forgegraal_native`; this file is the thin part that gives them the
+ * sockets, no compression and no secure randomness. `graak-c` (`quickjs/native/`) supplies
+ * those as `globalThis.__graak_native`; this file is the thin part that gives them the
  * shapes Node libraries expect, so discord.js sees `tls.connect()` rather than an integer socket
  * id.
  *
@@ -14,7 +14,7 @@
 
 import * as os from "qjs:os";
 
-const native = globalThis.__forgegraal_native;
+const native = globalThis.__graak_native;
 
 /* node-compat.js installs Node-shaped timers; run bare under the host (the selftest), the engine's own are used. */
 const startTimer = (fn, ms) => (globalThis.setTimeout ?? os.setTimeout)(fn, ms);
@@ -28,7 +28,7 @@ const stopTimer = (handle) => (globalThis.clearTimeout ?? os.clearTimeout)(handl
 const settled = (value) => (value && typeof value.then === "function" ? value : Promise.resolve(value));
 if (!native) {
 	throw new Error(
-		"native-modules.js requires the ForgeGraal native host. Run it under `forgegraal-c`, " +
+		"native-modules.js requires the Graak native host. Run it under `graak-c`, " +
 			"not a bare `qjs` -- a standalone engine has no sockets to expose."
 	);
 }
@@ -212,7 +212,7 @@ for (const name of ["inflate", "deflate", "inflateRaw", "deflateRaw", "gzip", "g
 }
 
 const noBrotli = () => {
-	throw Object.assign(new Error("Brotli is not available in the ForgeGraal native host"), { code: "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM" });
+	throw Object.assign(new Error("Brotli is not available in the Graak native host"), { code: "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM" });
 };
 Object.assign(zlib, {
 	brotliCompressSync: noBrotli,
@@ -308,7 +308,7 @@ function pollTick() {
 			fn();
 		} catch (error) {
 			// One handler's failure must not stop the poller serving every other socket.
-			if (typeof globalThis.__forgegraal_reportUncaught === "function") globalThis.__forgegraal_reportUncaught(error);
+			if (typeof globalThis.__graak_reportUncaught === "function") globalThis.__graak_reportUncaught(error);
 			else throw error;
 		}
 	};
@@ -463,7 +463,7 @@ function createSocketClass(Duplex) {
 			const { host = "localhost", port: portNumber, tls = false } = options;
 			// NODE_TLS_REJECT_UNAUTHORIZED=0 turns verification off for the whole process, as in Node.
 			const rejectUnauthorized = options.rejectUnauthorized ?? globalThis.process?.env?.NODE_TLS_REJECT_UNAUTHORIZED !== "0";
-			if (options.path) throw new Error("net: local (unix socket) paths are not supported by the ForgeGraal native host");
+			if (options.path) throw new Error("net: local (unix socket) paths are not supported by the Graak native host");
 			if (listener) this.once(tls ? "secureConnect" : "connect", listener);
 			this.connecting = true;
 			this._tls = tls;
@@ -704,7 +704,7 @@ function createServerClass(EventEmitter, Socket, tlsServer) {
 				if (typeof third === "number") options.backlog = third;
 				if (typeof second === "string" && typeof third === "number") options.backlog = third;
 			}
-			if (options.path) throw new Error("net: local (unix socket) paths are not supported by the ForgeGraal native host");
+			if (options.path) throw new Error("net: local (unix socket) paths are not supported by the Graak native host");
 			if (callback) this.once("listening", callback);
 			const port = options.port === undefined || options.port === null ? 0 : Number(options.port);
 			try {

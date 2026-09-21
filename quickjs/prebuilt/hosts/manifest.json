@@ -1,0 +1,45 @@
+{
+	"sourceHash": "07ca0926f66257b08aa513e0a0b4087a248ba7a2dc6b662701e3896d3c21f95f",
+	"hosts": {
+		"linux-x64": {
+			"file": "linux-x64.gz",
+			"sha256": "bab404ca9966c09e0998041c9cbe45fe38ae6b53138a9ad1aa414f2b980add9e",
+			"size": 3163768
+		},
+		"linux-x64-glibc": {
+			"file": "linux-x64-glibc.gz",
+			"sha256": "b1f48bd72ee42646b7d89d05f9421b80115b48cd14681220dacf97c4a2e75d24",
+			"size": 2894944
+		},
+		"linux-x64-musl-dyn": {
+			"file": "linux-x64-musl-dyn.gz",
+			"sha256": "ad20578b8edd5afd014f81cc41fc0cacc6e0a9e55b6f709f84dbcc50a6b06406",
+			"size": 2861512
+		},
+		"linux-x86": {
+			"file": "linux-x86.gz",
+			"sha256": "2f152843ad98dae5e0eb7e43103cd605c4b7993a2b2c73c8b0f1211d1a8b5e5d",
+			"size": 3090052
+		},
+		"linux-x86-musl-dyn": {
+			"file": "linux-x86-musl-dyn.gz",
+			"sha256": "3a0c594aedc5a25c421d836cff36f3a901f433ed0bd682a14d9f32b6e5e786eb",
+			"size": 3082692
+		},
+		"win-x64": {
+			"file": "win-x64.gz",
+			"sha256": "eae79929f4605e30e9f9d3e507753977dee2255b5ecb4e5badae84b1da58ee19",
+			"size": 3087498
+		},
+		"win-x86": {
+			"file": "win-x86.gz",
+			"sha256": "6774eff6a13752182f96c4c6df849c38a451ee0a21b1da39e6b5aa739f1e3979",
+			"size": 3113700
+		},
+		"win-xp-x86": {
+			"file": "win-xp-x86.gz",
+			"sha256": "1888469c901033e172093440cfd913877d14409989b04ca59db801446259585e",
+			"size": 3115009
+		}
+	}
+}

@@ -1,7 +1,7 @@
 const a = require("./addon.node");
 const out = {};
 out.add = a.add(2, 3.5);
-out.greet = a.greet("ForgeGraal");
+out.greet = a.greet("Graak");
 out.obj = a.makeObject();
 out.bufferSum = a.bufferSum(Buffer.from([1, 2, 3, 250]));
 const mb = a.makeBuffer(); out.makeBuffer = [Buffer.isBuffer(mb), mb.toString("hex")];

@@ -184,7 +184,7 @@ class FormData {
 }
 
 function encodeMultipart(form) {
-	const boundary = `----formdata-forgegraal-${Math.random().toString(16).slice(2)}${Date.now().toString(16)}`;
+	const boundary = `----formdata-graak-${Math.random().toString(16).slice(2)}${Date.now().toString(16)}`;
 	const parts = [];
 	const quote = (text) => text.replace(/\r/g, "%0D").replace(/\n/g, "%0A").replace(/"/g, "%22");
 	for (const [name, value] of form) {

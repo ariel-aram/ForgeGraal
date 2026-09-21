@@ -27,7 +27,7 @@ export interface PortableBuildResult {
 	warnings: string[];
 }
 
-export const BUNDLE_MARKER = ".forgegraal-bundle";
+export const BUNDLE_MARKER = ".graak-bundle";
 
 export class PortablePackager {
 	public static windowsLauncher(): string {
@@ -36,18 +36,18 @@ export class PortablePackager {
 		return [
 			"@echo off",
 			"setlocal",
-			'set "FORGEGRAAL_DIR=%~dp0"',
-			'if exist "%FORGEGRAAL_DIR%node.exe" goto bundled',
-			'set "FORGEGRAAL_NODE="',
-			'for %%i in (node.exe) do @if not "%%~$PATH:i"=="" set "FORGEGRAAL_NODE=%%~$PATH:i"',
-			"if not defined FORGEGRAAL_NODE goto missing",
-			`"%FORGEGRAAL_NODE%" "%FORGEGRAAL_DIR%${PORTABLE_LAUNCHER_NAME}" %*`,
+			'set "GRAAK_DIR=%~dp0"',
+			'if exist "%GRAAK_DIR%node.exe" goto bundled',
+			'set "GRAAK_NODE="',
+			'for %%i in (node.exe) do @if not "%%~$PATH:i"=="" set "GRAAK_NODE=%%~$PATH:i"',
+			"if not defined GRAAK_NODE goto missing",
+			`"%GRAAK_NODE%" "%GRAAK_DIR%${PORTABLE_LAUNCHER_NAME}" %*`,
 			"exit /b %ERRORLEVEL%",
 			":bundled",
-			`"%FORGEGRAAL_DIR%node.exe" "%FORGEGRAAL_DIR%${PORTABLE_LAUNCHER_NAME}" %*`,
+			`"%GRAAK_DIR%node.exe" "%GRAAK_DIR%${PORTABLE_LAUNCHER_NAME}" %*`,
 			"exit /b %ERRORLEVEL%",
 			":missing",
-			"echo [ForgeGraal] Node.js was not found. Place node.exe next to this file or install Node.js. 1>&2",
+			"echo [Graak] Node.js was not found. Place node.exe next to this file or install Node.js. 1>&2",
 			"exit /b 127",
 			"",
 		].join("\r\n");
@@ -63,12 +63,12 @@ export class PortablePackager {
 	public static unixLauncher(meta: Pick<TargetMetadata, "runtimeHint" | "bootstrapInstall">): string {
 		const lines = [
 			"#!/bin/sh",
-			'FORGEGRAAL_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1',
-			'if [ -x "$FORGEGRAAL_DIR/node" ]; then',
-			`  exec "$FORGEGRAAL_DIR/node" "$FORGEGRAAL_DIR/${PORTABLE_LAUNCHER_NAME}" "$@"`,
+			'GRAAK_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1',
+			'if [ -x "$GRAAK_DIR/node" ]; then',
+			`  exec "$GRAAK_DIR/node" "$GRAAK_DIR/${PORTABLE_LAUNCHER_NAME}" "$@"`,
 			"fi",
 			"if command -v node >/dev/null 2>&1; then",
-			`  exec node "$FORGEGRAAL_DIR/${PORTABLE_LAUNCHER_NAME}" "$@"`,
+			`  exec node "$GRAAK_DIR/${PORTABLE_LAUNCHER_NAME}" "$@"`,
 			"fi",
 		];
 
@@ -76,17 +76,17 @@ export class PortablePackager {
 			const { command, description } = meta.bootstrapInstall;
 			const quoted = command.map(shQuote).join(" ");
 			lines.push(
-				`echo "[ForgeGraal] Node.js was not found; installing ${description} (${quoted})..." >&2`,
+				`echo "[Graak] Node.js was not found; installing ${description} (${quoted})..." >&2`,
 				`if ${quoted} >&2; then`,
 				"  if command -v node >/dev/null 2>&1; then",
-				`    exec node "$FORGEGRAAL_DIR/${PORTABLE_LAUNCHER_NAME}" "$@"`,
+				`    exec node "$GRAAK_DIR/${PORTABLE_LAUNCHER_NAME}" "$@"`,
 				"  fi",
 				"fi",
-				`echo "[ForgeGraal] Automatic install failed, or node is still not on PATH. Run manually: ${quoted}" >&2`
+				`echo "[Graak] Automatic install failed, or node is still not on PATH. Run manually: ${quoted}" >&2`
 			);
 		} else {
 			const hint = meta.runtimeHint.replace(/[`"$\\]/g, "\\$&");
-			lines.push(`echo "[ForgeGraal] Node.js was not found. ${hint}" >&2`);
+			lines.push(`echo "[Graak] Node.js was not found. ${hint}" >&2`);
 		}
 
 		lines.push("exit 127", "");
@@ -103,7 +103,7 @@ export class PortablePackager {
 				throw new ProjectError(`Portable output '${out}' exists and is not a directory`);
 			}
 			if (readdirSync(out).length > 0 && !existsSync(join(out, BUNDLE_MARKER))) {
-				throw new ProjectError(`Refusing to write into non-empty directory '${out}' that is not a ForgeGraal bundle`);
+				throw new ProjectError(`Refusing to write into non-empty directory '${out}' that is not a Graak bundle`);
 			}
 		}
 		mkdirSync(out, { recursive: true });

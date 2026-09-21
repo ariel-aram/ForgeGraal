@@ -2,7 +2,7 @@ const a = require("./nan.node");
 const out = {};
 out.add = a.add(2, 3.5);
 try { a.add("x"); } catch (e) { out.addErr = [e.name, e.message]; }
-out.hello = a.hello("ForgeGraal");
+out.hello = a.hello("Graak");
 out.obj = a.makeObject();
 out.cb = a.callBack((n) => n + 1);
 out.bufSum = a.bufSum(Buffer.from([1, 2, 3, 250]));

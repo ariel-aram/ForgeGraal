@@ -9,12 +9,12 @@ export interface CommunityRuntimeEntry {
 }
 /**
  * User-managed registry of community Node.js runtimes for targets with no official build
- * (Windows 7 / Vista, 32-bit Linux, FreeBSD, iSH). ForgeGraal does not ship any entries of
+ * (Windows 7 / Vista, 32-bit Linux, FreeBSD, iSH). Graak does not ship any entries of
  * its own: it has no way to verify a third-party binary's authenticity ahead of time, so
  * trust is established once, explicitly, by whoever registers an entry — every entry is
  * pinned to an exact SHA-256 and re-verified on every download.
  *
- * Two manifests are consulted: `<project>/.forgegraal/runtimes.json` (project-local, checked
+ * Two manifests are consulted: `<project>/.graak/runtimes.json` (project-local, checked
  * into the bot's repo so a team shares the same pinned runtime) and `<cache>/runtimes.json`
  * (global, `--global` on the CLI). Project entries are tried first.
  */

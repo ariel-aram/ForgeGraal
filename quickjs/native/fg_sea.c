@@ -1,7 +1,7 @@
 /*
- * Single-file executables for the ForgeGraal native host.
+ * Single-file executables for the Graak native host.
  *
- * `forgegraal compile --strategy sea` appends the application (the compatibility layer plus the program and its
+ * `graak compile --strategy sea` appends the application (the compatibility layer plus the program and its
  * node_modules) to a copy of this executable, followed by a fixed-size trailer that says where it starts. On
  * launch the host looks at its own file: when the trailer is there it unpacks the payload beside itself (or into
  * the temp directory when that is read-only), and runs the program from there with the arguments it was given.
@@ -17,7 +17,7 @@
  *
  *     "FGSEA\0\0\1", u64 payloadOffset, u64 payloadLength, 64 hex characters (the payload's SHA-256)
  *
- * The entry named ".forgegraal" holds the path of the program's entry file. Extraction is skipped when the marker
+ * The entry named ".graak" holds the path of the program's entry file. Extraction is skipped when the marker
  * file from the last run carries the same SHA-256, so start-up after the first is a couple of stat calls.
  */
 
@@ -201,7 +201,7 @@ static int fg_extract(const unsigned char *payload, size_t len, const char *dir,
         data = payload + pos;
         pos += stored;
 
-        if (plen == 11 && memcmp(rel, ".forgegraal", 11) == 0) {
+        if (plen == strlen(".graak") && memcmp(rel, ".graak", plen) == 0) {
             if (raw + 1 > entry_cap) {
                 return -1;
             }
@@ -275,14 +275,14 @@ int fg_sea_prepare(int *argc, char ***argv)
     length = fg_le64(trailer + 16);
     if (offset + length + FG_SEA_TRAILER != (uint64_t) size) {
         fclose(f);
-        fprintf(stderr, "forgegraal: the embedded application is damaged\n");
+        fprintf(stderr, "graak: the embedded application is damaged\n");
         return -1;
     }
     memcpy(sha, trailer + 24, 64);
     sha[64] = '\0';
 
     /* Beside the executable when that is writable, otherwise in the temp directory. */
-    snprintf(dir, sizeof(dir), "%s.forgegraal", self);
+    snprintf(dir, sizeof(dir), "%s.graak", self);
     for (i = 0; dir[i]; i++) {
         if (dir[i] == '\\') dir[i] = '/';
     }
@@ -303,14 +303,14 @@ int fg_sea_prepare(int *argc, char ***argv)
         if (!tmp) tmp = getenv("TEMP");
         if (!tmp) tmp = getenv("TMP");
         if (!tmp) tmp = "/tmp";
-        snprintf(dir, sizeof(dir), "%s/forgegraal-%.16s", tmp, sha);
+        snprintf(dir, sizeof(dir), "%s/graak-%.16s", tmp, sha);
         for (i = 0; dir[i]; i++) {
             if (dir[i] == '\\') dir[i] = '/';
         }
         snprintf(marker, sizeof(marker), "%s/.sea", dir);
         if (fg_make_dir(dir) != 0) {
             fclose(f);
-            fprintf(stderr, "forgegraal: cannot create a directory to unpack into (%s)\n", dir);
+            fprintf(stderr, "graak: cannot create a directory to unpack into (%s)\n", dir);
             return -1;
         }
     }
@@ -320,13 +320,13 @@ int fg_sea_prepare(int *argc, char ***argv)
         if (!payload || fseek(f, (long) offset, SEEK_SET) != 0 || fread(payload, 1, (size_t) length, f) != (size_t) length) {
             free(payload);
             fclose(f);
-            fprintf(stderr, "forgegraal: cannot read the embedded application\n");
+            fprintf(stderr, "graak: cannot read the embedded application\n");
             return -1;
         }
         if (fg_extract(payload, (size_t) length, dir, entry, sizeof(entry)) != 0) {
             free(payload);
             fclose(f);
-            fprintf(stderr, "forgegraal: cannot unpack the embedded application into %s\n", dir);
+            fprintf(stderr, "graak: cannot unpack the embedded application into %s\n", dir);
             return -1;
         }
         free(payload);
@@ -344,7 +344,7 @@ int fg_sea_prepare(int *argc, char ***argv)
         char entry_file[4200];
         snprintf(entry_file, sizeof(entry_file), "%s/.entry", dir);
         if (fg_read_marker(entry_file, entry, sizeof(entry)) != 0 || !entry[0]) {
-            fprintf(stderr, "forgegraal: the unpacked application in %s is incomplete; delete it and start again\n", dir);
+            fprintf(stderr, "graak: the unpacked application in %s is incomplete; delete it and start again\n", dir);
             return -1;
         }
     }

@@ -1,5 +1,5 @@
 /*
- * Entry point for the C build of the ForgeGraal runtime.
+ * Entry point for the C build of the Graak runtime.
  *
  * Deliberately small: it starts the engine, installs the native layer, runs a script and drains
  * the job queue. Everything else lives in JavaScript, exactly as with the Rust host, so the two
@@ -13,9 +13,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-void forgegraal_native_init(JSContext *ctx);
+void graak_native_init(JSContext *ctx);
 int fg_sea_prepare(int *argc, char ***argv);
-void forgegraal_napi_shutdown(void);
+void graak_napi_shutdown(void);
 
 static char *read_file(const char *path, size_t *len_out)
 {
@@ -83,13 +83,13 @@ int main(int argc, char **argv)
 
     rt = JS_NewRuntime();
     if (!rt) {
-        fprintf(stderr, "forgegraal: could not create the JavaScript runtime\n");
+        fprintf(stderr, "graak: could not create the JavaScript runtime\n");
         return 1;
     }
     ctx = JS_NewContext(rt);
     if (!ctx) {
         JS_FreeRuntime(rt);
-        fprintf(stderr, "forgegraal: could not create the JavaScript context\n");
+        fprintf(stderr, "graak: could not create the JavaScript context\n");
         return 1;
     }
 
@@ -103,11 +103,11 @@ int main(int argc, char **argv)
     js_init_module_os(ctx, "qjs:os");
     js_std_add_helpers(ctx, argc - 1, argv + 1);
 
-    forgegraal_native_init(ctx);
+    graak_native_init(ctx);
 
     source = read_file(argv[1], &len);
     if (!source) {
-        fprintf(stderr, "forgegraal: cannot read '%s'\n", argv[1]);
+        fprintf(stderr, "graak: cannot read '%s'\n", argv[1]);
         JS_FreeContext(ctx);
         JS_FreeRuntime(rt);
         return 1;
@@ -133,7 +133,7 @@ int main(int argc, char **argv)
                 /* The loop ran dry. 'beforeExit' may schedule more work, in which case the loop runs again. */
                 if (!before_exit_done) {
                     JSValue global = JS_GetGlobalObject(ctx);
-                    JSValue hook = JS_GetPropertyStr(ctx, global, "__forgegraal_beforeExit");
+                    JSValue hook = JS_GetPropertyStr(ctx, global, "__graak_beforeExit");
                     before_exit_done = 1;
                     if (JS_IsFunction(ctx, hook)) {
                         JSValue r = JS_Call(ctx, hook, JS_UNDEFINED, 0, NULL);
@@ -150,7 +150,7 @@ int main(int argc, char **argv)
             {
                 JSValue exc = JS_GetException(ctx);
                 JSValue global = JS_GetGlobalObject(ctx);
-                JSValue reporter = JS_GetPropertyStr(ctx, global, "__forgegraal_reportUncaught");
+                JSValue reporter = JS_GetPropertyStr(ctx, global, "__graak_reportUncaught");
                 int handled = 0;
                 if (JS_IsFunction(ctx, reporter)) {
                     JSValue r = JS_Call(ctx, reporter, JS_UNDEFINED, 1, &exc);
@@ -177,7 +177,7 @@ int main(int argc, char **argv)
         /* 'exit' listeners run, and process.exitCode becomes the status, as they do when Node ends. */
         if (status == 0) {
             JSValue global = JS_GetGlobalObject(ctx);
-            JSValue hook = JS_GetPropertyStr(ctx, global, "__forgegraal_exit");
+            JSValue hook = JS_GetPropertyStr(ctx, global, "__graak_exit");
             if (JS_IsFunction(ctx, hook)) {
                 JSValue r = JS_Call(ctx, hook, JS_UNDEFINED, 0, NULL);
                 int32_t code = 0;
@@ -202,7 +202,7 @@ int main(int argc, char **argv)
     }
 
     /* Addons get their cleanup hooks while the engine is still alive to be called into. */
-    forgegraal_napi_shutdown();
+    graak_napi_shutdown();
 
     js_std_free_handlers(rt);
     JS_FreeContext(ctx);

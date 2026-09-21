@@ -26,7 +26,7 @@ export interface QuickJsBuildOptions {
     entry: string;
     entries: ArchiveEntry[];
     outputPath: string;
-    /** Path to a `forgegraal-c`(.exe) built by `ensureNativeHost()`. */
+    /** Path to a `graak-c`(.exe) built by `ensureNativeHost()`. */
     nativeHostBinary: string;
 }
 export interface QuickJsBuildResult {
@@ -48,13 +48,20 @@ export declare class QuickJsPackager {
      * property of static linking, not a limitation of the host's Node-API layer.
      */
     static loadsAddons(target: TargetDevice, libc: NativeHostLibc): boolean;
+    /** Every distinct `build.sh` argument a host is built for, in a stable order. */
+    static hostBuildTargets(): string[];
     /**
-     * Builds (and caches) the `forgegraal-c` binary for a target by invoking
-     * `quickjs/native/build.sh`. Not a download: there is no published, checksummed release of
-     * this binary yet (unlike `QuickJsRuntime`'s bare engine builds or Node.js itself), so the
-     * only trustworthy source right now is building it from the pinned quickjs-ng/mbedTLS/miniz
-     * versions the script fetches itself. Slow the first time, instant after — same cache
-     * directory convention as `NodeRuntime`.
+     * Compiles the host for one `build.sh` argument from source into `cacheDir` and returns the
+     * executable. Needs a POSIX shell and the target's C toolchain; `ensureNativeHost` only comes here
+     * when there is no matching prebuilt host.
+     */
+    static compileHost(repoRoot: string, buildTarget: string, cacheDir: string, onLog?: (message: string) => void): string;
+    /**
+     * Returns the `graak-c` binary for a target, from the cheapest place that has it: the cache
+     * (instant), the prebuilt host that ships with Graak (a decompress), or `quickjs/native/build.sh`
+     * (minutes; needs a shell and a C toolchain). Not a download: there is no published, checksummed
+     * release of this binary, so the only trustworthy sources are the ones built from the pinned
+     * quickjs-ng/mbedTLS/miniz/wasm3 versions the script fetches itself.
      */
     static ensureNativeHost(target: TargetDevice, libc?: NativeHostLibc, onLog?: (message: string) => void): Promise<string>;
     /**
@@ -62,8 +69,11 @@ export declare class QuickJsPackager {
      * which dynamic host fits them: a musl-linked addon cannot load into a glibc process, or the reverse.
      */
     static addonsAreMusl(entries: readonly ArchiveEntry[], paths: readonly string[]): boolean;
-    /** Hash of everything under `quickjs/native/` that ends up inside the host binary. */
-    private static nativeSourceHash;
+    /**
+     * Hash of everything under `quickjs/native/` that ends up inside the host binary. Line endings do
+     * not count: a Windows checkout with CRLF must still recognise the prebuilt hosts.
+     */
+    static nativeSourceHash(repoRoot: string): string;
     /**
      * Writes the project, the compatibility layer and the native host into `outputPath`, plus a
      * launcher script that runs them with no Node.js involved at any point.

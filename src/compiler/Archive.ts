@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { gunzipSync, gzipSync } from "node:zlib";
-import { ForgeGraalError } from "../structures";
+import { GraakError } from "../structures";
 
 /**
  * FGAR: the application archive embedded into executables and portable bundles.
@@ -46,7 +46,7 @@ export function assertSafeArchivePath(path: string): void {
 		path.startsWith("/") ||
 		/^[a-zA-Z]:/.test(path) ||
 		segments.some((s) => s === "" || s === "." || s === "..");
-	if (unsafe) throw new ForgeGraalError(`Unsafe archive path '${path}'`);
+	if (unsafe) throw new GraakError(`Unsafe archive path '${path}'`);
 }
 
 export class Archive {
@@ -60,7 +60,7 @@ export class Archive {
 			assertSafeArchivePath(entry.path);
 			const key = entry.path.toLowerCase();
 			if (seen.has(key)) {
-				throw new ForgeGraalError(
+				throw new GraakError(
 					`Duplicate archive path '${entry.path}' (paths must be unique case-insensitively for Windows targets)`
 				);
 			}
@@ -95,7 +95,7 @@ export class Archive {
 	public static unpack(buffer: Buffer): Array<ArchiveManifestFile & { data: Buffer }> {
 		const raw = gunzipSync(buffer);
 		if (raw.toString("latin1", 0, ARCHIVE_MAGIC.length) !== ARCHIVE_MAGIC) {
-			throw new ForgeGraalError("Invalid ForgeGraal archive header");
+			throw new GraakError("Invalid Graak archive header");
 		}
 		const manifestLength = raw.readUInt32LE(ARCHIVE_MAGIC.length);
 		let offset = ARCHIVE_MAGIC.length + 4;
@@ -107,7 +107,7 @@ export class Archive {
 		return manifest.files.map((file) => {
 			assertSafeArchivePath(file.path);
 			const data = raw.subarray(offset, offset + file.size);
-			if (data.length !== file.size) throw new ForgeGraalError("Truncated ForgeGraal archive");
+			if (data.length !== file.size) throw new GraakError("Truncated Graak archive");
 			offset += file.size;
 			return { ...file, data };
 		});

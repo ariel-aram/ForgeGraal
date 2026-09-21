@@ -1,5 +1,5 @@
 /**
- * Native addon shim injected into ForgeGraal executables.
+ * Native addon shim injected into Graak executables.
  *
  * Legacy and 32-bit targets (Windows XP / Vista / 7, iSH, linux-x86, FreeBSD) frequently
  * cannot load prebuilt `.node` addons, so `require()` fails with ERR_DLOPEN_FAILED. This

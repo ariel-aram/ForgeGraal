@@ -10,7 +10,7 @@ const structures_1 = require("../structures");
  * Two things are shipped:
  *
  * - `polyfills.js` — the Web platform implementations the old runtime lacks (Web Streams,
- *   EventTarget, AbortController, Blob/File/FormData), bundled from ForgeGraal's own
+ *   EventTarget, AbortController, Blob/File/FormData), bundled from Graak's own
  *   dependencies into one file and lowered to the target's language level. Bundling matters:
  *   the packages together are about 10 MiB on disk, almost all of it alternate dist builds and
  *   source maps, and what the bot actually needs is a few hundred KiB of code. They are also
@@ -20,7 +20,7 @@ const structures_1 = require("../structures");
  *   bot generates at runtime. Only included when the build asks for it.
  */
 /** Directory inside the application archive that holds these files. */
-exports.LEGACY_ASSET_DIR = ".forgegraal-legacy";
+exports.LEGACY_ASSET_DIR = ".graak-legacy";
 /**
  * Entry bundled into `polyfills.js`. `web-streams-polyfill`'s ponyfill build is used on purpose:
  * the polyfill build installs itself onto the global object as a side effect, which would
@@ -71,12 +71,12 @@ class LegacyRuntimeAssets {
         const esbuild = require("esbuild");
         const entries = [];
         // Resolved against this file's own location so the polyfill packages come from
-        // ForgeGraal's dependencies, never from the bot's project directory.
+        // Graak's dependencies, never from the bot's project directory.
         const resolveDir = (0, node_path_1.dirname)(require.resolve("../../package.json"));
         let bundle;
         try {
             bundle = await esbuild.build({
-                stdin: { contents: POLYFILL_ENTRY, resolveDir, sourcefile: "forgegraal-polyfills.js", loader: "js" },
+                stdin: { contents: POLYFILL_ENTRY, resolveDir, sourcefile: "graak-polyfills.js", loader: "js" },
                 bundle: true,
                 write: false,
                 format: "cjs",

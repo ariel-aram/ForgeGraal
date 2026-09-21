@@ -338,7 +338,7 @@ function createWebAssembly(native) {
 				const value = source[entry.name];
 				if (entry.kind !== "function") {
 					throw new LinkError(
-						`WebAssembly.Instance(): ${where}: ${entry.kind} imports are not supported by the ForgeGraal native host ` +
+						`WebAssembly.Instance(): ${where}: ${entry.kind} imports are not supported by the Graak native host ` +
 							"(a module can define its own memory, table and globals, but not import them)"
 					);
 				}

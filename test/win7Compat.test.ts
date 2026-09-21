@@ -30,7 +30,7 @@ function buildFixture(dir: string): string {
 test("Win7Compat redirects exactly the imports Windows 7 lacks, in place", {
 	skip: !mingw && "mingw-w64 is not installed",
 }, () => {
-	const dir = mkdtempSync(join(tmpdir(), "forgegraal-win7-"));
+	const dir = mkdtempSync(join(tmpdir(), "graak-win7-"));
 	const dll = buildFixture(dir);
 	const original = readFileSync(dll);
 	const before = imports(dll);
@@ -112,7 +112,7 @@ test("a patched DLL loads and runs through the compatibility DLLs (Wine)", {
 	skip: (!mingw && "mingw-w64 is not installed") || (!hasWine && "no fg-wine Docker image"),
 	timeout: 300_000,
 }, () => {
-	const dir = mkdtempSync(join(tmpdir(), "forgegraal-win7-wine-"));
+	const dir = mkdtempSync(join(tmpdir(), "graak-win7-wine-"));
 	const dll = buildFixture(dir);
 	const patch = Win7Compat.patch(readFileSync(dll));
 	assert.ok(patch);
@@ -139,13 +139,13 @@ test("the Windows native host passes the compatibility selftest (Wine)", {
 }, async () => {
 	const { QuickJsPackager, TargetDevice } = await import("../dist/index.js");
 	const host = await QuickJsPackager.ensureNativeHost(TargetDevice.WinLegacyX64);
-	const dir = mkdtempSync(join(tmpdir(), "forgegraal-winhost-"));
-	copyFileSync(host, join(dir, "forgegraal-c.exe"));
+	const dir = mkdtempSync(join(tmpdir(), "graak-winhost-"));
+	copyFileSync(host, join(dir, "graak-c.exe"));
 	spawnSync("cp", ["-r", join(process.cwd(), "quickjs/runtime"), join(dir, "runtime")]);
 
 	const selftest = wine(
 		dir,
-		"forgegraal-c.exe",
+		"graak-c.exe",
 		"Z:\\\\w\\\\runtime\\\\node-compat.js",
 		"Z:\\\\w\\\\runtime\\\\selftest.js"
 	);
@@ -156,7 +156,7 @@ test("a DLL that needs the Universal C Runtime is flagged, and it ships app-loca
 	skip: !mingw && "mingw-w64 is not installed",
 	timeout: 600_000,
 }, async () => {
-	const dir = mkdtempSync(join(tmpdir(), "forgegraal-ucrt-"));
+	const dir = mkdtempSync(join(tmpdir(), "graak-ucrt-"));
 	const dll = join(dir, "ucrt.dll");
 	const build = spawnSync(
 		"x86_64-w64-mingw32-gcc",
@@ -175,12 +175,9 @@ test("a DLL that needs the Universal C Runtime is flagged, and it ships app-loca
 	);
 	assert.equal(build.status, 0, build.stderr);
 	assert.equal(Win7Compat.needsUcrt(readFileSync(dll)), true);
-	assert.equal(
-		Win7Compat.needsUcrt(readFileSync(buildFixture(mkdtempSync(join(tmpdir(), "forgegraal-ucrt-no-"))))),
-		false
-	);
+	assert.equal(Win7Compat.needsUcrt(readFileSync(buildFixture(mkdtempSync(join(tmpdir(), "graak-ucrt-no-"))))), false);
 
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-ucrt-project-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-ucrt-project-"));
 	mkdirSync(join(root, "node_modules/ucrt-fixture"), { recursive: true });
 	writeFileSync(join(root, "package.json"), JSON.stringify({ name: "bot", dependencies: { "ucrt-fixture": "1" } }));
 	writeFileSync(
@@ -202,7 +199,7 @@ test("a DLL that needs the Universal C Runtime is flagged, and it ships app-loca
 	assert.ok(without.warnings.some((w) => /Universal C Runtime.*KB2999226/.test(w)));
 	assert.equal(existsSync(join(without.outputPath, "app/node_modules/ucrt-fixture/ucrtbase.dll")), false);
 
-	const redist = mkdtempSync(join(tmpdir(), "forgegraal-redist-"));
+	const redist = mkdtempSync(join(tmpdir(), "graak-redist-"));
 	for (const name of ["ucrtbase.dll", "api-ms-win-crt-runtime-l1-1-0.dll", "unrelated.txt"])
 		writeFileSync(join(redist, name), "x");
 	const withUcrt = await compile(redist);

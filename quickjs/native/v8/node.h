@@ -1,6 +1,6 @@
-/* The node.h surface addons rely on, over ForgeGraal's V8 layer (see v8.h). */
-#ifndef FORGEGRAAL_NODE_H_
-#define FORGEGRAAL_NODE_H_
+/* The node.h surface addons rely on, over Graak's V8 layer (see v8.h). */
+#ifndef GRAAK_NODE_H_
+#define GRAAK_NODE_H_
 
 #include "node_version.h"
 #include "v8.h"

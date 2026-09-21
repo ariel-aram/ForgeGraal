@@ -168,7 +168,7 @@ test("the runtime code generation patch is only installed when asked for", () =>
 	assert.ok(withCodegen.includes("esbuild-wasm"), "the on-device transpiler is needed for generated code");
 	assert.ok(withCodegen.includes("PatchedFunction"));
 	assert.ok(!without.includes("esbuild-wasm"));
-	assert.ok(without.includes("__forgegraalLegacyReady = null"), "the launcher still needs the readiness signal");
+	assert.ok(without.includes("__graakLegacyReady = null"), "the launcher still needs the readiness signal");
 });
 
 test("LegacyRuntimeAssets bundles the polyfills into one file that exposes the missing globals", async () => {
@@ -219,7 +219,7 @@ test("the launcher waits for the runtime transpiler before loading the bot", () 
 
 	// ForgeScript compiles through new Function() while its modules are still being required, so
 	// loading the bot before the patch is live would defeat the whole mechanism.
-	assert.ok(source.includes("__forgegraalLegacyReady"));
+	assert.ok(source.includes("__graakLegacyReady"));
 	assert.match(source, /legacyReady\.then\(loadEntry/);
 	assert.ok(source.includes("function loadEntry()"));
 });
@@ -239,7 +239,7 @@ test("a modern build carries none of the legacy machinery", () => {
 		legacyPolyfills: null,
 	});
 	assert.ok(!source.includes("esbuild-wasm"));
-	assert.ok(!source.includes("installForgeGraalLegacyPolyfills"));
+	assert.ok(!source.includes("installGraakLegacyPolyfills"));
 	assert.ok(source.includes("loadEntry()"), "the entry is still loaded, just without waiting");
 });
 
@@ -273,10 +273,10 @@ test("the legacy polyfills provide global fetch, which is what a bot actually ca
 test("a native addon built for the target's architecture is bundled and loaded by the native host", async () => {
 	// The case that reached a real Windows machine unannounced: @lmdb/lmdb-win32-x64 is a valid
 	// win32 x64 PE. Under Node.js on Windows 7 it failed to load, because it is built for a newer
-	// Node ABI. win-legacy-x64 now runs on the ForgeGraal native host, which implements Node-API
+	// Node ABI. win-legacy-x64 now runs on the Graak native host, which implements Node-API
 	// itself, so there is no Node ABI to be too new for: the addon ships with the bot and the host
 	// loads it (this sandbox cannot run a Windows binary, so what is checked is the build).
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-lmdb-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-lmdb-"));
 	mkdirSync(join(root, "node_modules/lmdb"), { recursive: true });
 	writeFileSync(join(root, "package.json"), JSON.stringify({ name: "lmdb-bot", dependencies: { lmdb: "^3" } }));
 	writeFileSync(
@@ -309,18 +309,18 @@ test("a native addon built for the target's architecture is bundled and loaded b
 	);
 	assert.ok(
 		result.warnings.some((w) => /each one must itself run on win-legacy-x64/.test(w)),
-		"the build says the OS, not ForgeGraal, loads the addon"
+		"the build says the OS, not Graak, loads the addon"
 	);
 
 	// The Windows host has to export the Node-API surface for the addon's imports to bind to.
-	const host = readFileSync(join(result.outputPath, "forgegraal-c.exe"));
+	const host = readFileSync(join(result.outputPath, "graak-c.exe"));
 	for (const symbol of ["napi_create_function", "napi_module_register", "napi_queue_async_work"]) {
 		assert.ok(host.includes(symbol), `${symbol} must be exported by the Windows host`);
 	}
 });
 
 test("a modern target does not get the legacy native-addon warning", async () => {
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-lmdb-modern-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-lmdb-modern-"));
 	mkdirSync(join(root, "node_modules/lmdb"), { recursive: true });
 	writeFileSync(join(root, "package.json"), JSON.stringify({ name: "lmdb-bot" }));
 	writeFileSync(join(root, "node_modules/lmdb/package.json"), JSON.stringify({ name: "lmdb", main: "index.js" }));
@@ -329,7 +329,7 @@ test("a modern target does not get the legacy native-addon warning", async () =>
 
 	const result = await BinaryPackager.compile({
 		entrypoint: join(root, "index.js"),
-		// Not LinuxModernX64: that target now runs on the ForgeGraal native host, which never
+		// Not LinuxModernX64: that target now runs on the Graak native host, which never
 		// calls checkNativeAddons()'s legacy-warning path at all (see quickJsPackager.test.ts for
 		// its own native-addon handling). LinuxModernArm64 is equally modern and still Node-based.
 		target: TargetDevice.LinuxModernArm64,

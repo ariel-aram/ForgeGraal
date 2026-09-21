@@ -64,7 +64,7 @@ export class SeaPackager {
 		}
 
 		const warnings: string[] = [];
-		const work = mkdtempSync(join(tmpdir(), "forgegraal-sea-"));
+		const work = mkdtempSync(join(tmpdir(), "graak-sea-"));
 		const partial = `${options.outputPath}.${process.pid}.partial`;
 
 		try {

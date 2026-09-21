@@ -42,7 +42,7 @@ export interface QuickJsAsset {
     sha256: string | null;
 }
 /**
- * quickjs-ng assets that match a ForgeGraal target. Targets are absent when the release has no
+ * quickjs-ng assets that match a Graak target. Targets are absent when the release has no
  * build for them, which is not the same as the target being unsupported by the engine — it means
  * it would have to be built from source.
  */

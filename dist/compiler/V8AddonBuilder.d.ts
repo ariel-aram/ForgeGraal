@@ -67,7 +67,7 @@ export declare class V8AddonBuilder {
     private static findNan;
     /**
      * Windows addons import their Node-API functions from a named module. Naming the host's own
-     * executable makes the loader bind them to the running ForgeGraal host, which exports them.
+     * executable makes the loader bind them to the running Graak host, which exports them.
      */
     private static writeImportLibrary;
     private static cacheKey;

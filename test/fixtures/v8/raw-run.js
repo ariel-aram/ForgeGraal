@@ -2,7 +2,7 @@ const a = require("./raw.node");
 const out = {};
 out.add = a.add(2, 3.5);
 try { a.add("x"); } catch (e) { out.addErr = [e.name, e.message]; }
-out.hello = a.hello("ForgeGraal");
+out.hello = a.hello("Graak");
 out.obj = a.makeObject();
 out.cb = a.callBack((n) => n + 1);
 out.catches = [a.catches(() => { throw new Error("boom"); }), a.catches(() => 7)];

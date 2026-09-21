@@ -8,7 +8,7 @@ import { BinaryPackager, TargetDevice } from "../dist/index.js";
 
 /** Writes `files` (relative path to contents) into a fresh project directory. */
 function project(files: Record<string, string>): string {
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-modules-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-modules-"));
 	for (const [path, contents] of Object.entries({
 		"package.json": JSON.stringify({
 			name: "modules-app",
@@ -30,7 +30,7 @@ async function run(root: string, entry: string): Promise<{ status: number | null
 		packageManager: "npm",
 		offline: true,
 		// Outside the project, so nothing the program finds by walking up from its output is the source tree.
-		output: join(mkdtempSync(join(tmpdir(), "forgegraal-modules-out-")), "app"),
+		output: join(mkdtempSync(join(tmpdir(), "graak-modules-out-")), "app"),
 	});
 	assert.equal(result.strategy, "quickjs");
 	return spawnSync(result.launcherPath, [], { encoding: "utf-8", timeout: 60_000 });
@@ -114,14 +114,14 @@ test("a TypeScript entrypoint is refused for a Node.js build, with the way out",
 			offline: true,
 			engine: "node",
 		}),
-		/only the ForgeGraal native host converts/
+		/only the Graak native host converts/
 	);
 });
 
 test("system-corpus.cjs prints exactly what Node.js prints (os, vm, module, punycode, process)", {
 	timeout: 300_000,
 }, async () => {
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-system-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-system-"));
 	writeFileSync(join(root, "package.json"), JSON.stringify({ name: "system-fixture" }));
 	copyFileSync(join(process.cwd(), "test/fixtures/web/system-corpus.cjs"), join(root, "system-corpus.cjs"));
 	const onNode = spawnSync(process.execPath, [join(root, "system-corpus.cjs")], { encoding: "utf-8" });

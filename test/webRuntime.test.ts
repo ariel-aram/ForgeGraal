@@ -15,7 +15,7 @@ import { BinaryPackager, TargetDevice } from "../dist/index.js";
 const FIXTURES = join(process.cwd(), "test/fixtures/web");
 
 function project(files: string[]): string {
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-web-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-web-"));
 	writeFileSync(join(root, "package.json"), JSON.stringify({ name: "web-fixture", version: "1.0.0" }));
 	for (const file of files) copyFileSync(join(FIXTURES, file), join(root, file));
 	return root;
@@ -95,7 +95,7 @@ function rawRequest(port: number, text: string): Promise<string> {
 test("a folder of static files is packaged as a web server that behaves like a static host", {
 	timeout: 300_000,
 }, async () => {
-	const out = mkdtempSync(join(tmpdir(), "forgegraal-site-out-"));
+	const out = mkdtempSync(join(tmpdir(), "graak-site-out-"));
 	const result = await BinaryPackager.compile({
 		entrypoint: join(FIXTURES, "site"),
 		target: TargetDevice.LinuxModernX64,
@@ -113,7 +113,7 @@ test("a folder of static files is packaged as a web server that behaves like a s
 		let r = await fetch(`${base}/`);
 		assert.equal(r.status, 200);
 		assert.match(r.headers.get("content-type") ?? "", /^text\/html/);
-		assert.match(await r.text(), /ForgeGraal site/);
+		assert.match(await r.text(), /Graak site/);
 
 		// hashed assets are immutable, compressed on the wire, and correct once decoded
 		r = await fetch(`${base}/assets/app-1a2b3c4d5e.js`);
@@ -148,7 +148,7 @@ test("a folder of static files is packaged as a web server that behaves like a s
 		// a client-side route falls back to the app shell; a missing file does not
 		r = await fetch(`${base}/some/client/route`, { headers: { Accept: "text/html" } });
 		assert.equal(r.status, 200);
-		assert.match(await r.text(), /ForgeGraal site/);
+		assert.match(await r.text(), /Graak site/);
 		r = await fetch(`${base}/missing.png`);
 		assert.equal(r.status, 404);
 		assert.equal(await r.text(), "<h1>custom 404</h1>");
@@ -167,7 +167,7 @@ test("a folder of static files is packaged as a web server that behaves like a s
 			// URL parsing resolves the dot segments, so most of these land inside the site: on the app shell
 			// (single-page fallback is on here) or a 404, never on a file outside it.
 			assert.match(reply, /^HTTP\/1\.1 (200|400|403|404)/, path);
-			if (reply.startsWith("HTTP/1.1 200")) assert.match(reply, /ForgeGraal site/, path);
+			if (reply.startsWith("HTTP/1.1 200")) assert.match(reply, /Graak site/, path);
 		}
 	} finally {
 		child.kill();
@@ -175,7 +175,7 @@ test("a folder of static files is packaged as a web server that behaves like a s
 });
 
 test("a static site can be moved onto another port with --port and PORT", { timeout: 300_000 }, async () => {
-	const out = mkdtempSync(join(tmpdir(), "forgegraal-site-out-"));
+	const out = mkdtempSync(join(tmpdir(), "graak-site-out-"));
 	mkdirSync(join(out, "src"));
 	cpSync(join(FIXTURES, "site"), join(out, "src"), { recursive: true });
 	const result = await BinaryPackager.compile({

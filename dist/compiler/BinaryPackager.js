@@ -40,7 +40,7 @@ exports.MIN_MODERN_API_NODE_MAJOR = 20;
  * ceiling, not a setting: the Windows Vista pin (Node.js 5.12.0) sits below it.
  */
 exports.MIN_TRANSPILABLE_NODE_MAJOR = 6;
-exports.DEFAULT_OUTPUT_DIR = "forgegraal-out";
+exports.DEFAULT_OUTPUT_DIR = "graak-out";
 const WIN7_COMPAT_TARGETS = {
     [structures_1.TargetDevice.WinVistaX64]: "x64",
     [structures_1.TargetDevice.WinLegacyX64]: "x64",
@@ -49,7 +49,7 @@ const WIN7_COMPAT_TARGETS = {
 };
 class BinaryPackager {
     /**
-     * Builds a ForgeScript bot into a Node.js Single Executable Application when the target
+     * Builds a program into a Node.js Single Executable Application when the target
      * runtime supports it, otherwise into a portable bundle (launcher + archive + runtime).
      */
     static async compile(options) {
@@ -66,6 +66,14 @@ class BinaryPackager {
         }
         const startTime = performance.now();
         const log = options.onLog ?? (() => { });
+        // Says where a slow build spends its time: a stage that took 750 ms or more is reported when it ends.
+        let lapStart = performance.now();
+        const lap = (stage) => {
+            const now = performance.now();
+            if (now - lapStart >= 750)
+                log(`${stage} took ${((now - lapStart) / 1000).toFixed(1)}s`);
+            lapStart = now;
+        };
         const strategy = options.strategy ?? "auto";
         if (!["auto", "sea", "portable"].includes(strategy)) {
             throw new structures_1.RuntimeError(`Unknown strategy '${strategy}' (expected auto, sea or portable)`);
@@ -123,19 +131,20 @@ class BinaryPackager {
                 includeEnv: options.includeEnv,
                 excludePaths,
             });
+            lap("Collecting project files");
             if (!options.includeEnv) {
                 warnings.push(".env files were not bundled; provide secrets through the environment at runtime.");
             }
-            // This target defaults to the ForgeGraal native host (quickjs-ng + quickjs/native/) rather
+            // This target defaults to the Graak native host (quickjs-ng + quickjs/native/) rather
             // than a bundled Node.js binary -- but it is a default, not a lock-in. Any of these is a
             // deliberate statement that Node.js is wanted here instead, and wins over the new default
             // the same way a registered runtime already won over the old pinned-Node fallback:
             //   - an explicit --node-binary
-            //   - a runtime already registered with `forgegraal runtimes add` for this target
+            //   - a runtime already registered with `graak runtimes add` for this target
             //   - an explicit --strategy sea/portable (asking for a Node-shaped output by name)
             // An explicit engine settles it. Without one, the older rules apply.
             if (engine === "native" && !QuickJsPackager_1.QuickJsPackager.supports(target)) {
-                throw new structures_1.RuntimeError(`There is no ForgeGraal native host build for ${meta.name} yet, so --engine native cannot be used. ` +
+                throw new structures_1.RuntimeError(`There is no Graak native host build for ${meta.name} yet, so --engine native cannot be used. ` +
                     "Leave the engine on auto to build it on Node.js.");
             }
             const explicitNodeOverride = engine === "native"
@@ -160,7 +169,7 @@ class BinaryPackager {
                     if (nativeLibc === "musl") {
                         throw new structures_1.RuntimeError(`${names} ship native addons, but --native-libc musl builds a statically linked host, and a ` +
                             "static executable has no dynamic loader to load them with. Use --native-libc glibc or musl-dynamic, or drop " +
-                            "the flag and let ForgeGraal pick the dynamically linked host itself.");
+                            "the flag and let Graak pick the dynamically linked host itself.");
                     }
                     const musl = QuickJsPackager_1.QuickJsPackager.loadsAddons(target, "musl-dynamic");
                     const glibc = QuickJsPackager_1.QuickJsPackager.loadsAddons(target, "glibc");
@@ -184,24 +193,31 @@ class BinaryPackager {
                         "their libraries fall back to pure JavaScript on their own.");
                 }
                 // The host loads CommonJS: ES modules (ES-module-only packages, .mjs) and TypeScript/JSX become CommonJS here.
-                const converted = await LegacyTranspiler_1.LegacyTranspiler.toCommonJs(project.entries, { onLog: log });
+                const converted = await LegacyTranspiler_1.LegacyTranspiler.toCommonJs(project.entries, {
+                    onLog: log,
+                    cacheDir: (0, node_path_1.join)(NodeRuntime_1.NodeRuntime.cacheDir(), "esm-cjs"),
+                });
                 project.entries = converted.entries;
                 project.entry = converted.renamed.get(project.entry) ?? project.entry;
+                lap("Converting ES modules and TypeScript");
                 if (converted.failures.length) {
                     warnings.push(`${converted.failures.length} file(s) could not be parsed and were kept as they are ` +
                         `(they only matter if the program loads them). First: ${converted.failures[0]}`);
                 }
                 // With the host settled, addons built against V8 are rebuilt for it, then the bundle is checked.
                 await BinaryPackager.rebuildV8Addons(project, target, { ...options, nativeLibc }, warnings, log);
+                lap("Rebuilding V8 addons");
                 BinaryPackager.applyWin7Compat(project, target, options, warnings, log);
+                lap("Patching addons for Windows 7");
                 BinaryPackager.checkNativeAddons(project.nativeAddons, target, options, warnings, "native");
-                log(`Packaging for the ForgeGraal native host on ${meta.name} (no Node.js runtime bundled)`);
+                log(`Packaging for the Graak native host on ${meta.name} (no Node.js runtime bundled)`);
                 const nativeHostBinary = await QuickJsPackager_1.QuickJsPackager.ensureNativeHost(target, nativeLibc ?? "musl", log);
+                lap("Preparing the native host");
                 // engine: "native" + strategy: "sea" is one self-unpacking executable; everything else is a folder.
                 const single = engine === "native" && strategy === "sea";
                 const isWindowsTarget = meta.nodePlatform === "win32";
                 const outputPath = (0, node_path_1.resolve)(options.output ?? (0, node_path_1.join)(defaultOutDir, `${project.name}-${target}${single && isWindowsTarget ? ".exe" : ""}`));
-                const stage = single ? (0, node_fs_1.mkdtempSync)((0, node_path_1.join)((0, node_os_1.tmpdir)(), "forgegraal-sea-")) : null;
+                const stage = single ? (0, node_fs_1.mkdtempSync)((0, node_path_1.join)((0, node_os_1.tmpdir)(), "graak-sea-")) : null;
                 const res = QuickJsPackager_1.QuickJsPackager.build({
                     target,
                     name: project.name,
@@ -210,6 +226,7 @@ class BinaryPackager {
                     outputPath: stage ?? outputPath,
                     nativeHostBinary,
                 });
+                lap("Writing the output");
                 let finalPath = res.outputPath;
                 let finalLauncher = res.launcherPath;
                 let finalSize = res.sizeBytes;
@@ -223,7 +240,7 @@ class BinaryPackager {
                         finalLauncher = outputPath;
                         finalSize = (0, node_fs_1.statSync)(outputPath).size;
                         warnings.push("This is one self-unpacking executable: on first start it unpacks the application next to itself " +
-                            `(${(0, node_path_1.basename)(outputPath)}.forgegraal, or the temp directory when that folder is read-only). ` +
+                            `(${(0, node_path_1.basename)(outputPath)}.graak, or the temp directory when that folder is read-only). ` +
                             "Delete that folder to force a fresh unpack.");
                     }
                     finally {
@@ -252,7 +269,7 @@ class BinaryPackager {
                 };
             }
             if (ProjectCollector_1.NATIVE_ONLY_ENTRY_EXTENSIONS.has((0, node_path_1.extname)(project.entry))) {
-                throw new structures_1.RuntimeError(`'${(0, node_path_1.basename)(project.entry)}' is TypeScript or JSX, which only the ForgeGraal native host converts at build time. ` +
+                throw new structures_1.RuntimeError(`'${(0, node_path_1.basename)(project.entry)}' is TypeScript or JSX, which only the Graak native host converts at build time. ` +
                     "For a Node.js build, compile it first (e.g. `tsc`, or `bun build --target=node --outdir dist`) and pass the built file.");
             }
             BinaryPackager.checkNativeAddons(project.nativeAddons, target, options, warnings);
@@ -445,7 +462,7 @@ class BinaryPackager {
     }
     /**
      * A prebuilt addon compiled against V8 cannot load outside Node.js, but the package that ships it
-     * usually ships its source too. That source is rebuilt here against ForgeGraal's V8 layer for the
+     * usually ships its source too. That source is rebuilt here against Graak's V8 layer for the
      * target -- from any build machine, whatever platform the installed prebuild was for.
      *
      * Packages that are only optional accelerators, with a host that cannot load addons anyway, are
@@ -475,7 +492,7 @@ class BinaryPackager {
             project.nativeAddons = project.nativeAddons.filter((a) => !pkg.addonPaths.includes(a.path));
             const path = `${dir}/${built.relativePath}`;
             project.nativeAddons.push({ path, info: BinaryInspector_1.BinaryInspector.inspect(built.file) });
-            warnings.push(`${pkg.name} was compiled against V8, which only Node.js has, so it was rebuilt from source against ForgeGraal's ` +
+            warnings.push(`${pkg.name} was compiled against V8, which only Node.js has, so it was rebuilt from source against Graak's ` +
                 `V8 layer for ${target}. The prebuilt binary it shipped was not used.`);
         }
     }
@@ -506,7 +523,7 @@ class BinaryPackager {
             if (!patch)
                 continue;
             if (patch.unresolved.length) {
-                warnings.push(`${entry.path} imports things Windows 7 does not have that ForgeGraal cannot supply: ${patch.unresolved.join("; ")}. ` +
+                warnings.push(`${entry.path} imports things Windows 7 does not have that Graak cannot supply: ${patch.unresolved.join("; ")}. ` +
                     "It will fail to load there with the system's own message.");
             }
             if (!patch.changes.length)
@@ -533,7 +550,7 @@ class BinaryPackager {
             }
         }
         warnings.push("Some addons import Windows functions that Windows Vista and 7 lack (WaitOnAddress, ProcessPrng, " +
-            "GetSystemTimePreciseAsFileTime). They were redirected to ForgeGraal's compatibility DLLs, which ship beside them.");
+            "GetSystemTimePreciseAsFileTime). They were redirected to Graak's compatibility DLLs, which ship beside them.");
     }
     /**
      * Some addons and DLLs (libvips, for sharp) link the Universal C Runtime. Windows 7 has it only with
@@ -544,7 +561,7 @@ class BinaryPackager {
     static bundleUcrt(project, dirs, options, warnings, log) {
         if (!dirs.size)
             return;
-        const source = options.ucrtDir ?? process.env.FORGEGRAAL_UCRT_DIR;
+        const source = options.ucrtDir ?? process.env.GRAAK_UCRT_DIR;
         if (!source || !(0, node_fs_1.existsSync)(source)) {
             warnings.push(`${[...dirs].join(", ")} need the Universal C Runtime, which Windows 7 has only with update KB2999226. ` +
                 "Install that update on the target, or pass --ucrt-dir <Windows SDK Redist\\ucrt\\DLLs\\<arch>> to ship the " +
@@ -603,14 +620,14 @@ class BinaryPackager {
             // The Node-API layer is the host's own, so there is no Node ABI to be too new for. The addon
             // is still a native binary its authors built for some Windows or glibc, and if that is newer
             // than the target's, loading it fails with the system's own error message, not a build error.
-            warnings.push(`Native addons are loaded by the operating system, not by ForgeGraal, so each one must itself run on ${target}. ` +
+            warnings.push(`Native addons are loaded by the operating system, not by Graak, so each one must itself run on ${target}. ` +
                 "Prebuilt addons are usually built for a recent OS; if one is not, it fails at load time with the system's error.");
         }
         else if (host === "node" && structures_1.TARGET_METADATA_MAP[target].is32BitOrLegacy) {
             const bundled = new Set([...byPackage.keys()].map((key) => key.split("node_modules/").pop() ?? key));
             const risky = nativeShim_1.UNSUBSTITUTABLE_NATIVE.filter((name) => bundled.has(name));
             if (risky.length) {
-                warnings.push(`${risky.join(", ")} ship native addons that ForgeGraal will not replace with a stub, because a ` +
+                warnings.push(`${risky.join(", ")} ship native addons that Graak will not replace with a stub, because a ` +
                     `stub would lose data or weaken security rather than fail. Their prebuilt binaries match ` +
                     `${target}'s architecture but are built for a newer Node.js ABI and a newer Windows, so they ` +
                     `commonly fail to load on this target with "The specified procedure could not be found". ` +
@@ -656,7 +673,7 @@ class BinaryPackager {
         }
         else if (!options.offline) {
             // A user-registered runtime is their own explicit, trusted choice (e.g. a newer
-            // unofficial Windows 7 build) and wins over ForgeGraal's own pinned fallback below.
+            // unofficial Windows 7 build) and wins over Graak's own pinned fallback below.
             const [entry] = RuntimeRegistry_1.RuntimeRegistry.find(target, root);
             if (entry) {
                 log(`Using registered community runtime for ${target}: Node.js ${entry.version} (${entry.url})`);
@@ -665,7 +682,7 @@ class BinaryPackager {
                 if (!info || !BinaryInspector_1.BinaryInspector.matchesTarget(info, target)) {
                     throw new structures_1.RuntimeError(`Registered runtime for '${target}' (${entry.url}) does not match the target after download ` +
                         `(${info ? `${info.format} ${info.arch}` : "unrecognized format"}). ` +
-                        "Remove it with 'forgegraal runtimes remove' and register a correct one.");
+                        "Remove it with 'graak runtimes remove' and register a correct one.");
                 }
             }
             else if (meta.pinnedLegacyNode) {
@@ -682,7 +699,7 @@ class BinaryPackager {
                 reason: meta.officialNodeFile || meta.pinnedLegacyNode
                     ? "runtime downloads are disabled (offline) and no --node-binary was given."
                     : `no Node.js runtime was given and none is registered for this target. ${meta.runtimeHint} ` +
-                        `Or register one once with 'forgegraal runtimes add ${target} <version> <url> --sha256 <hex>'.`,
+                        `Or register one once with 'graak runtimes add ${target} <version> <url> --sha256 <hex>'.`,
             };
         }
         const version = NodeRuntime_1.NodeRuntime.readVersion(binary);

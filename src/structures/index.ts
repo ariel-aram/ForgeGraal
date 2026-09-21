@@ -1,2 +1,2 @@
-export * from "./ForgeGraalError";
+export * from "./GraakError";
 export * from "./TargetDevice";

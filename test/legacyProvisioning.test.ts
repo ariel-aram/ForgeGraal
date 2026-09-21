@@ -84,7 +84,7 @@ test("targets without a bootstrap command keep the plain hint-only launcher", ()
 test("bootstrap commands are safely single-quoted for sh, and parse as valid POSIX shell", () => {
 	for (const target of TARGETS_WITH_BOOTSTRAP) {
 		const script = PortablePackager.unixLauncher(TARGET_METADATA_MAP[target]);
-		const dir = mkdtempSync(join(tmpdir(), "forgegraal-shcheck-"));
+		const dir = mkdtempSync(join(tmpdir(), "graak-shcheck-"));
 		const file = join(dir, "launcher.sh");
 		writeFileSync(file, script);
 		// `sh -n` only parses; it never executes apk/pkg, so this is safe on any host.
@@ -113,20 +113,20 @@ async function withFetch<T>(
 }
 
 /**
- * Runs `fn` with FORGEGRAAL_CACHE pointed at a throwaway directory. `ensureOfficial` trusts
+ * Runs `fn` with GRAAK_CACHE pointed at a throwaway directory. `ensureOfficial` trusts
  * whatever is already on disk at that path without re-verifying it, and win-x86-exe/
- * win-x64-exe at version 12.22.12 is the *exact* real path a genuine `forgegraal compile
+ * win-x64-exe at version 12.22.12 is the *exact* real path a genuine `graak compile
  * --target win-legacy-x86` uses on this machine — writing synthetic test data there would
  * corrupt every future real build until the cache is cleared by hand.
  */
 async function withIsolatedCache<T>(fn: () => Promise<T>): Promise<T> {
-	const previous = process.env.FORGEGRAAL_CACHE;
-	process.env.FORGEGRAAL_CACHE = mkdtempSync(join(tmpdir(), "forgegraal-cache-"));
+	const previous = process.env.GRAAK_CACHE;
+	process.env.GRAAK_CACHE = mkdtempSync(join(tmpdir(), "graak-cache-"));
 	try {
 		return await fn();
 	} finally {
-		if (previous === undefined) delete process.env.FORGEGRAAL_CACHE;
-		else process.env.FORGEGRAAL_CACHE = previous;
+		if (previous === undefined) delete process.env.GRAAK_CACHE;
+		else process.env.GRAAK_CACHE = previous;
 	}
 }
 
@@ -168,10 +168,10 @@ function serveFakeDist(fileKey: string, content: Buffer) {
 }
 
 test("BinaryPackager auto-provisions the pinned legacy Node.js for Windows 7/Vista, warning prominently", async () => {
-	// win-legacy-x86 now defaults to the ForgeGraal native host; an explicit strategy is the
+	// win-legacy-x86 now defaults to the Graak native host; an explicit strategy is the
 	// documented way to opt back into a Node.js build, and the pinned-Node auto-provisioning this
 	// test checks only runs once that opt-in is given.
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-win7-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-win7-"));
 	writeFileSync(join(root, "package.json"), JSON.stringify({ name: "win7-bot" }));
 	writeFileSync(join(root, "index.js"), "console.log('hi');");
 
@@ -215,7 +215,7 @@ test("a dependency's engines.node floor is overridden, with a warning, when its 
 	// The whole point of the legacy pipeline is to run code on a runtime older than the one its
 	// authors declared. Refusing the build here would reject the only runtime the target has.
 	// (strategy: "portable" opts win-legacy-x64 back into Node.js -- see the test above.)
-	const root = projectNeedingNode("forgegraal-win7-floor-", "20.0.0");
+	const root = projectNeedingNode("graak-win7-floor-", "20.0.0");
 	const content = fakeOfficialNodeExe(0x8664, "12.22.12"); // AMD64
 	await withIsolatedCache(() =>
 		withFetch(serveFakeDist("win-x64-exe", content), async () => {
@@ -240,7 +240,7 @@ test("a dependency's engines.node floor is overridden, with a warning, when its 
 test("the engines.node floor is still enforced when nothing is being done about it", async () => {
 	// A modern runtime gets no lowering and no polyfills, so a dependency that needs something
 	// newer still has no way to run and the build must stop.
-	const root = projectNeedingNode("forgegraal-modern-floor-", "99.0.0");
+	const root = projectNeedingNode("graak-modern-floor-", "99.0.0");
 	const content = fakeOfficialNodeExe(0x014c, "22.11.0");
 	RuntimeRegistry.add(
 		{
@@ -271,7 +271,7 @@ test("the engines.node floor is still enforced when nothing is being done about 
 });
 
 test("BinaryPackager auto-provisions the older pinned Node.js for Windows Vista, distinct from the Windows 7 pin", async () => {
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-vista-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-vista-"));
 	writeFileSync(join(root, "package.json"), JSON.stringify({ name: "vista-bot" }));
 	writeFileSync(join(root, "index.js"), "console.log('hi');");
 
@@ -296,7 +296,7 @@ test("BinaryPackager auto-provisions the older pinned Node.js for Windows Vista,
 });
 
 test("a user's own registered runtime takes priority over the pinned legacy Node.js", async () => {
-	const root = mkdtempSync(join(tmpdir(), "forgegraal-win7-registry-"));
+	const root = mkdtempSync(join(tmpdir(), "graak-win7-registry-"));
 	writeFileSync(join(root, "package.json"), JSON.stringify({ name: "win7-bot" }));
 	writeFileSync(join(root, "index.js"), "console.log('hi');");
 

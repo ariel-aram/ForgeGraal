@@ -6,7 +6,7 @@ import { RuntimeError } from "../structures";
 import { isInside } from "./ProjectCollector";
 
 /**
- * Lets ForgeGraal build a Yarn Plug'n'Play project without reimplementing Yarn's own resolver.
+ * Lets Graak build a Yarn Plug'n'Play project without reimplementing Yarn's own resolver.
  *
  * A PnP project has no `node_modules` at all: dependencies live as zip archives (in the project's
  * `.yarn/cache/` or, by default, a global cache outside the project entirely) that `.pnp.cjs`
@@ -17,7 +17,7 @@ import { isInside } from "./ProjectCollector";
  * normal `node_modules` tree from the exact same `yarn.lock`, by overriding `nodeLinker` for one
  * throwaway install: `YARN_NODE_LINKER=node-modules yarn install`. That install runs in a
  * temporary copy of the project, never the original, so the user's `.pnp.cjs`, lockfile and
- * `.yarnrc.yml` are never touched -- ForgeGraal is assisting Yarn's own tooling here, not
+ * `.yarnrc.yml` are never touched -- Graak is assisting Yarn's own tooling here, not
  * replacing it or second-guessing how it resolves packages.
  */
 export interface MaterializedProject {
@@ -70,7 +70,7 @@ export class YarnPnpCompat {
 			throw new RuntimeError(`.yarnrc.yml points 'yarnPath' at '${yarnPathRel}', which does not exist.`);
 		}
 
-		const tmp = mkdtempSync(join(tmpdir(), "forgegraal-yarn-pnp-"));
+		const tmp = mkdtempSync(join(tmpdir(), "graak-yarn-pnp-"));
 		let cleaned = false;
 		const cleanup = () => {
 			if (cleaned) return;

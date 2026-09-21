@@ -1,7 +1,7 @@
 /**
  * Lets addons built for a newer Windows load on Windows Vista and 7.
  *
- * A native addon is a DLL, and the operating system -- not ForgeGraal -- binds its imports when it is
+ * A native addon is a DLL, and the operating system -- not Graak -- binds its imports when it is
  * loaded. Prebuilt addons are compiled for whatever Windows their authors target, and the Rust ones
  * (@napi-rs/canvas, davey, mediaplex, ...) and libvips reach for a handful of functions Windows 7 does
  * not have. Measured on the real prebuilds of lmdb, better-sqlite3, msgpackr-extract, @napi-rs/canvas,
@@ -15,7 +15,7 @@
  * addons, the bundle is patched at build time: an import that Windows 7 cannot satisfy is pointed at
  * something it can. The edit is in place and never changes a file's layout:
  *
- *   - a whole imported DLL is renamed to one of ForgeGraal's compatibility DLLs (`fgsynch.dll`,
+ *   - a whole imported DLL is renamed to one of Graak's compatibility DLLs (`fgsynch.dll`,
  *     `fgprng.dll`, built from quickjs/native/win-compat/), which ships beside the addon -- Windows looks
  *     next to the loaded DLL first;
  *   - a single imported function is renamed to a signature-compatible one the same DLL does have
@@ -64,9 +64,12 @@ export declare class Win7Compat {
     static needsUcrt(input: Buffer): boolean;
     /** Names of the compatibility DLLs a patched bundle needs. */
     static shimNames(): string[];
+    /** Digest of the sources the compatibility DLLs are built from (line endings do not count). */
+    static shimSourceHash(repoRoot: string): string;
     /**
-     * Builds (and caches) the compatibility DLLs for one architecture with quickjs/native/win-compat/.
-     * Returns the directory that holds fgsynch.dll and fgprng.dll.
+     * Returns the directory that holds `fgsynch.dll` and `fgprng.dll` for one architecture: the cache, else
+     * the copy that ships with Graak (`quickjs/prebuilt/win-compat/`), else a fresh build with
+     * quickjs/native/win-compat/, which needs a POSIX shell and mingw-w64.
      */
     static ensureShims(arch: "x64" | "ia32"): string;
 }

@@ -1,4 +1,4 @@
-// ForgeGraal Windows smoke test: run the packaged output on the machine you care about (a Windows 7 VM,
+// Graak Windows smoke test: run the packaged output on the machine you care about (a Windows 7 VM,
 // say) and read the PASS/FAIL lines. It uses only built-in modules, so a failure is the host's, not a
 // dependency's. The network check is reported separately because a VM may simply have no network.
 const results = [];
@@ -17,7 +17,7 @@ const assert = (cond, message) => {
 };
 
 (async () => {
-	console.log(`ForgeGraal smoke test on ${process.platform}/${process.arch}, pid ${process.pid}`);
+	console.log(`Graak smoke test on ${process.platform}/${process.arch}, pid ${process.pid}`);
 	await check("console formats objects like Node", () => {
 		const { inspect } = require("util");
 		assert(inspect({ a: [1, { b: 2 }], c: new Map([["k", 1]]) }) === "{ a: [ 1, { b: 2 } ], c: Map(1) { 'k' => 1 } }", "unexpected output");
@@ -57,8 +57,8 @@ const assert = (cond, message) => {
 	});
 	await check("child process output", () => {
 		const cp = require("child_process");
-		const out = process.platform === "win32" ? cp.execSync("echo forgegraal", { encoding: "utf8" }) : cp.execSync("echo forgegraal", { encoding: "utf8" });
-		assert(out.trim() === "forgegraal", JSON.stringify(out));
+		const out = process.platform === "win32" ? cp.execSync("echo graak", { encoding: "utf8" }) : cp.execSync("echo graak", { encoding: "utf8" });
+		assert(out.trim() === "graak", JSON.stringify(out));
 	});
 	await check("uncaught-looking errors keep their stack", () => {
 		const e = new Error("boom");
