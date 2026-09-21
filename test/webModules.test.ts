@@ -173,3 +173,67 @@ console.log(JSON.stringify([label("paths"), twice(21), typeof lib.greet]));
 	assert.equal(result.status, 0, result.stderr);
 	assert.deepEqual(JSON.parse(result.stdout), ["[hello paths]", 42, "function"]);
 });
+
+test("module.createRequire with file URL resolves packages and Windows paths without drive letter duplication", async () => {
+	const root = project({
+		"package.json": JSON.stringify({
+			name: "url-require-app",
+			version: "1.0.0",
+			dependencies: { "fake-native": "1.0.0" },
+		}),
+		"node_modules/fake-native/package.json": JSON.stringify({ name: "fake-native", main: "index.js" }),
+		"node_modules/fake-native/index.js": "module.exports = { ok: true };",
+		"main.cjs": `
+const { pathToFileURL } = require("node:url");
+const path = require("node:path");
+const { createRequire } = require("node:module");
+const assert = require("node:assert");
+
+// Test Windows path resolution does not double drive letters
+const win = path.win32;
+assert.equal(win.resolve("C:\\\\Users\\\\User", "/C:/app/package.json"), "C:\\\\app\\\\package.json");
+assert.equal(win.resolve("C:\\\\Users\\\\User", "\\\\C:\\\\app\\\\package.json"), "C:\\\\app\\\\package.json");
+
+// Test createRequire with URL
+const req = createRequire(pathToFileURL(path.join(__dirname, "package.json")));
+const loaded = req("fake-native");
+assert.equal(loaded.ok, true);
+assert.ok(req.resolve("fake-native").includes("fake-native"));
+
+console.log(JSON.stringify({ ok: true }));
+`,
+	});
+	const result = await run(root, "main.cjs");
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(JSON.parse(result.stdout), { ok: true });
+});
+
+test("WebAssembly handles multiple export aliases pointing to the same function index (libsodium pattern)", async () => {
+	// Wasm module with 1 function and 4 export aliases all pointing to func 0 ('a', 'b', 'c', 'd')
+	const wasmBytes = new Uint8Array([
+		0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f, 0x03, 0x02, 0x01, 0x00,
+		0x07, 0x11, 0x04, 0x01, 0x61, 0x00, 0x00, 0x01, 0x62, 0x00, 0x00, 0x01, 0x63, 0x00, 0x00, 0x01, 0x64, 0x00, 0x00,
+		0x0a, 0x06, 0x01, 0x04, 0x00, 0x41, 0x2a, 0x0b,
+	]);
+	const root = project({
+		"package.json": JSON.stringify({ name: "wasm-aliases", version: "1.0.0" }),
+		"wasm.bin": Buffer.from(wasmBytes).toString("base64"),
+		"main.cjs": `
+const fs = require("node:fs");
+const path = require("node:path");
+const assert = require("node:assert");
+const bytes = Buffer.from(fs.readFileSync(path.join(__dirname, "wasm.bin"), "utf8"), "base64");
+const instance = new WebAssembly.Instance(new WebAssembly.Module(bytes));
+assert.equal(typeof instance.exports.a, "function");
+assert.equal(typeof instance.exports.b, "function");
+assert.equal(typeof instance.exports.c, "function");
+assert.equal(typeof instance.exports.d, "function");
+assert.equal(instance.exports.a(), 42);
+assert.equal(instance.exports.d(), 42);
+console.log(JSON.stringify({ ok: true, d: instance.exports.d() }));
+`,
+	});
+	const result = await run(root, "main.cjs");
+	assert.equal(result.status, 0, result.stderr);
+	assert.deepEqual(JSON.parse(result.stdout), { ok: true, d: 42 });
+});

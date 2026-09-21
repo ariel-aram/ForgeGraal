@@ -16,17 +16,19 @@ function sqliteError(message, code = "ERR_SQLITE_ERROR", extra) {
 	return Object.assign(new Error(message), { code }, extra);
 }
 
-function createSqlite({ native, Buffer }) {
+function createSqlite({ native, Buffer, platform = globalThis.process?.platform ?? "linux" }) {
 	if (typeof native?.sqliteOpen !== "function") return null;
 
 	const toDbPath = (value) => {
 		if (typeof value === "string") return value;
 		if (value instanceof URL) {
 			if (value.protocol !== "file:") throw sqliteError("The URL must be of scheme file", "ERR_INVALID_URL_SCHEME");
-			return decodeURIComponent(value.pathname);
+			return decodeURIComponent(platform === "win32" ? value.pathname.replace(/^\/([A-Za-z]:)/, "$1") : value.pathname);
 		}
 		if (value instanceof Uint8Array) return Buffer.from(value).toString("utf8");
-		throw Object.assign(new TypeError('The "path" argument must be a string, Uint8Array, or URL without null bytes.'), { code: "ERR_INVALID_ARG_TYPE" });
+		throw Object.assign(new TypeError('The "path" argument must be a string, Uint8Array, or URL without null bytes.'), {
+			code: "ERR_INVALID_ARG_TYPE",
+		});
 	};
 
 	class StatementSync {
@@ -53,11 +55,17 @@ function createSqlite({ native, Buffer }) {
 		}
 
 		setReadBigInts(enabled) {
-			if (typeof enabled !== "boolean") throw Object.assign(new TypeError('The "readBigInts" argument must be a boolean.'), { code: "ERR_INVALID_ARG_TYPE" });
+			if (typeof enabled !== "boolean")
+				throw Object.assign(new TypeError('The "readBigInts" argument must be a boolean.'), {
+					code: "ERR_INVALID_ARG_TYPE",
+				});
 			this._bigints = enabled;
 		}
 		setAllowBareNamedParameters(enabled) {
-			if (typeof enabled !== "boolean") throw Object.assign(new TypeError('The "allowBareNamedParameters" argument must be a boolean.'), { code: "ERR_INVALID_ARG_TYPE" });
+			if (typeof enabled !== "boolean")
+				throw Object.assign(new TypeError('The "allowBareNamedParameters" argument must be a boolean.'), {
+					code: "ERR_INVALID_ARG_TYPE",
+				});
 			this._bare = enabled;
 		}
 
@@ -75,7 +83,13 @@ function createSqlite({ native, Buffer }) {
 			native.sqliteReset(id, true);
 			let position = 1;
 			for (const value of params) {
-				if (value !== null && typeof value === "object" && !(value instanceof Uint8Array) && !ArrayBuffer.isView(value) && !(value instanceof ArrayBuffer)) {
+				if (
+					value !== null &&
+					typeof value === "object" &&
+					!(value instanceof Uint8Array) &&
+					!ArrayBuffer.isView(value) &&
+					!(value instanceof ArrayBuffer)
+				) {
 					for (const [key, v] of Object.entries(value)) {
 						let index = native.sqliteBindIndex(id, key);
 						if (index === 0 && this._bare) {
@@ -96,9 +110,13 @@ function createSqlite({ native, Buffer }) {
 		_coerce(value) {
 			if (value === undefined) return null;
 			if (typeof value === "boolean") return value ? 1 : 0;
-			if (typeof value === "number" || typeof value === "bigint" || typeof value === "string" || value === null) return value;
+			if (typeof value === "number" || typeof value === "bigint" || typeof value === "string" || value === null)
+				return value;
 			if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer) return value;
-			throw Object.assign(new TypeError(`Provided value cannot be bound to SQLite parameter. Unsupported type ${typeof value}.`), { code: "ERR_INVALID_ARG_TYPE" });
+			throw Object.assign(
+				new TypeError(`Provided value cannot be bound to SQLite parameter. Unsupported type ${typeof value}.`),
+				{ code: "ERR_INVALID_ARG_TYPE" }
+			);
 		}
 
 		_object(row) {
@@ -116,7 +134,10 @@ function createSqlite({ native, Buffer }) {
 			}
 			native.sqliteReset(id, false);
 			const [changes, rowid] = native.sqliteInfo(this._db._handle);
-			return { changes: this._bigints ? BigInt(changes) : changes, lastInsertRowid: this._bigints ? rowid : Number(rowid) };
+			return {
+				changes: this._bigints ? BigInt(changes) : changes,
+				lastInsertRowid: this._bigints ? rowid : Number(rowid),
+			};
 		}
 
 		get(...params) {
@@ -203,7 +224,8 @@ function createSqlite({ native, Buffer }) {
 			const flags = this._options.readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE;
 			this._handle = native.sqliteOpen(this._path, flags);
 			this._isOpen = true;
-			if (this._options.enableForeignKeyConstraints !== false) native.sqliteExec(this._handle, "PRAGMA foreign_keys = ON");
+			if (this._options.enableForeignKeyConstraints !== false)
+				native.sqliteExec(this._handle, "PRAGMA foreign_keys = ON");
 		}
 
 		close() {
@@ -228,12 +250,14 @@ function createSqlite({ native, Buffer }) {
 		}
 
 		exec(sql) {
-			if (typeof sql !== "string") throw Object.assign(new TypeError('The "sql" argument must be a string.'), { code: "ERR_INVALID_ARG_TYPE" });
+			if (typeof sql !== "string")
+				throw Object.assign(new TypeError('The "sql" argument must be a string.'), { code: "ERR_INVALID_ARG_TYPE" });
 			native.sqliteExec(this._live(), sql);
 		}
 
 		prepare(sql) {
-			if (typeof sql !== "string") throw Object.assign(new TypeError('The "sql" argument must be a string.'), { code: "ERR_INVALID_ARG_TYPE" });
+			if (typeof sql !== "string")
+				throw Object.assign(new TypeError('The "sql" argument must be a string.'), { code: "ERR_INVALID_ARG_TYPE" });
 			const [id] = native.sqlitePrepare(this._live(), sql);
 			if (id === null) throw sqliteError("The SQL statement is empty", "ERR_SQLITE_ERROR");
 			const statement = new StatementSync(this, id, sql);
@@ -242,10 +266,16 @@ function createSqlite({ native, Buffer }) {
 		}
 
 		function() {
-			throw sqliteError("User-defined functions are not available in the Graak SQLite build", "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM");
+			throw sqliteError(
+				"User-defined functions are not available in the Graak SQLite build",
+				"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"
+			);
 		}
 		loadExtension() {
-			throw sqliteError("SQLite extensions cannot be loaded: the Graak SQLite build has extension loading disabled", "ERR_LOAD_SQLITE_EXTENSION");
+			throw sqliteError(
+				"SQLite extensions cannot be loaded: the Graak SQLite build has extension loading disabled",
+				"ERR_LOAD_SQLITE_EXTENSION"
+			);
 		}
 		enableLoadExtension() {}
 
@@ -268,7 +298,10 @@ function createSqlite({ native, Buffer }) {
 			SQLITE_CHANGESET_FOREIGN_KEY: 5,
 		},
 		backup() {
-			throw sqliteError("sqlite.backup() is not available in the Graak SQLite build", "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM");
+			throw sqliteError(
+				"sqlite.backup() is not available in the Graak SQLite build",
+				"ERR_FEATURE_UNAVAILABLE_ON_PLATFORM"
+			);
 		},
 		version: native.sqliteVersion(),
 	};
@@ -317,11 +350,15 @@ function createSqlite({ native, Buffer }) {
 
 	class Database {
 		constructor(filename = ":memory:", options = {}) {
-			if (typeof options === "number") options = { readonly: Boolean(options & SQLITE_OPEN_READONLY), create: Boolean(options & SQLITE_OPEN_CREATE) };
+			if (typeof options === "number")
+				options = { readonly: Boolean(options & SQLITE_OPEN_READONLY), create: Boolean(options & SQLITE_OPEN_CREATE) };
 			this._strict = Boolean(options?.strict);
 			this.filename = filename;
 			this._queries = new Map();
-			this._db = new DatabaseSync(filename, { readOnly: options?.readonly === true, enableForeignKeyConstraints: true });
+			this._db = new DatabaseSync(filename, {
+				readOnly: options?.readonly === true,
+				enableForeignKeyConstraints: true,
+			});
 			if (options?.safeIntegers) this._safe = true;
 		}
 		static open(filename, options) {
@@ -391,7 +428,12 @@ function createSqlite({ native, Buffer }) {
 		}
 	}
 
-	const bun = { Database, Statement: BunStatement, constants: { SQLITE_OPEN_READONLY, SQLITE_OPEN_READWRITE, SQLITE_OPEN_CREATE }, SQLiteError: Error };
+	const bun = {
+		Database,
+		Statement: BunStatement,
+		constants: { SQLITE_OPEN_READONLY, SQLITE_OPEN_READWRITE, SQLITE_OPEN_CREATE },
+		SQLiteError: Error,
+	};
 	return { node, bun };
 }
 

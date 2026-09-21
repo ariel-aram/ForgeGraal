@@ -12,7 +12,15 @@
  */
 
 const KIND = ["function", "table", "memory", "global"];
-const VALTYPE = { 0x7f: "i32", 0x7e: "i64", 0x7d: "f32", 0x7c: "f64", 0x7b: "v128", 0x70: "funcref", 0x6f: "externref" };
+const VALTYPE = {
+	0x7f: "i32",
+	0x7e: "i64",
+	0x7d: "f32",
+	0x7c: "f64",
+	0x7b: "v128",
+	0x70: "funcref",
+	0x6f: "externref",
+};
 const LETTER = { i32: "i", i64: "I", f32: "f", f64: "F" };
 
 class CompileError extends Error {
@@ -90,7 +98,8 @@ function parseModule(bytes) {
 	if (bytes.length < 8 || bytes[0] !== 0 || bytes[1] !== 0x61 || bytes[2] !== 0x73 || bytes[3] !== 0x6d) {
 		throw new CompileError("expected magic word 00 61 73 6d");
 	}
-	if (bytes[4] !== 1 || bytes[5] !== 0 || bytes[6] !== 0 || bytes[7] !== 0) throw new CompileError("expected version 01 00 00 00");
+	if (bytes[4] !== 1 || bytes[5] !== 0 || bytes[6] !== 0 || bytes[7] !== 0)
+		throw new CompileError("expected version 01 00 00 00");
 	const info = { types: [], imports: [], funcs: [], exports: [], customSections: [], globalDefs: [], start: undefined };
 	const r = new Reader(bytes);
 	r.pos = 8;
@@ -185,14 +194,24 @@ function stubImports(info) {
 	for (const entry of info.imports) {
 		if (entry.kind !== "function") return null; // memory, table and global imports cannot be stubbed
 		const type = info.types[entry.type];
-		if (!type || type.results.length > 1 || letters(type.params).includes("?") || letters(type.results).includes("?")) return null;
-		stubs.push({ module: entry.module, name: entry.name, sig: `${type.results.length ? letters(type.results) : "v"}(${letters(type.params)})`, fn: () => 0 });
+		if (!type || type.results.length > 1 || letters(type.params).includes("?") || letters(type.results).includes("?"))
+			return null;
+		stubs.push({
+			module: entry.module,
+			name: entry.name,
+			sig: `${type.results.length ? letters(type.results) : "v"}(${letters(type.params)})`,
+			fn: () => 0,
+		});
 	}
 	return stubs;
 }
 
 const toBytes = (source, what) => {
-	if (source instanceof ArrayBuffer || (typeof SharedArrayBuffer !== "undefined" && source instanceof SharedArrayBuffer)) return new Uint8Array(source);
+	if (
+		source instanceof ArrayBuffer ||
+		(typeof SharedArrayBuffer !== "undefined" && source instanceof SharedArrayBuffer)
+	)
+		return new Uint8Array(source);
 	if (ArrayBuffer.isView(source)) return new Uint8Array(source.buffer, source.byteOffset, source.byteLength);
 	throw new TypeError(`${what}: Argument 0 must be a buffer source`);
 };
@@ -221,7 +240,10 @@ function createWebAssembly(native) {
 			return internals.get(module).info.exports.map(({ name, kind }) => ({ name, kind }));
 		}
 		static customSections(module, name) {
-			return internals.get(module).info.customSections.filter((s) => s.name === name).map((s) => s.data.buffer.slice(s.data.byteOffset, s.data.byteOffset + s.data.byteLength));
+			return internals
+				.get(module)
+				.info.customSections.filter((s) => s.name === name)
+				.map((s) => s.data.buffer.slice(s.data.byteOffset, s.data.byteOffset + s.data.byteLength));
 		}
 		get [Symbol.toStringTag]() {
 			return "WebAssembly.Module";
@@ -235,9 +257,11 @@ function createWebAssembly(native) {
 				internals.set(this, { instance: bound });
 				return;
 			}
-			if (!descriptor || typeof descriptor !== "object") throw new TypeError("WebAssembly.Memory(): Argument 0 must be a memory descriptor");
+			if (!descriptor || typeof descriptor !== "object")
+				throw new TypeError("WebAssembly.Memory(): Argument 0 must be a memory descriptor");
 			const initial = Number(descriptor.initial);
-			if (!Number.isInteger(initial) || initial < 0 || initial > 65536) throw new RangeError("WebAssembly.Memory(): Property 'initial': value is out of range");
+			if (!Number.isInteger(initial) || initial < 0 || initial > 65536)
+				throw new RangeError("WebAssembly.Memory(): Property 'initial': value is out of range");
 			internals.set(this, { pages: initial, maximum: descriptor.maximum, buffer: new ArrayBuffer(initial * 65536) });
 		}
 		get buffer() {
@@ -254,7 +278,8 @@ function createWebAssembly(native) {
 			}
 			const before = own.pages;
 			const after = before + delta;
-			if (delta < 0 || after > (own.maximum ?? 65536)) throw new RangeError("WebAssembly.Memory.grow(): Maximum memory size exceeded");
+			if (delta < 0 || after > (own.maximum ?? 65536))
+				throw new RangeError("WebAssembly.Memory.grow(): Maximum memory size exceeded");
 			const grown = new ArrayBuffer(after * 65536);
 			new Uint8Array(grown).set(new Uint8Array(own.buffer));
 			own.pages = after;
@@ -273,7 +298,8 @@ function createWebAssembly(native) {
 				return;
 			}
 			const type = descriptor?.value;
-			if (!LETTER[type]) throw new TypeError("WebAssembly.Global(): Descriptor property 'value' must be a WebAssembly type");
+			if (!LETTER[type])
+				throw new TypeError("WebAssembly.Global(): Descriptor property 'value' must be a WebAssembly type");
 			internals.set(this, { type, mutable: Boolean(descriptor.mutable), value: value ?? (type === "i64" ? 0n : 0) });
 		}
 		get value() {
@@ -322,7 +348,8 @@ function createWebAssembly(native) {
 
 	class Instance {
 		constructor(module, importObject) {
-			if (!internals.has(module)) throw new TypeError("WebAssembly.Instance(): Argument 0 must be a WebAssembly.Module");
+			if (!internals.has(module))
+				throw new TypeError("WebAssembly.Instance(): Argument 0 must be a WebAssembly.Module");
 			const { bytes, info } = internals.get(module);
 			const imports = [];
 			let index = 0;
@@ -333,7 +360,9 @@ function createWebAssembly(native) {
 				}
 				const source = importObject[entry.module];
 				if (source === undefined || source === null || (typeof source !== "object" && typeof source !== "function")) {
-					throw new TypeError(`WebAssembly.Instance(): Import #${index - 1} "${entry.module}": module is not an object or function`);
+					throw new TypeError(
+						`WebAssembly.Instance(): Import #${index - 1} "${entry.module}": module is not an object or function`
+					);
 				}
 				const value = source[entry.name];
 				if (entry.kind !== "function") {
@@ -342,14 +371,23 @@ function createWebAssembly(native) {
 							"(a module can define its own memory, table and globals, but not import them)"
 					);
 				}
-				if (typeof value !== "function") throw new LinkError(`WebAssembly.Instance(): ${where}: function import requires a callable`);
+				if (typeof value !== "function")
+					throw new LinkError(`WebAssembly.Instance(): ${where}: function import requires a callable`);
 				const type = info.types[entry.type];
-				if (type.results.length > 1) throw new LinkError(`WebAssembly.Instance(): ${where}: multi-value function returns are not supported`);
+				if (type.results.length > 1)
+					throw new LinkError(`WebAssembly.Instance(): ${where}: multi-value function returns are not supported`);
 				const letters = (list) => list.map((t) => LETTER[t] ?? "?").join("");
 				if (letters(type.params).includes("?") || letters(type.results).includes("?")) {
-					throw new LinkError(`WebAssembly.Instance(): ${where}: parameter or result types outside i32, i64, f32 and f64 are not supported`);
+					throw new LinkError(
+						`WebAssembly.Instance(): ${where}: parameter or result types outside i32, i64, f32 and f64 are not supported`
+					);
 				}
-				imports.push({ module: entry.module, name: entry.name, sig: `${type.results.length ? letters(type.results) : "v"}(${letters(type.params)})`, fn: value });
+				imports.push({
+					module: entry.module,
+					name: entry.name,
+					sig: `${type.results.length ? letters(type.results) : "v"}(${letters(type.params)})`,
+					fn: value,
+				});
 			}
 
 			let id;
@@ -359,10 +397,24 @@ function createWebAssembly(native) {
 				throw mapError(error);
 			}
 			const exports = Object.create(null);
+			const foundByFuncIndex = new Map();
 			for (const entry of info.exports) {
 				if (entry.kind === "function") {
-					const found = native.wasmFind(id, entry.name);
-					if (!found) throw new LinkError(`WebAssembly.Instance(): export "${entry.name}" could not be found in the interpreter`);
+					let found = foundByFuncIndex.get(entry.index);
+					if (!found) {
+						found = native.wasmFind(id, entry.name);
+						if (!found) {
+							for (const other of info.exports) {
+								if (other.kind === "function" && other.index === entry.index && other.name !== entry.name) {
+									found = native.wasmFind(id, other.name);
+									if (found) break;
+								}
+							}
+						}
+						if (found) foundByFuncIndex.set(entry.index, found);
+					}
+					if (!found)
+						throw new LinkError(`WebAssembly.Instance(): export "${entry.name}" could not be found in the interpreter`);
 					const call = (...args) => {
 						try {
 							return native.wasmCall(id, found.index, args);
@@ -381,7 +433,12 @@ function createWebAssembly(native) {
 				else if (entry.kind === "global") {
 					// Imported globals come first in the index space, and none can be imported here.
 					const definition = info.globalDefs[entry.index - info.imports.filter((i) => i.kind === "global").length];
-					exports[entry.name] = new Global(undefined, undefined, { instance: id, name: entry.name, mutable: Boolean(definition?.mutable), type: definition?.type });
+					exports[entry.name] = new Global(undefined, undefined, {
+						instance: id,
+						name: entry.name,
+						mutable: Boolean(definition?.mutable),
+						type: definition?.type,
+					});
 				} else exports[entry.name] = new Table({ initial: 0 });
 			}
 			Object.freeze(exports);

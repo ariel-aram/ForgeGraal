@@ -21,20 +21,42 @@
 
 import * as os from "qjs:os";
 import * as std from "qjs:std";
-import * as web from "./node-web.js";
+import { installIntl } from "./intl.js";
 import { createAssert } from "./node-assert.js";
+import {
+	Buffer,
+	bufferConstants,
+	INSPECT_MAX_BYTES,
+	isAscii,
+	isUtf8,
+	kMaxLength,
+	normalizeEncoding,
+	SlowBuffer,
+} from "./node-buffer.js";
+import { createCrypto } from "./node-crypto.js";
 import { installExtras } from "./node-extras.js";
 import * as fetchApi from "./node-fetch.js";
-import { createCrypto } from "./node-crypto.js";
 import { createFs } from "./node-fs.js";
-import { createWebAssembly } from "./node-wasm.js";
-import { createModuleModule, createOs, createUtilTypes, createPunycode, createStdio, createUnavailable, createVm } from "./node-system.js";
-import { createConsumers, createStreamModule } from "./node-stream.js";
+import {
+	createConsole,
+	format as inspectFormat,
+	inspect as inspectValue,
+	setPromiseStateReader,
+} from "./node-inspect.js";
 import * as misc from "./node-misc.js";
-import { Buffer, INSPECT_MAX_BYTES, SlowBuffer, bufferConstants, isAscii, isUtf8, kMaxLength, normalizeEncoding } from "./node-buffer.js";
-import { createConsole, format as inspectFormat, inspect as inspectValue, setPromiseStateReader } from "./node-inspect.js";
+import { createConsumers, createStreamModule } from "./node-stream.js";
+import {
+	createModuleModule,
+	createOs,
+	createPunycode,
+	createStdio,
+	createUnavailable,
+	createUtilTypes,
+	createVm,
+} from "./node-system.js";
 import { URL, URLSearchParams, urlModule } from "./node-url.js";
-import { installIntl } from "./intl.js";
+import { createWebAssembly } from "./node-wasm.js";
+import * as web from "./node-web.js";
 import { Segmenter } from "./segmenter.js";
 
 const globalObject = globalThis;
@@ -104,21 +126,23 @@ if (typeof globalObject.setTimeout === "undefined" && typeof os.setTimeout === "
 			return 0;
 		}
 	}
-	const start = (create) => (fn, ms, ...args) => {
-		if (typeof fn !== "function") {
-			throw new TypeError('The "callback" argument must be of type function.');
-		}
-		// An exception in a timer is an uncaught exception, not something to lose: without this the engine
-		// drops it and the event loop can quietly end.
-		const run = () => {
-			try {
-				fn(...args);
-			} catch (error) {
-				reportUncaught(error);
+	const start =
+		(create) =>
+		(fn, ms, ...args) => {
+			if (typeof fn !== "function") {
+				throw new TypeError('The "callback" argument must be of type function.');
 			}
+			// An exception in a timer is an uncaught exception, not something to lose: without this the engine
+			// drops it and the event loop can quietly end.
+			const run = () => {
+				try {
+					fn(...args);
+				} catch (error) {
+					reportUncaught(error);
+				}
+			};
+			return new Timeout(create(run, Math.max(1, Number(ms) || 1)));
 		};
-		return new Timeout(create(run, Math.max(1, Number(ms) || 1)));
-	};
 	const clear = (timer) => {
 		if (timer instanceof Timeout) os.clearTimeout(timer._handle);
 		else if (timer != null) os.clearTimeout(timer);
@@ -198,7 +222,12 @@ if (typeof globalObject.setTimeout === "undefined" && typeof os.setTimeout === "
 			return this._frame.fn ? `${this._frame.fn} (${where})` : where;
 		}
 	}
-	Object.defineProperty(Error, "prepareStackTrace", { value: undefined, writable: true, configurable: true, enumerable: false });
+	Object.defineProperty(Error, "prepareStackTrace", {
+		value: undefined,
+		writable: true,
+		configurable: true,
+		enumerable: false,
+	});
 
 	// V8 starts every stack with "Name: message"; the engine's begins at the first frame. Code prints
 	// `err.stack` to show what went wrong (Express does in its error page), so the header is added on first
@@ -321,12 +350,7 @@ class TextEncoderImpl {
 			} else if (code < 0x10000) {
 				out.push(0xe0 | (code >> 12), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
 			} else {
-				out.push(
-					0xf0 | (code >> 18),
-					0x80 | ((code >> 12) & 0x3f),
-					0x80 | ((code >> 6) & 0x3f),
-					0x80 | (code & 0x3f)
-				);
+				out.push(0xf0 | (code >> 18), 0x80 | ((code >> 12) & 0x3f), 0x80 | ((code >> 6) & 0x3f), 0x80 | (code & 0x3f));
 			}
 		}
 		return new Uint8Array(out);
@@ -455,9 +479,12 @@ const eventsOf = (emitter) => emitter._events ?? (emitter._events = Object.creat
 
 function addListener(emitter, name, fn, prepend, once) {
 	if (typeof fn !== "function") {
-		throw Object.assign(new TypeError(`The "listener" argument must be of type function. Received ${fn === null ? "null" : typeof fn}`), {
-			code: "ERR_INVALID_ARG_TYPE",
-		});
+		throw Object.assign(
+			new TypeError(`The "listener" argument must be of type function. Received ${fn === null ? "null" : typeof fn}`),
+			{
+				code: "ERR_INVALID_ARG_TYPE",
+			}
+		);
 	}
 	const events = eventsOf(emitter);
 	let entry = fn;
@@ -541,10 +568,13 @@ class EventEmitter {
 			// depends on that being how a failure surfaces.
 			if (name === "error") {
 				if (args[0] instanceof Error) throw args[0];
-				throw Object.assign(new Error(`Unhandled error. (${typeof args[0] === "string" ? `'${args[0]}'` : String(args[0])})`), {
-					code: "ERR_UNHANDLED_ERROR",
-					context: args[0],
-				});
+				throw Object.assign(
+					new Error(`Unhandled error. (${typeof args[0] === "string" ? `'${args[0]}'` : String(args[0])})`),
+					{
+						code: "ERR_UNHANDLED_ERROR",
+						context: args[0],
+					}
+				);
 			}
 			return false;
 		}
@@ -585,7 +615,8 @@ class EventEmitter {
 
 	static once(emitter, name, options) {
 		return new Promise((resolve, reject) => {
-			if (options?.signal?.aborted) return reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError", code: "ABORT_ERR" }));
+			if (options?.signal?.aborted)
+				return reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError", code: "ABORT_ERR" }));
 			const onEvent = (...args) => {
 				if (name !== "error") emitter.removeListener("error", onError);
 				resolve(args);
@@ -596,11 +627,15 @@ class EventEmitter {
 			};
 			emitter.once(name, onEvent);
 			if (name !== "error") emitter.once("error", onError);
-			options?.signal?.addEventListener("abort", () => {
-				emitter.removeListener(name, onEvent);
-				emitter.removeListener("error", onError);
-				reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError", code: "ABORT_ERR" }));
-			}, { once: true });
+			options?.signal?.addEventListener(
+				"abort",
+				() => {
+					emitter.removeListener(name, onEvent);
+					emitter.removeListener("error", onError);
+					reject(Object.assign(new Error("The operation was aborted"), { name: "AbortError", code: "ABORT_ERR" }));
+				},
+				{ once: true }
+			);
 		});
 	}
 
@@ -676,7 +711,14 @@ function makePath(sep) {
 			}
 			if (!isAbsolute(resolved)) resolved = `${os.getcwd()[0]}${sep}${resolved}`;
 			// "\\dir" has no drive of its own: it belongs to the current one.
-			if (windows && /^[\\/]/.test(resolved)) resolved = os.getcwd()[0].slice(0, 2) + resolved;
+			if (windows) {
+				const driveMatch = /^[\\/]+([a-zA-Z]:[\\/]?.*)/.exec(resolved);
+				if (driveMatch) {
+					resolved = driveMatch[1];
+				} else if (/^[\\/]/.test(resolved)) {
+					resolved = os.getcwd()[0].slice(0, 2) + resolved;
+				}
+			}
 			const out = path.normalize(resolved);
 			const root = rootOf(out);
 			return out.length > root.length ? out.replace(/[\\/]$/, "") : out;
@@ -689,7 +731,11 @@ function makePath(sep) {
 			return root + body.slice(0, at);
 		},
 		basename(p, ext) {
-			const base = p.replace(/[\\/]+$/, "").split(/[\\/]/).pop() ?? "";
+			const base =
+				p
+					.replace(/[\\/]+$/, "")
+					.split(/[\\/]/)
+					.pop() ?? "";
 			return ext && base.endsWith(ext) ? base.slice(0, -ext.length) : base;
 		},
 		extname(p) {
@@ -747,10 +793,28 @@ Object.assign(processModule, {
 	platform: os.platform === "win32" ? "win32" : os.platform,
 	arch: globalThis.__graak_native?.arch ?? "ia32",
 	version: "v20.18.0",
-	versions: { node: "20.18.0", v8: "0.0.0-quickjs-ng", quickjs: "0.16.2", uv: "1.48.0", modules: "0", napi: "10", openssl: "mbedtls-3.6.2", zlib: "miniz-3.0.2" },
+	versions: {
+		node: "20.18.0",
+		v8: "0.0.0-quickjs-ng",
+		quickjs: "0.16.2",
+		uv: "1.48.0",
+		modules: "0",
+		napi: "10",
+		openssl: "mbedtls-3.6.2",
+		zlib: "miniz-3.0.2",
+	},
 	release: { name: "node", lts: "Iron" },
 	config: { target_defaults: {}, variables: {} },
-	features: { inspector: false, debug: false, uv: true, ipv6: true, tls_alpn: false, tls_sni: true, tls_ocsp: false, tls: true },
+	features: {
+		inspector: false,
+		debug: false,
+		uv: true,
+		ipv6: true,
+		tls_alpn: false,
+		tls_sni: true,
+		tls_ocsp: false,
+		tls: true,
+	},
 	pid: os.getpid?.() ?? globalThis.__graak_native?.getpid?.() ?? 0,
 	execPath: os.exePath?.()[0] ?? "qjs",
 	cwd: () => os.getcwd()[0],
@@ -778,7 +842,16 @@ Object.assign(processModule, {
 	),
 	nextTick: (fn, ...args) => queueMicrotask(() => fn(...args)),
 	uptime: () => os.now() / 1000,
-	memoryUsage: Object.assign(() => ({ rss: 50 * 1024 * 1024, heapTotal: 32 * 1024 * 1024, heapUsed: 16 * 1024 * 1024, external: 0, arrayBuffers: 0 }), { rss: () => 50 * 1024 * 1024 }),
+	memoryUsage: Object.assign(
+		() => ({
+			rss: 50 * 1024 * 1024,
+			heapTotal: 32 * 1024 * 1024,
+			heapUsed: 16 * 1024 * 1024,
+			external: 0,
+			arrayBuffers: 0,
+		}),
+		{ rss: () => 50 * 1024 * 1024 }
+	),
 	cpuUsage: () => ({ user: Math.round((os.cputime?.() ?? 0) * 1000), system: 0 }),
 	resourceUsage: () => ({ userCPUTime: 0, systemCPUTime: 0, maxRSS: 0 }),
 	umask: () => 0o022,
@@ -790,7 +863,8 @@ Object.assign(processModule, {
 	kill: (pid, signal = "SIGTERM") => {
 		const signals = { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGKILL: 9, SIGUSR1: 10, SIGUSR2: 12, SIGTERM: 15, 0: 0 };
 		const number = typeof signal === "number" ? signal : signals[signal];
-		if (number === undefined) throw Object.assign(new TypeError(`Unknown signal: ${signal}`), { code: "ERR_UNKNOWN_SIGNAL" });
+		if (number === undefined)
+			throw Object.assign(new TypeError(`Unknown signal: ${signal}`), { code: "ERR_UNKNOWN_SIGNAL" });
 		const rc = os.kill?.(pid, number) ?? -1;
 		if (rc < 0) throw Object.assign(new Error(`kill ESRCH`), { code: "ESRCH", errno: rc, syscall: "kill" });
 		return true;
@@ -821,7 +895,8 @@ function reportUncaught(error) {
 			error = thrown;
 		}
 	}
-	const text = error instanceof Error ? error.stack || `${error.name}: ${error.message}` : `Uncaught ${inspectValue(error)}`;
+	const text =
+		error instanceof Error ? error.stack || `${error.name}: ${error.message}` : `Uncaught ${inspectValue(error)}`;
 	std.err.puts(`${text}\n`);
 	processModule.exitCode = 1;
 	processModule.exit(1);
@@ -854,14 +929,27 @@ const util = {
 	promisify: Object.assign(
 		(fn) => {
 			if (typeof fn !== "function") {
-				throw Object.assign(new TypeError(`The "original" argument must be of type function. Received ${fn === null ? "null" : typeof fn}`), { code: "ERR_INVALID_ARG_TYPE" });
+				throw Object.assign(
+					new TypeError(
+						`The "original" argument must be of type function. Received ${fn === null ? "null" : typeof fn}`
+					),
+					{ code: "ERR_INVALID_ARG_TYPE" }
+				);
 			}
 			// A function can say how it wants to be promisified (fs.exists, setTimeout, stream.pipeline, ...).
 			const custom = fn[Symbol.for("nodejs.util.promisify.custom")];
-			if (typeof custom === "function") return Object.defineProperty(custom, Symbol.for("nodejs.util.promisify.custom"), { value: custom, enumerable: false });
+			if (typeof custom === "function")
+				return Object.defineProperty(custom, Symbol.for("nodejs.util.promisify.custom"), {
+					value: custom,
+					enumerable: false,
+				});
 			const promisified = function (...args) {
 				return new Promise((resolve, reject) => {
-					fn.call(this, ...args, (err, ...values) => (err ? reject(err) : resolve(values.length > 1 && fn[Symbol.for("nodejs.util.promisify.customArgs")] ? values : values[0])));
+					fn.call(this, ...args, (err, ...values) =>
+						err
+							? reject(err)
+							: resolve(values.length > 1 && fn[Symbol.for("nodejs.util.promisify.customArgs")] ? values : values[0])
+					);
 				});
 			};
 			Object.setPrototypeOf(promisified, Object.getPrototypeOf(fn));
@@ -872,10 +960,22 @@ const util = {
 	callbackify(fn) {
 		return function (...args) {
 			const cb = args.pop();
-			if (typeof cb !== "function") throw Object.assign(new TypeError('The last argument must be of type function.'), { code: "ERR_INVALID_ARG_TYPE" });
+			if (typeof cb !== "function")
+				throw Object.assign(new TypeError("The last argument must be of type function."), {
+					code: "ERR_INVALID_ARG_TYPE",
+				});
 			fn.apply(this, args).then(
 				(value) => queueMicrotask(() => cb(null, value)),
-				(err) => queueMicrotask(() => cb(err ?? Object.assign(new Error("Promise was rejected with a falsy value"), { reason: err, code: "ERR_FALSY_VALUE_REJECTION" })))
+				(err) =>
+					queueMicrotask(() =>
+						cb(
+							err ??
+								Object.assign(new Error("Promise was rejected with a falsy value"), {
+									reason: err,
+									code: "ERR_FALSY_VALUE_REJECTION",
+								})
+						)
+					)
 			);
 		};
 	},
@@ -895,29 +995,85 @@ const util = {
 	isError: (v) => v instanceof Error,
 	isFunction: (v) => typeof v === "function",
 	isPrimitive: (v) => v === null || (typeof v !== "object" && typeof v !== "function"),
-	log: (...args) => console.log(`${new Date().toISOString().slice(0, 19).replace("T", " ")} - ${inspectFormat(...args)}`),
+	log: (...args) =>
+		console.log(`${new Date().toISOString().slice(0, 19).replace("T", " ")} - ${inspectFormat(...args)}`),
 	_extend: (target, source) => Object.assign(target, source),
 	formatWithOptions: (options, ...args) => {
 		// Options apply to the inspected arguments; a plain format is the common case.
 		const { colors } = options ?? {};
-		return colors ? inspectFormat(...args.map((a) => (typeof a === "string" ? a : inspectValue(a, options)))) : inspectFormat(...args);
+		return colors
+			? inspectFormat(...args.map((a) => (typeof a === "string" ? a : inspectValue(a, options))))
+			: inspectFormat(...args);
 	},
-	stripVTControlCharacters: (text) => String(text).replace(/[\u001b\u009b][[()#;?]*(?:\d{1,4}(?:;\d{0,4})*)?[\dA-ORZcf-nqry=><]/g, ""),
+	stripVTControlCharacters: (text) =>
+		String(text).replace(/[\u001b\u009b][[()#;?]*(?:\d{1,4}(?:;\d{0,4})*)?[\dA-ORZcf-nqry=><]/g, ""),
 	styleText: (format, text) => {
 		const names = Array.isArray(format) ? format : [format];
-		const codes = { reset: [0, 0], bold: [1, 22], dim: [2, 22], italic: [3, 23], underline: [4, 24], inverse: [7, 27], hidden: [8, 28], strikethrough: [9, 29], black: [30, 39], red: [31, 39], green: [32, 39], yellow: [33, 39], blue: [34, 39], magenta: [35, 39], cyan: [36, 39], white: [37, 39], gray: [90, 39], grey: [90, 39], bgRed: [41, 49], bgGreen: [42, 49], bgYellow: [43, 49], bgBlue: [44, 49] };
+		const codes = {
+			reset: [0, 0],
+			bold: [1, 22],
+			dim: [2, 22],
+			italic: [3, 23],
+			underline: [4, 24],
+			inverse: [7, 27],
+			hidden: [8, 28],
+			strikethrough: [9, 29],
+			black: [30, 39],
+			red: [31, 39],
+			green: [32, 39],
+			yellow: [33, 39],
+			blue: [34, 39],
+			magenta: [35, 39],
+			cyan: [36, 39],
+			white: [37, 39],
+			gray: [90, 39],
+			grey: [90, 39],
+			bgRed: [41, 49],
+			bgGreen: [42, 49],
+			bgYellow: [43, 49],
+			bgBlue: [44, 49],
+		};
 		let out = String(text);
 		for (const name of names) {
 			const code = codes[name];
-			if (!code) throw Object.assign(new TypeError(`The argument 'format' must be one of: ${Object.keys(codes).join(", ")}. Received '${name}'`), { code: "ERR_INVALID_ARG_VALUE" });
+			if (!code)
+				throw Object.assign(
+					new TypeError(`The argument 'format' must be one of: ${Object.keys(codes).join(", ")}. Received '${name}'`),
+					{ code: "ERR_INVALID_ARG_VALUE" }
+				);
 			out = `\u001b[${code[0]}m${out}\u001b[${code[1]}m`;
 		}
 		return out;
 	},
 	toUSVString: (value) => String(value).toWellFormed?.() ?? String(value),
-	getSystemErrorName: (errno) => ({ [-1]: "EPERM", [-2]: "ENOENT", [-13]: "EACCES", [-17]: "EEXIST", [-20]: "ENOTDIR", [-21]: "EISDIR", [-22]: "EINVAL", [-32]: "EPIPE", [-98]: "EADDRINUSE", [-104]: "ECONNRESET", [-110]: "ETIMEDOUT", [-111]: "ECONNREFUSED" })[errno],
-	getSystemErrorMap: () => new Map([[-1, ["EPERM", "operation not permitted"]], [-2, ["ENOENT", "no such file or directory"]], [-13, ["EACCES", "permission denied"]], [-17, ["EEXIST", "file already exists"]], [-98, ["EADDRINUSE", "address already in use"]], [-111, ["ECONNREFUSED", "connection refused"]]]),
-	aborted: (signal) => new Promise((resolve) => (signal.aborted ? resolve() : signal.addEventListener("abort", () => resolve(), { once: true }))),
+	getSystemErrorName: (errno) =>
+		({
+			[-1]: "EPERM",
+			[-2]: "ENOENT",
+			[-13]: "EACCES",
+			[-17]: "EEXIST",
+			[-20]: "ENOTDIR",
+			[-21]: "EISDIR",
+			[-22]: "EINVAL",
+			[-32]: "EPIPE",
+			[-98]: "EADDRINUSE",
+			[-104]: "ECONNRESET",
+			[-110]: "ETIMEDOUT",
+			[-111]: "ECONNREFUSED",
+		})[errno],
+	getSystemErrorMap: () =>
+		new Map([
+			[-1, ["EPERM", "operation not permitted"]],
+			[-2, ["ENOENT", "no such file or directory"]],
+			[-13, ["EACCES", "permission denied"]],
+			[-17, ["EEXIST", "file already exists"]],
+			[-98, ["EADDRINUSE", "address already in use"]],
+			[-111, ["ECONNREFUSED", "connection refused"]],
+		]),
+	aborted: (signal) =>
+		new Promise((resolve) =>
+			signal.aborted ? resolve() : signal.addEventListener("abort", () => resolve(), { once: true })
+		),
 	parseEnv: (content) => {
 		const out = {};
 		for (const rawLine of String(content).split(/\r?\n/)) {
@@ -927,14 +1083,21 @@ const util = {
 			if (!match) continue;
 			let value = match[2].trim();
 			const quote = value[0];
-			if ((quote === '"' || quote === "'" || quote === "`") && value.endsWith(quote) && value.length > 1) value = value.slice(1, -1);
+			if ((quote === '"' || quote === "'" || quote === "`") && value.endsWith(quote) && value.length > 1)
+				value = value.slice(1, -1);
 			else value = value.replace(/\s+#.*$/, "");
 			out[match[1]] = quote === '"' ? value.replace(/\\n/g, "\n") : value;
 		}
 		return out;
 	},
 	parseArgs: (config = {}) => {
-		const { args = process.argv.slice(2), options = {}, strict = true, allowPositionals = !strict, allowNegative = false } = config;
+		const {
+			args = process.argv.slice(2),
+			options = {},
+			strict = true,
+			allowPositionals = !strict,
+			allowNegative = false,
+		} = config;
 		const values = {};
 		const positionals = [];
 		const short = {};
@@ -959,7 +1122,11 @@ const util = {
 				name = short[arg[1]] ?? arg[1];
 				inline = arg.length > 2 ? arg.slice(2) : undefined;
 			} else {
-				if (strict && !allowPositionals) throw Object.assign(new TypeError(`Unexpected argument '${arg}'. This command does not take positional arguments`), { code: "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL" });
+				if (strict && !allowPositionals)
+					throw Object.assign(
+						new TypeError(`Unexpected argument '${arg}'. This command does not take positional arguments`),
+						{ code: "ERR_PARSE_ARGS_UNEXPECTED_POSITIONAL" }
+					);
 				positionals.push(arg);
 				continue;
 			}
@@ -969,16 +1136,25 @@ const util = {
 				continue;
 			}
 			if (!def) {
-				if (strict) throw Object.assign(new TypeError(`Unknown option '${arg.startsWith("--") ? `--${name}` : `-${name}`}'`), { code: "ERR_PARSE_ARGS_UNKNOWN_OPTION" });
-				def = { type: inline === undefined && (i + 1 >= args.length || args[i + 1].startsWith("-")) ? "boolean" : "string" };
+				if (strict)
+					throw Object.assign(new TypeError(`Unknown option '${arg.startsWith("--") ? `--${name}` : `-${name}`}'`), {
+						code: "ERR_PARSE_ARGS_UNKNOWN_OPTION",
+					});
+				def = {
+					type: inline === undefined && (i + 1 >= args.length || args[i + 1].startsWith("-")) ? "boolean" : "string",
+				};
 			}
 			if (def.type === "string") {
 				const value = inline ?? args[++i];
-				if (value === undefined) throw Object.assign(new TypeError(`Option '--${name} <value>' argument missing`), { code: "ERR_PARSE_ARGS_INVALID_OPTION_VALUE" });
+				if (value === undefined)
+					throw Object.assign(new TypeError(`Option '--${name} <value>' argument missing`), {
+						code: "ERR_PARSE_ARGS_INVALID_OPTION_VALUE",
+					});
 				assign(name, def, value);
 			} else assign(name, def, true);
 		}
-		for (const [name, def] of Object.entries(options)) if (def.default !== undefined && values[name] === undefined) values[name] = def.default;
+		for (const [name, def] of Object.entries(options))
+			if (def.default !== undefined && values[name] === undefined) values[name] = def.default;
 		return { values, positionals };
 	},
 	inspect: inspectValue,
@@ -1004,7 +1180,8 @@ const util = {
 			.filter(Boolean);
 		const enabled = wanted.includes(String(section).toUpperCase()) || wanted.includes("*");
 		const log = (...args) => {
-			if (enabled) std.err.puts(`${String(section).toUpperCase()} ${processModule.pid ?? 0}: ${util.format(...args)}\n`);
+			if (enabled)
+				std.err.puts(`${String(section).toUpperCase()} ${processModule.pid ?? 0}: ${util.format(...args)}\n`);
 		};
 		log.enabled = enabled;
 		return log;
@@ -1015,7 +1192,8 @@ const util = {
 
 function deepEqual(a, b) {
 	if (a === b) return true;
-	if (typeof a !== typeof b || a === null || b === null || typeof a !== "object") return Number.isNaN(a) && Number.isNaN(b);
+	if (typeof a !== typeof b || a === null || b === null || typeof a !== "object")
+		return Number.isNaN(a) && Number.isNaN(b);
 	if (Array.isArray(a) !== Array.isArray(b)) return false;
 	const ka = Object.keys(a);
 	const kb = Object.keys(b);
@@ -1110,7 +1288,8 @@ class AbortController {
  * instance comes back as a plain object, and a function or symbol is a DataCloneError.
  */
 function structuredClone(value, options) {
-	if (arguments.length === 0) throw Object.assign(new TypeError('The "value" argument must be specified'), { code: "ERR_MISSING_ARGS" });
+	if (arguments.length === 0)
+		throw Object.assign(new TypeError('The "value" argument must be specified'), { code: "ERR_MISSING_ARGS" });
 	void options;
 	return cloneValue(value, new Map());
 }
@@ -1134,7 +1313,8 @@ function cloneValue(value, seen) {
 	if (ArrayBuffer.isView(value)) {
 		const buffer = cloneValue(value.buffer, seen);
 		if (value instanceof DataView) return remember(new DataView(buffer, value.byteOffset, value.byteLength));
-		const Ctor = Object.getPrototypeOf(Object.getPrototypeOf(value)) === Uint8Array.prototype ? Uint8Array : value.constructor;
+		const Ctor =
+			Object.getPrototypeOf(Object.getPrototypeOf(value)) === Uint8Array.prototype ? Uint8Array : value.constructor;
 		return remember(new Ctor(buffer, value.byteOffset, value.length));
 	}
 	if (value instanceof Map) {
@@ -1151,13 +1331,33 @@ function cloneValue(value, seen) {
 		const known = ["Error", "EvalError", "RangeError", "ReferenceError", "SyntaxError", "TypeError", "URIError"];
 		const Ctor = known.includes(value.name) ? globalThis[value.name] : Error;
 		const copy = remember(new Ctor(value.message));
-		if (typeof value.stack === "string") Object.defineProperty(copy, "stack", { value: value.stack, writable: true, configurable: true, enumerable: false });
-		if ("cause" in value) Object.defineProperty(copy, "cause", { value: cloneValue(value.cause, seen), writable: true, configurable: true, enumerable: false });
+		if (typeof value.stack === "string")
+			Object.defineProperty(copy, "stack", {
+				value: value.stack,
+				writable: true,
+				configurable: true,
+				enumerable: false,
+			});
+		if ("cause" in value)
+			Object.defineProperty(copy, "cause", {
+				value: cloneValue(value.cause, seen),
+				writable: true,
+				configurable: true,
+				enumerable: false,
+			});
 		return copy;
 	}
-	if (value instanceof Number || value instanceof String || value instanceof Boolean) return remember(Object(value.valueOf()));
-	if (typeof BigInt !== "undefined" && Object.prototype.toString.call(value) === "[object BigInt]") return remember(Object(value.valueOf()));
-	if (value instanceof Promise || value instanceof WeakMap || value instanceof WeakSet || (typeof WeakRef !== "undefined" && value instanceof WeakRef)) fail();
+	if (value instanceof Number || value instanceof String || value instanceof Boolean)
+		return remember(Object(value.valueOf()));
+	if (typeof BigInt !== "undefined" && Object.prototype.toString.call(value) === "[object BigInt]")
+		return remember(Object(value.valueOf()));
+	if (
+		value instanceof Promise ||
+		value instanceof WeakMap ||
+		value instanceof WeakSet ||
+		(typeof WeakRef !== "undefined" && value instanceof WeakRef)
+	)
+		fail();
 	if (typeof Blob !== "undefined" && value instanceof Blob) return remember(value);
 	const copy = remember(Array.isArray(value) ? new Array(value.length) : {});
 	for (const key of Object.keys(value)) copy[key] = cloneValue(value[key], seen);
@@ -1229,7 +1429,8 @@ function incompleteTail(encoding, bytes) {
 
 StringDecoder.prototype.write = function write(buf) {
 	if (typeof buf === "string") return buf;
-	const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf.buffer ?? buf, buf.byteOffset ?? 0, buf.byteLength);
+	const bytes =
+		buf instanceof Uint8Array ? buf : new Uint8Array(buf.buffer ?? buf, buf.byteOffset ?? 0, buf.byteLength);
 	const all = this._pending.length ? Buffer.concat([this._pending, bytes]) : bytes;
 	const keep = incompleteTail(this.encoding, all);
 	this._pending = keep ? Buffer.from(all.subarray(all.length - keep)) : new Uint8Array(0);
@@ -1302,7 +1503,8 @@ class TracingChannel {
 	}
 	unsubscribe(handlers) {
 		let all = true;
-		for (const event of Object.keys(handlers)) if (this[event] && !this[event].unsubscribe(handlers[event])) all = false;
+		for (const event of Object.keys(handlers))
+			if (this[event] && !this[event].unsubscribe(handlers[event])) all = false;
 		return all;
 	}
 	traceSync(fn, context = {}, thisArg, ...args) {
@@ -1416,7 +1618,16 @@ const streamModule = CallableStream;
 }
 Object.assign(
 	fs,
-	createFs({ os, std, Buffer, path: pathModule, stream: streamModule, EventEmitter: CallableEventEmitter, native: globalThis.__graak_native, platform: os.platform })
+	createFs({
+		os,
+		std,
+		Buffer,
+		path: pathModule,
+		stream: streamModule,
+		EventEmitter: CallableEventEmitter,
+		native: globalThis.__graak_native,
+		platform: os.platform,
+	})
 );
 if (globalThis.__graak_native) (await import("./native-modules.js")).zlib.attachStreams(streamModule.Transform);
 
@@ -1436,19 +1647,43 @@ let nativeModules = null;
 if (nativeLayer) {
 	const nm = await import("./native-modules.js");
 	const { net, tls, dgram } = nm.createNetModules(EventEmitter, streamModule.Duplex, { fs });
-	const { http, https } = (await import("./node-http.js")).createHttpModules({ net, tls }, EventEmitter, streamModule, Buffer);
+	const { http, https } = (await import("./node-http.js")).createHttpModules(
+		{ net, tls },
+		EventEmitter,
+		streamModule,
+		Buffer
+	);
 	const fetch = fetchApi.makeFetch({ http, https }, nm.zlib);
-	const sqlite = (await import("./node-sqlite.js")).createSqlite({ native: nativeLayer, Buffer });
+	const sqlite = (await import("./node-sqlite.js")).createSqlite({
+		native: nativeLayer,
+		Buffer,
+		platform: os.platform,
+	});
 	const websocketModule = await import("./node-websocket.js");
-	nativeModules = { net, tls, dgram, sqlite, http, https, fetch, crypto: createCrypto({ native: nativeLayer, Buffer, stream: streamModule, toBytes: nm.toBytes }), zlib: nm.zlib };
+	nativeModules = {
+		net,
+		tls,
+		dgram,
+		sqlite,
+		http,
+		https,
+		fetch,
+		crypto: createCrypto({ native: nativeLayer, Buffer, stream: streamModule, toBytes: nm.toBytes }),
+		zlib: nm.zlib,
+	};
 
 	// WebSocket, MessageEvent and CloseEvent are built on first use, so a program that never opens one pays nothing.
 	{
 		let built = null;
 		// The events a runtime already has are kept; the getters installed below must not be asked for them.
 		const present = { CloseEvent: globalThis.CloseEvent, MessageEvent: globalThis.MessageEvent };
-		const build = () => (built ??= websocketModule.createWebSocket({ http, https, crypto: nativeModules.crypto, Buffer, ...present }));
-		Object.defineProperty(globalThis, Symbol.for("graak.websocket"), { get: build, configurable: true, enumerable: false });
+		const build = () =>
+			(built ??= websocketModule.createWebSocket({ http, https, crypto: nativeModules.crypto, Buffer, ...present }));
+		Object.defineProperty(globalThis, Symbol.for("graak.websocket"), {
+			get: build,
+			configurable: true,
+			enumerable: false,
+		});
 		for (const name of ["WebSocket", "CloseEvent", "MessageEvent"]) {
 			if (typeof globalThis[name] !== "undefined") continue;
 			Object.defineProperty(globalThis, name, {
@@ -1583,7 +1818,10 @@ if (typeof globalObject.Intl.Segmenter === "undefined") {
 		envTimeZone,
 		loadScript: (name) => {
 			const text = std.loadFile(`${runtimeDir}/${name}`);
-			if (text == null) throw new Error(`Intl data (${name}) is not in this build: it was made with --intl none, or the locale is not one the data covers`);
+			if (text == null)
+				throw new Error(
+					`Intl data (${name}) is not in this build: it was made with --intl none, or the locale is not one the data covers`
+				);
 			std.evalScript(text);
 		},
 	});
@@ -1651,7 +1889,9 @@ const builtins = {
 	http: nativeModules?.http ?? notImplemented("http", NEEDS_NATIVE_WORK),
 	https: nativeModules?.https ?? notImplemented("https", NEEDS_NATIVE_WORK),
 	dns: nativeModules ? misc.createDns(dnsLookup) : notImplemented("dns", NEEDS_NATIVE_WORK),
-	"dns/promises": nativeModules ? misc.createDns(dnsLookup).promises : notImplemented("dns/promises", NEEDS_NATIVE_WORK),
+	"dns/promises": nativeModules
+		? misc.createDns(dnsLookup).promises
+		: notImplemented("dns/promises", NEEDS_NATIVE_WORK),
 	http2: (() => {
 		// Present so that `x instanceof http2.Http2ServerRequest` (which servers use to tell HTTP/1 from
 		// HTTP/2) answers false instead of throwing. Opening an HTTP/2 connection is what is unsupported:
@@ -1674,7 +1914,14 @@ const builtins = {
 			Http2Stream,
 			Http2ServerRequest,
 			Http2ServerResponse,
-			constants: { HTTP2_HEADER_STATUS: ":status", HTTP2_HEADER_METHOD: ":method", HTTP2_HEADER_PATH: ":path", HTTP2_HEADER_AUTHORITY: ":authority", HTTP2_HEADER_SCHEME: ":scheme", HTTP2_HEADER_CONTENT_TYPE: "content-type" },
+			constants: {
+				HTTP2_HEADER_STATUS: ":status",
+				HTTP2_HEADER_METHOD: ":method",
+				HTTP2_HEADER_PATH: ":path",
+				HTTP2_HEADER_AUTHORITY: ":authority",
+				HTTP2_HEADER_SCHEME: ":scheme",
+				HTTP2_HEADER_CONTENT_TYPE: "content-type",
+			},
 			sensitiveHeaders: Symbol("nodejs.http2.sensitiveHeaders"),
 			connect: unsupported("connect"),
 			createServer: unsupported("createServer"),
@@ -1689,22 +1936,25 @@ const builtins = {
 		notImplemented("worker_threads", "This engine build has no Worker implementation."),
 	child_process:
 		// The engine's os module has no exec on Windows; the host supplies one there.
-		misc.createChildProcess(os.exec ? os : { ...os, exec: nativeLayer?.exec, getpid: nativeLayer?.getpid }, EventEmitter, {
-			Buffer,
-			readText: (path) => std.loadFile(path),
-			readBytes: (path) => {
-				const data = std.loadFile(path, { binary: true });
-				return data === null ? null : new Uint8Array(data);
-			},
-			exists: (path) => {
-				const [info, error] = os.stat(path);
-				return error === 0 && (info.mode & 0o170000) !== 0o040000;
-			},
-			env: () => std.getenviron(),
-			tmpdir: () => std.getenv("TMPDIR") ?? std.getenv("TEMP") ?? "/tmp",
-			writeStderr: (text) => std.err.puts(text),
-		}) ??
-		notImplemented("child_process", "This engine build exposes no exec()."),
+		misc.createChildProcess(
+			os.exec ? os : { ...os, exec: nativeLayer?.exec, getpid: nativeLayer?.getpid },
+			EventEmitter,
+			{
+				Buffer,
+				readText: (path) => std.loadFile(path),
+				readBytes: (path) => {
+					const data = std.loadFile(path, { binary: true });
+					return data === null ? null : new Uint8Array(data);
+				},
+				exists: (path) => {
+					const [info, error] = os.stat(path);
+					return error === 0 && (info.mode & 0o170000) !== 0o040000;
+				},
+				env: () => std.getenviron(),
+				tmpdir: () => std.getenv("TMPDIR") ?? std.getenv("TEMP") ?? "/tmp",
+				writeStderr: (text) => std.err.puts(text),
+			}
+		) ?? notImplemented("child_process", "This engine build exposes no exec()."),
 	async_hooks: misc.asyncHooks,
 	v8: misc.v8,
 	tty: misc.createTty({ isatty: os.isatty, write: (text) => std.out.puts(text) }),
@@ -1729,7 +1979,6 @@ const builtins = {
 	...(nativeModules?.dgram ? { dgram: nativeModules.dgram } : {}),
 	...(nativeModules?.sqlite ? { sqlite: nativeModules.sqlite.node, "bun:sqlite": nativeModules.sqlite.bun } : {}),
 };
-
 
 /* -------------------------------------------------------- CommonJS require */
 
@@ -1849,7 +2098,8 @@ function readTsConfig(file, seen = new Set()) {
 	let merged = { baseUrl: undefined, paths: undefined, pathsBase: undefined };
 	for (const parent of [].concat(config.extends ?? [])) {
 		let target = null;
-		if (parent.startsWith(".") || pathModule.isAbsolute(parent)) target = pathModule.resolve(dir, parent.endsWith(".json") ? parent : `${parent}.json`);
+		if (parent.startsWith(".") || pathModule.isAbsolute(parent))
+			target = pathModule.resolve(dir, parent.endsWith(".json") ? parent : `${parent}.json`);
 		else {
 			try {
 				target = resolveModule(parent.endsWith(".json") ? parent : `${parent}/tsconfig.json`, dir).file ?? null;
@@ -1858,7 +2108,8 @@ function readTsConfig(file, seen = new Set()) {
 			}
 		}
 		const inherited = target && readTsConfig(target, seen);
-		if (inherited) merged = { ...merged, ...Object.fromEntries(Object.entries(inherited).filter(([, v]) => v !== undefined)) };
+		if (inherited)
+			merged = { ...merged, ...Object.fromEntries(Object.entries(inherited).filter(([, v]) => v !== undefined)) };
 	}
 	const options = config.compilerOptions ?? {};
 	if (options.baseUrl !== undefined) merged.baseUrl = pathModule.resolve(dir, options.baseUrl);
@@ -1900,8 +2151,17 @@ function resolveTsPaths(specifier, fromDir) {
 		}
 		const prefix = pattern.slice(0, star);
 		const suffix = pattern.slice(star + 1);
-		if (specifier.startsWith(prefix) && specifier.endsWith(suffix) && specifier.length >= prefix.length + suffix.length) {
-			if (!best || prefix.length > best.length) best = { targets, captured: specifier.slice(prefix.length, specifier.length - suffix.length), length: prefix.length };
+		if (
+			specifier.startsWith(prefix) &&
+			specifier.endsWith(suffix) &&
+			specifier.length >= prefix.length + suffix.length
+		) {
+			if (!best || prefix.length > best.length)
+				best = {
+					targets,
+					captured: specifier.slice(prefix.length, specifier.length - suffix.length),
+					length: prefix.length,
+				};
 		}
 	}
 	if (!best) return null;
@@ -1930,7 +2190,13 @@ function resolveModule(specifier, fromDir) {
 	}
 
 	let base;
-	if (specifier === "." || specifier === ".." || specifier.startsWith("./") || specifier.startsWith("../") || pathModule.isAbsolute(specifier)) {
+	if (
+		specifier === "." ||
+		specifier === ".." ||
+		specifier.startsWith("./") ||
+		specifier.startsWith("../") ||
+		pathModule.isAbsolute(specifier)
+	) {
 		base = pathModule.resolve(fromDir, specifier);
 	} else {
 		// A path alias from tsconfig.json wins over an installed package of the same name, as it does in TypeScript.
@@ -1985,7 +2251,13 @@ function pickCondition(exports, allowImport) {
 
 	for (const condition of Object.keys(root)) {
 		if (condition.startsWith(".")) continue;
-		const active = condition === "require" || condition === "node" || condition === "node-addons" || condition === "module-sync" || condition === "default" || (allowImport && condition === "import");
+		const active =
+			condition === "require" ||
+			condition === "node" ||
+			condition === "node-addons" ||
+			condition === "module-sync" ||
+			condition === "default" ||
+			(allowImport && condition === "import");
 		if (!active) continue;
 		const resolved = pickCondition(root[condition], allowImport);
 		if (resolved) return resolved;
@@ -2015,15 +2287,26 @@ function resolvePackageImport(specifier, fromDir) {
 						if (star < 0) continue;
 						const prefix = key.slice(0, star);
 						const suffix = key.slice(star + 1);
-						if (specifier.startsWith(prefix) && specifier.endsWith(suffix) && specifier.length >= key.length - 1 && (!best || prefix.length > best.prefix.length)) best = { key, prefix, suffix };
+						if (
+							specifier.startsWith(prefix) &&
+							specifier.endsWith(suffix) &&
+							specifier.length >= key.length - 1 &&
+							(!best || prefix.length > best.prefix.length)
+						)
+							best = { key, prefix, suffix };
 					}
 					if (best) {
 						const value = resolveExports(imports[best.key]);
-						target = value ? value.replaceAll("*", specifier.slice(best.prefix.length, specifier.length - best.suffix.length)) : null;
+						target = value
+							? value.replaceAll("*", specifier.slice(best.prefix.length, specifier.length - best.suffix.length))
+							: null;
 					}
 				}
 				if (!target) {
-					throw Object.assign(new Error(`Package import specifier "${specifier}" is not defined in package ${manifestPath}`), { code: "ERR_PACKAGE_IMPORT_NOT_DEFINED" });
+					throw Object.assign(
+						new Error(`Package import specifier "${specifier}" is not defined in package ${manifestPath}`),
+						{ code: "ERR_PACKAGE_IMPORT_NOT_DEFINED" }
+					);
 				}
 				if (target.startsWith("./")) {
 					const found = resolvePackage(pathModule.join(dir, target));
@@ -2091,12 +2374,27 @@ function nodeModulePaths(from) {
 }
 
 function createRequire(fromFile, parentModule) {
-	const fromDir = pathModule.dirname(pathModule.resolve(fromFile));
+	let target = fromFile;
+	if (typeof target === "object" && target !== null && "href" in target) {
+		target = urlModule.fileURLToPath(target, { windows: isWindows });
+	} else if (typeof target === "string" && target.startsWith("file:")) {
+		target = urlModule.fileURLToPath(target, { windows: isWindows });
+	}
+	const isDir = typeof target === "string" && (target.endsWith("/") || target.endsWith("\\"));
+	const fromDir = isDir ? pathModule.resolve(target) : pathModule.dirname(pathModule.resolve(target));
 	const require = (specifier) => {
 		if (typeof specifier !== "string") {
-			throw Object.assign(new TypeError(`The "id" argument must be of type string. Received ${specifier === null ? "null" : typeof specifier}`), { code: "ERR_INVALID_ARG_TYPE" });
+			throw Object.assign(
+				new TypeError(
+					`The "id" argument must be of type string. Received ${specifier === null ? "null" : typeof specifier}`
+				),
+				{ code: "ERR_INVALID_ARG_TYPE" }
+			);
 		}
-		if (specifier === "") throw Object.assign(new TypeError("The argument 'id' must be a non-empty string. Received ''"), { code: "ERR_INVALID_ARG_VALUE" });
+		if (specifier === "")
+			throw Object.assign(new TypeError("The argument 'id' must be a non-empty string. Received ''"), {
+				code: "ERR_INVALID_ARG_VALUE",
+			});
 		const resolved = resolveModule(specifier, fromDir);
 		if (resolved.builtin) return builtins[resolved.builtin];
 
@@ -2135,9 +2433,7 @@ function createRequire(fromFile, parentModule) {
 		if (file.endsWith(".node")) {
 			if (typeof processModule.dlopen !== "function") {
 				moduleCache.delete(file);
-				throw new Error(
-					`Cannot load native addon '${file}': this Graak runtime has no native host to load it with.`
-				);
+				throw new Error(`Cannot load native addon '${file}': this Graak runtime has no native host to load it with.`);
 			}
 			try {
 				processModule.dlopen(module, file);
@@ -2173,11 +2469,17 @@ function createRequire(fromFile, parentModule) {
 	Object.defineProperty(require, "main", { get: () => mainModule ?? undefined, enumerable: true });
 	require.extensions = { ".js": () => {}, ".json": () => {}, ".node": () => {} };
 	require.cache = new Proxy(moduleCache, {
-		get: (target, key) => (key === "__proto__" ? undefined : typeof key === "string" && key !== "constructor" ? target.get(key) : Reflect.get(target, key)),
+		get: (target, key) =>
+			key === "__proto__"
+				? undefined
+				: typeof key === "string" && key !== "constructor"
+					? target.get(key)
+					: Reflect.get(target, key),
 		has: (target, key) => target.has(key),
 		deleteProperty: (target, key) => target.delete(key),
 		ownKeys: (target) => [...target.keys()],
-		getOwnPropertyDescriptor: (target, key) => (target.has(key) ? { value: target.get(key), writable: true, enumerable: true, configurable: true } : undefined),
+		getOwnPropertyDescriptor: (target, key) =>
+			target.has(key) ? { value: target.get(key), writable: true, enumerable: true, configurable: true } : undefined,
 		set: (target, key, value) => (target.set(key, value), true),
 	});
 	return require;
@@ -2185,7 +2487,8 @@ function createRequire(fromFile, parentModule) {
 
 // `vm` and `module` need the resolver and the evaluator, which exist only now.
 {
-	const evalScript = (code, filename) => (nativeLayer?.evalScript ? nativeLayer.evalScript(code, filename) : std.evalScript(code));
+	const evalScript = (code, filename) =>
+		nativeLayer?.evalScript ? nativeLayer.evalScript(code, filename) : std.evalScript(code);
 	builtins.vm = createVm({ evalScript });
 	builtins.module = createModuleModule({
 		builtins,

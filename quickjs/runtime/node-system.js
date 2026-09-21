@@ -36,7 +36,11 @@ function createOs({ std, processModule, readText }) {
 			}
 		}
 		if (!count) count = Number(env.NUMBER_OF_PROCESSORS) || 1;
-		return Array.from({ length: count }, () => ({ model, speed: 0, times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 } }));
+		return Array.from({ length: count }, () => ({
+			model,
+			speed: 0,
+			times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 },
+		}));
 	};
 
 	const meminfo = (key) => {
@@ -48,21 +52,70 @@ function createOs({ std, processModule, readText }) {
 	const constants = {
 		UV_UDP_REUSEADDR: 4,
 		dlopen: { RTLD_LAZY: 1, RTLD_NOW: 2, RTLD_GLOBAL: 256, RTLD_LOCAL: 0 },
-		errno: { E2BIG: 7, EACCES: 13, EADDRINUSE: 98, EAGAIN: 11, EBADF: 9, ECONNREFUSED: 111, ECONNRESET: 104, EEXIST: 17, EINVAL: 22, EISDIR: 21, EMFILE: 24, ENOENT: 2, ENOTDIR: 20, ENOTEMPTY: 39, EPERM: 1, EPIPE: 32, ETIMEDOUT: 110 },
-		signals: { SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5, SIGABRT: 6, SIGBUS: 7, SIGFPE: 8, SIGKILL: 9, SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13, SIGALRM: 14, SIGTERM: 15, SIGCHLD: 17, SIGCONT: 18, SIGSTOP: 19, SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22 },
-		priority: { PRIORITY_LOW: 19, PRIORITY_BELOW_NORMAL: 10, PRIORITY_NORMAL: 0, PRIORITY_ABOVE_NORMAL: -7, PRIORITY_HIGH: -14, PRIORITY_HIGHEST: -20 },
+		errno: {
+			E2BIG: 7,
+			EACCES: 13,
+			EADDRINUSE: 98,
+			EAGAIN: 11,
+			EBADF: 9,
+			ECONNREFUSED: 111,
+			ECONNRESET: 104,
+			EEXIST: 17,
+			EINVAL: 22,
+			EISDIR: 21,
+			EMFILE: 24,
+			ENOENT: 2,
+			ENOTDIR: 20,
+			ENOTEMPTY: 39,
+			EPERM: 1,
+			EPIPE: 32,
+			ETIMEDOUT: 110,
+		},
+		signals: {
+			SIGHUP: 1,
+			SIGINT: 2,
+			SIGQUIT: 3,
+			SIGILL: 4,
+			SIGTRAP: 5,
+			SIGABRT: 6,
+			SIGBUS: 7,
+			SIGFPE: 8,
+			SIGKILL: 9,
+			SIGUSR1: 10,
+			SIGSEGV: 11,
+			SIGUSR2: 12,
+			SIGPIPE: 13,
+			SIGALRM: 14,
+			SIGTERM: 15,
+			SIGCHLD: 17,
+			SIGCONT: 18,
+			SIGSTOP: 19,
+			SIGTSTP: 20,
+			SIGTTIN: 21,
+			SIGTTOU: 22,
+		},
+		priority: {
+			PRIORITY_LOW: 19,
+			PRIORITY_BELOW_NORMAL: 10,
+			PRIORITY_NORMAL: 0,
+			PRIORITY_ABOVE_NORMAL: -7,
+			PRIORITY_HIGH: -14,
+			PRIORITY_HIGHEST: -20,
+		},
 	};
 
 	return {
 		platform: () => processModule.platform,
 		arch: () => processModule.arch,
-		machine: () => ({ x64: "x86_64", ia32: "i686", arm64: "aarch64", arm: "armv7l" })[processModule.arch] ?? processModule.arch,
+		machine: () =>
+			({ x64: "x86_64", ia32: "i686", arm64: "aarch64", arm: "armv7l" })[processModule.arch] ?? processModule.arch,
 		type: () => (isWindows ? "Windows_NT" : "Linux"),
 		release: () => (isWindows ? "10.0.0" : (read("/proc/sys/kernel/osrelease")?.trim() ?? "")),
 		version: () => (isWindows ? "Windows" : (read("/proc/sys/kernel/version")?.trim() ?? "")),
 		homedir: () => env.HOME ?? env.USERPROFILE ?? (isWindows ? "C:\\" : "/"),
 		tmpdir: () => {
-			const dir = env.TMPDIR ?? env.TMP ?? env.TEMP ?? (isWindows ? `${env.SystemRoot ?? "C:\\Windows"}\\Temp` : "/tmp");
+			const dir =
+				env.TMPDIR ?? env.TMP ?? env.TEMP ?? (isWindows ? `${env.SystemRoot ?? "C:\\Windows"}\\Temp` : "/tmp");
 			return dir.length > 1 && /[\\/]$/.test(dir) && !/^[A-Za-z]:[\\/]$/.test(dir) ? dir.slice(0, -1) : dir;
 		},
 		hostname: () => env.HOSTNAME ?? env.COMPUTERNAME ?? read("/etc/hostname")?.trim() ?? "localhost",
@@ -78,7 +131,18 @@ function createOs({ std, processModule, readText }) {
 			const text = isWindows ? null : read("/proc/loadavg");
 			return text ? text.split(" ").slice(0, 3).map(Number) : [0, 0, 0];
 		},
-		networkInterfaces: () => ({ lo: [{ address: "127.0.0.1", netmask: "255.0.0.0", family: "IPv4", mac: "00:00:00:00:00:00", internal: true, cidr: "127.0.0.1/8" }] }),
+		networkInterfaces: () => ({
+			lo: [
+				{
+					address: "127.0.0.1",
+					netmask: "255.0.0.0",
+					family: "IPv4",
+					mac: "00:00:00:00:00:00",
+					internal: true,
+					cidr: "127.0.0.1/8",
+				},
+			],
+		}),
 		userInfo: () => ({
 			uid: -1,
 			gid: -1,
@@ -220,7 +284,10 @@ function createVm({ evalScript }) {
 		});
 
 	const runIn = (code, sandbox, filename) => {
-		const fn = evalScript(`(function (__fgScope, __fgCode) { with (__fgScope) { return eval(__fgCode); } })`, filename ?? "vm.js");
+		const fn = evalScript(
+			`(function (__fgScope, __fgCode) { with (__fgScope) { return eval(__fgCode); } })`,
+			filename ?? "vm.js"
+		);
 		return fn(scopeFor(sandbox), String(code));
 	};
 
@@ -254,19 +321,30 @@ function createVm({ evalScript }) {
 		Script,
 		createContext,
 		isContext: (value) => contexts.has(value),
-		runInThisContext: (code, options) => evalScript(String(code), typeof options === "string" ? options : (options?.filename ?? "evalmachine.<anonymous>")),
-		runInContext: (code, context, options) => runIn(code, context, typeof options === "string" ? options : options?.filename),
-		runInNewContext: (code, sandbox = {}, options) => runIn(code, createContext(sandbox), typeof options === "string" ? options : options?.filename),
+		runInThisContext: (code, options) =>
+			evalScript(
+				String(code),
+				typeof options === "string" ? options : (options?.filename ?? "evalmachine.<anonymous>")
+			),
+		runInContext: (code, context, options) =>
+			runIn(code, context, typeof options === "string" ? options : options?.filename),
+		runInNewContext: (code, sandbox = {}, options) =>
+			runIn(code, createContext(sandbox), typeof options === "string" ? options : options?.filename),
 		compileFunction(code, params = [], options = {}) {
 			const fn = new Function(...params, String(code));
 			if (options.contextExtensions?.length) {
 				const scope = Object.assign({}, ...options.contextExtensions);
-				return new Function("__fgScope", `with (__fgScope) { return function (${params.join(",")}) { ${code} }; }`)(scope);
+				return new Function("__fgScope", `with (__fgScope) { return function (${params.join(",")}) { ${code} }; }`)(
+					scope
+				);
 			}
 			return fn;
 		},
 		measureMemory: async () => ({ total: { jsMemoryEstimate: 0, jsMemoryRange: [0, 0] } }),
-		constants: { USE_MAIN_CONTEXT_DEFAULT_LOADER: Symbol("vm_dynamic_import_main_context_default"), DONT_CONTEXTIFY: Symbol("vm_context_no_contextify") },
+		constants: {
+			USE_MAIN_CONTEXT_DEFAULT_LOADER: Symbol("vm_dynamic_import_main_context_default"),
+			DONT_CONTEXTIFY: Symbol("vm_context_no_contextify"),
+		},
 	};
 }
 
@@ -289,7 +367,14 @@ function createModuleModule({ builtins, moduleCache, createRequire, resolveModul
 	Module.prototype._compile = function _compile(content, filename) {
 		const wrapper = evalScript(Module.wrap(content), filename);
 		this.filename = filename;
-		return wrapper.call(this.exports, this.exports, createRequire(filename), this, filename, pathModule.dirname(filename));
+		return wrapper.call(
+			this.exports,
+			this.exports,
+			createRequire(filename),
+			this,
+			filename,
+			pathModule.dirname(filename)
+		);
 	};
 
 	const wrapper = ["(function (exports, require, module, __filename, __dirname) { ", "\n});"];
@@ -301,8 +386,7 @@ function createModuleModule({ builtins, moduleCache, createRequire, resolveModul
 		return bare in builtins;
 	};
 	Module.createRequire = (filename) => {
-		const file = typeof filename === "object" && filename?.href ? decodeURIComponent(filename.pathname) : String(filename).replace(/^file:\/\//, "");
-		return createRequire(file);
+		return createRequire(filename);
 	};
 	Module._cache = moduleCache;
 	Module._pathCache = Object.create(null);
@@ -346,8 +430,22 @@ function createModuleModule({ builtins, moduleCache, createRequire, resolveModul
 
 /* Bootstring encoding of Unicode for host names (RFC 3492), as Node's deprecated `punycode` module. */
 function createPunycode() {
-	const base = 36, tMin = 1, tMax = 26, skew = 38, damp = 700, initialBias = 72, initialN = 128, delimiter = "-";
-	const error = (type) => new RangeError({ overflow: "Overflow: input needs wider integers to process", "not-basic": "Illegal input >= 0x80 (not a basic code point)", "invalid-input": "Invalid input" }[type]);
+	const base = 36,
+		tMin = 1,
+		tMax = 26,
+		skew = 38,
+		damp = 700,
+		initialBias = 72,
+		initialN = 128,
+		delimiter = "-";
+	const error = (type) =>
+		new RangeError(
+			{
+				overflow: "Overflow: input needs wider integers to process",
+				"not-basic": "Illegal input >= 0x80 (not a basic code point)",
+				"invalid-input": "Invalid input",
+			}[type]
+		);
 	const adapt = (delta, numPoints, firstTime) => {
 		let k = 0;
 		delta = firstTime ? Math.floor(delta / damp) : delta >> 1;
@@ -375,7 +473,9 @@ function createPunycode() {
 	function decode(input) {
 		const output = [];
 		const inputLength = input.length;
-		let i = 0, n = initialN, bias = initialBias;
+		let i = 0,
+			n = initialN,
+			bias = initialBias;
 		let basic = input.lastIndexOf(delimiter);
 		if (basic < 0) basic = 0;
 		for (let j = 0; j < basic; ++j) {
@@ -387,7 +487,8 @@ function createPunycode() {
 			for (let w = 1, k = base; ; k += base) {
 				if (index >= inputLength) throw error("invalid-input");
 				const c = input.charCodeAt(index++);
-				const digit = c >= 0x30 && c < 0x3a ? c - 22 : c >= 0x41 && c < 0x5b ? c - 0x41 : c >= 0x61 && c < 0x7b ? c - 0x61 : base;
+				const digit =
+					c >= 0x30 && c < 0x3a ? c - 22 : c >= 0x41 && c < 0x5b ? c - 0x41 : c >= 0x61 && c < 0x7b ? c - 0x61 : base;
 				if (digit >= base) throw error("invalid-input");
 				if (digit > Math.floor((0x7fffffff - i) / w)) throw error("overflow");
 				i += digit * w;
@@ -407,7 +508,9 @@ function createPunycode() {
 	function encode(input) {
 		const output = [];
 		input = ucs2decode(input);
-		let n = initialN, delta = 0, bias = initialBias;
+		let n = initialN,
+			delta = 0,
+			bias = initialBias;
 		for (const c of input) if (c < 0x80) output.push(String.fromCharCode(c));
 		const basicLength = output.length;
 		let handled = basicLength;
@@ -446,7 +549,14 @@ function createPunycode() {
 			result = `${parts[0]}@`;
 			domain = parts[1];
 		}
-		return result + domain.replace(/[\u3002\uff0e\uff61]/g, ".").split(".").map(fn).join(".");
+		return (
+			result +
+			domain
+				.replace(/[\u3002\uff0e\uff61]/g, ".")
+				.split(".")
+				.map(fn)
+				.join(".")
+		);
 	};
 	return {
 		version: "2.1.0",
@@ -522,9 +632,22 @@ function createUnavailable(EventEmitter) {
 			},
 			console: globalThis.console,
 		},
-		trace_events: { createTracing: () => ({ enable() {}, disable() {}, enabled: false, categories: "" }), getEnabledCategories: () => undefined },
-		repl: { start: notAvailable("repl.start()", "there is no interactive terminal session"), REPLServer: class REPLServer extends EventEmitter {}, builtinModules: [] },
-		wasi: { WASI: class WASI { constructor() { throw unavailable("wasi", "the engine has no WebAssembly"); } } },
+		trace_events: {
+			createTracing: () => ({ enable() {}, disable() {}, enabled: false, categories: "" }),
+			getEnabledCategories: () => undefined,
+		},
+		repl: {
+			start: notAvailable("repl.start()", "there is no interactive terminal session"),
+			REPLServer: class REPLServer extends EventEmitter {},
+			builtinModules: [],
+		},
+		wasi: {
+			WASI: class WASI {
+				constructor() {
+					throw unavailable("wasi", "the engine has no WebAssembly");
+				}
+			},
+		},
 	};
 }
 
@@ -554,7 +677,8 @@ function createUtilTypes({ isProxy }) {
 		isArgumentsObject: (v) => tag(v) === "Arguments",
 		isArrayBuffer: (v) => v instanceof ArrayBuffer,
 		isSharedArrayBuffer: (v) => typeof SharedArrayBuffer !== "undefined" && v instanceof SharedArrayBuffer,
-		isAnyArrayBuffer: (v) => v instanceof ArrayBuffer || (typeof SharedArrayBuffer !== "undefined" && v instanceof SharedArrayBuffer),
+		isAnyArrayBuffer: (v) =>
+			v instanceof ArrayBuffer || (typeof SharedArrayBuffer !== "undefined" && v instanceof SharedArrayBuffer),
 		isArrayBufferView: (v) => ArrayBuffer.isView(v),
 		isDataView: (v) => v instanceof DataView,
 		isTypedArray: (v) => ArrayBuffer.isView(v) && !(v instanceof DataView),
@@ -569,7 +693,12 @@ function createUtilTypes({ isProxy }) {
 		isFloat64Array: typed("Float64Array"),
 		isBigInt64Array: typed("BigInt64Array"),
 		isBigUint64Array: typed("BigUint64Array"),
-		isBoxedPrimitive: (v) => v instanceof Number || v instanceof String || v instanceof Boolean || (typeof BigInt !== "undefined" && v instanceof BigInt) || v instanceof Symbol,
+		isBoxedPrimitive: (v) =>
+			v instanceof Number ||
+			v instanceof String ||
+			v instanceof Boolean ||
+			(typeof BigInt !== "undefined" && v instanceof BigInt) ||
+			v instanceof Symbol,
 		isNumberObject: (v) => v instanceof Number,
 		isStringObject: (v) => v instanceof String,
 		isBooleanObject: (v) => v instanceof Boolean,
@@ -581,4 +710,4 @@ function createUtilTypes({ isProxy }) {
 	};
 }
 
-export { createUtilTypes, createOs, createStdio, createVm, createModuleModule, createPunycode, createUnavailable };
+export { createModuleModule, createOs, createPunycode, createStdio, createUnavailable, createUtilTypes, createVm };
