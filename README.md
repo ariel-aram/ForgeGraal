@@ -55,7 +55,7 @@ cannot: Windows XP, Vista and 7, 32-bit Windows and Linux, iSH, ARMv7 and FreeBS
 or Deno on the device. Bun and Deno stay the place a project is written and resolved; Graak reads what they resolved
 and builds it. See [Package managers](#package-managers).
 
-<h3 align="center">Installation</h3><hr>
+<h3 align="center" id="installation">Installation</h3><hr>
 
 ```bash
 npm i -g graak      # or: npx graak <command>, or add it to a project with npm i -D graak
@@ -70,7 +70,7 @@ operating system, Windows included. Only a change to the host's own C sources (s
 toolchains from [musl.cc](https://musl.cc) for Linux ones. Building for a Node.js target downloads the runtime unless
 `--offline` or `--node-binary` is given.
 
-<h3 align="center">Quick start</h3><hr>
+<h3 align="center" id="quick-start">Quick start</h3><hr>
 
 ```bash
 graak compile dist/index.js --target win-legacy-x64                          # a program, for Windows 7 (64-bit)

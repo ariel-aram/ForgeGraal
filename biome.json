@@ -6,12 +6,23 @@
 		"useIgnoreFile": true
 	},
 	"files": {
-		"includes": ["src/**/*.ts", "test/**/*.ts"]
+		"includes": [
+			"src/**/*.ts",
+			"test/**/*.ts",
+			"tools/**/*.js",
+			"quickjs/runtime/*.js",
+			"!quickjs/runtime/intl-*.js",
+			"!quickjs/runtime/segmenter-tables.js",
+			"package.json",
+			"tsconfig.json",
+			"biome.json"
+		]
 	},
 	"formatter": {
 		"enabled": true,
 		"indentStyle": "tab",
-		"lineWidth": 120
+		"lineWidth": 120,
+		"lineEnding": "auto"
 	},
 	"linter": {
 		"enabled": true,
@@ -47,5 +58,35 @@
 				"organizeImports": "on"
 			}
 		}
-	}
+	},
+	"overrides": [
+		{
+			"includes": ["package.json", "tsconfig.json", "biome.json"],
+			"formatter": {
+				"indentStyle": "space",
+				"indentWidth": 2
+			}
+		},
+		{
+			"includes": ["tools/**/*.js"],
+			"linter": {
+				"rules": {
+					"style": {
+						"useConst": "off",
+						"noParameterAssign": "off"
+					},
+					"suspicious": {
+						"noRedeclare": "off",
+						"noExplicitAny": "off"
+					}
+				}
+			}
+		},
+		{
+			"includes": ["quickjs/runtime/*.js"],
+			"linter": {
+				"enabled": false
+			}
+		}
+	]
 }

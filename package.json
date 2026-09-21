@@ -2,6 +2,14 @@
   "name": "graak",
   "version": "1.0.0",
   "description": "Package JavaScript and TypeScript programs (servers, websites, CLIs, bots) into standalone executables for every device, including legacy Windows and 32-bit systems, on Graak's own engine or Node.js",
+  "homepage": "https://github.com/ariel-aram/graak#readme",
+  "bugs": {
+    "url": "https://github.com/ariel-aram/graak/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/ariel-aram/graak.git"
+  },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
