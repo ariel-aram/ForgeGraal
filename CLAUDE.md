@@ -10,3 +10,13 @@
   the main session merges and does the one prebuilt rebuild and the final full test run.
 - Commit locally after green checks; push only when asked.
 - `/init` output belongs in `AGENTS.md`; keep this file to Claude-specific notes.
+
+### Verification Commands
+
+- Format and check: `pnpm exec biome check --write src test`
+- Typecheck: `pnpm typecheck` (`tsc --noEmit`)
+- Compile TS: `pnpm build` (`tsc`)
+- Run all tests: `pnpm test`
+- Single suite test: `node --test test/<testname>.test.ts`
+- Differential corpus test: `node test/fixtures/web/<corpus>.cjs` and compare with native Node.js 24/26
+- Rebuild prebuilts (C host changes only): `pnpm prebuilts`

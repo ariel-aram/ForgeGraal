@@ -1,0 +1,83 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "lsp": {
+    "typescript": {
+      "command": [
+        "typescript-language-server",
+        "--stdio"
+      ],
+      "extensions": [
+        "ts",
+        "tsx",
+        "js",
+        "jsx"
+      ],
+      "initialization": {
+        "typescript": {
+          "inlayHints": {
+            "includeInlayParameterNameHints": "all",
+            "includeInlayFunctionParameterTypeHints": true,
+            "includeInlayVariableTypeHints": true,
+            "includeInlayPropertyDeclarationTypeHints": true
+          },
+          "preferences": {
+            "includeInlayParameterNameHintsWhenArgumentMatchesName": true,
+            "includeInlayFunctionParameterTypeHintsWhenArgumentMatchesName": true
+          }
+        },
+        "javascript": {
+          "inlayHints": {
+            "includeInlayParameterNameHints": "all",
+            "includeInlayFunctionParameterTypeHints": true,
+            "includeInlayVariableTypeHints": true,
+            "includeInlayPropertyDeclarationTypeHints": true
+          },
+          "preferences": {
+            "includeInlayParameterNameHintsWhenArgumentMatchesName": true,
+            "includeInlayFunctionParameterTypeHintsWhenArgumentMatchesName": true
+          }
+        }
+      }
+    },
+    "forge": {
+      "command": [
+        "/home/arielaram/.local/bin/ForgeLSP"
+      ],
+      "extensions": [
+        "forge",
+        "js",
+        "ts"
+      ],
+      "initialization": {
+        "metadataUrls": [
+          {
+            "extension": "tryforge/ForgeScript",
+            "branch": "main",
+            "functions": "https://raw.githubusercontent.com/tryforge/ForgeScript/main/metadata/functions.json",
+            "enums": "https://raw.githubusercontent.com/tryforge/ForgeScript/main/metadata/enums.json",
+            "events": "https://raw.githubusercontent.com/tryforge/ForgeScript/main/metadata/events.json"
+          },
+          {
+            "extension": "tryforge/ForgeCanvas",
+            "branch": "dev",
+            "functions": "https://raw.githubusercontent.com/tryforge/ForgeCanvas/dev/metadata/functions.json",
+            "enums": "https://raw.githubusercontent.com/tryforge/ForgeCanvas/dev/metadata/enums.json",
+            "events": "https://raw.githubusercontent.com/tryforge/ForgeCanvas/dev/metadata/events.json"
+          }
+        ]
+      }
+    }
+  },
+  "formatter": {
+    "typescript": {
+      "command": [
+        "biome",
+        "check",
+        "--write"
+      ]
+    }
+  },
+  "instructions": [
+    "AGENTS.md"
+  ]
+}

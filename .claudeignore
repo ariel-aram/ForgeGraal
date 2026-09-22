@@ -1,0 +1,17 @@
+# Build outputs and temporary packaging dirs
+graak-out/
+*.graak/
+.graak-cache/
+graak-c-build/
+tmp/
+
+# Host binaries and archives
+quickjs/prebuilt/hosts/*.gz
+quickjs/prebuilt/win32/*.dll
+quickjs/prebuilt/win64/*.dll
+
+# Dependencies
+node_modules/
+
+# Worktrees created for parallel agents
+.claude/worktrees/

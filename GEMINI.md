@@ -11,3 +11,16 @@
 - Long jobs (Intl data generation, `pnpm prebuilts`, Wine and Docker tests) run as background terminals; confirm the job finished
   before reading its output.
 - Commit locally after green checks; do not push unless the user asks.
+
+### Verification Workflow
+
+- `pnpm exec biome check --write src test`
+- `pnpm typecheck`
+- `pnpm build`
+- `pnpm test`
+- For runtime changes: compare against Node 24.21.0 and 26.9.0 differential corpora under `test/fixtures/web/`.
+- For C changes: `pnpm prebuilts`, Wine verification in `fg-wine` container.
+
+### Silent Mode
+
+- Adhere strictly to silent mode: terse verdicts (`pass` / `fail` + check name) and blocker questions only. No unsolicited narration or lengthy summaries.
