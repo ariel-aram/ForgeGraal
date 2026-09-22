@@ -59,6 +59,7 @@ import { createWebAssembly } from "./node-wasm.js";
 import * as web from "./node-web.js";
 import { Segmenter } from "./segmenter.js";
 import { createTestModule } from "./node-test.js";
+import { createDnsModule } from "./node-dns.js";
 
 const globalObject = globalThis;
 
@@ -1828,20 +1829,7 @@ if (typeof globalObject.Intl.Segmenter === "undefined") {
 	});
 }
 
-/*
- * Name resolution. The native layer resolves a host as part of connect(), so the only thing
- * needed here is a way to ask it without opening a connection; where the host exposes no
- * resolver, dns.lookup reports that rather than inventing an address.
- */
-function dnsLookup(hostname) {
-	if (hostname === "localhost") return "127.0.0.1";
-	if (/^\d{1,3}(\.\d{1,3}){3}$/.test(hostname)) return hostname;
-	if (nativeLayer?.lookup) return nativeLayer.lookup(hostname);
-	throw new Error(
-		`cannot resolve '${hostname}': this runtime's native layer exposes no resolver. Connecting by ` +
-			"hostname still works, because the connect() call resolves it itself."
-	);
-}
+
 
 function createReadlineModule() {
 	const readline = misc.createReadline(EventEmitter);
@@ -1853,6 +1841,37 @@ const { testModule, reportersModule } = createTestModule({
 	EventEmitter: CallableEventEmitter,
 	CallableStream,
 	Buffer,
+});
+
+const childProcessModule =
+	misc.createChildProcess(
+		os.exec ? os : { ...os, exec: nativeLayer?.exec, getpid: nativeLayer?.getpid },
+		EventEmitter,
+		{
+			Buffer,
+			readText: (path) => std.loadFile(path),
+			readBytes: (path) => {
+				const data = std.loadFile(path, { binary: true });
+				return data === null ? null : new Uint8Array(data);
+			},
+			exists: (path) => {
+				const [info, error] = os.stat(path);
+				return error === 0 && (info.mode & 0o170000) !== 0o040000;
+			},
+			env: () => std.getenviron(),
+			tmpdir: () => std.getenv("TMPDIR") ?? std.getenv("TEMP") ?? "/tmp",
+			writeStderr: (text) => std.err.puts(text),
+		}
+	) ?? notImplemented("child_process", "This engine build exposes no exec().");
+
+const { dnsModule, dnsPromisesModule } = createDnsModule({
+	dgram: nativeModules?.dgram,
+	net: nativeModules?.net,
+	fs,
+	child_process: childProcessModule,
+	process: processModule,
+	Buffer,
+	EventEmitter: CallableEventEmitter,
 });
 
 const builtins = {
@@ -1898,10 +1917,8 @@ const builtins = {
 	tls: nativeModules?.tls ?? notImplemented("tls", NEEDS_NATIVE_WORK),
 	http: nativeModules?.http ?? notImplemented("http", NEEDS_NATIVE_WORK),
 	https: nativeModules?.https ?? notImplemented("https", NEEDS_NATIVE_WORK),
-	dns: nativeModules ? misc.createDns(dnsLookup) : notImplemented("dns", NEEDS_NATIVE_WORK),
-	"dns/promises": nativeModules
-		? misc.createDns(dnsLookup).promises
-		: notImplemented("dns/promises", NEEDS_NATIVE_WORK),
+	dns: nativeModules ? dnsModule : notImplemented("dns", NEEDS_NATIVE_WORK),
+	"dns/promises": nativeModules ? dnsPromisesModule : notImplemented("dns/promises", NEEDS_NATIVE_WORK),
 	http2: (() => {
 		// Present so that `x instanceof http2.Http2ServerRequest` (which servers use to tell HTTP/1 from
 		// HTTP/2) answers false instead of throwing. Opening an HTTP/2 connection is what is unsupported:
@@ -1944,27 +1961,7 @@ const builtins = {
 	worker_threads:
 		misc.createWorkerThreads(os.Worker, EventEmitter) ??
 		notImplemented("worker_threads", "This engine build has no Worker implementation."),
-	child_process:
-		// The engine's os module has no exec on Windows; the host supplies one there.
-		misc.createChildProcess(
-			os.exec ? os : { ...os, exec: nativeLayer?.exec, getpid: nativeLayer?.getpid },
-			EventEmitter,
-			{
-				Buffer,
-				readText: (path) => std.loadFile(path),
-				readBytes: (path) => {
-					const data = std.loadFile(path, { binary: true });
-					return data === null ? null : new Uint8Array(data);
-				},
-				exists: (path) => {
-					const [info, error] = os.stat(path);
-					return error === 0 && (info.mode & 0o170000) !== 0o040000;
-				},
-				env: () => std.getenviron(),
-				tmpdir: () => std.getenv("TMPDIR") ?? std.getenv("TEMP") ?? "/tmp",
-				writeStderr: (text) => std.err.puts(text),
-			}
-		) ?? notImplemented("child_process", "This engine build exposes no exec()."),
+	child_process: childProcessModule,
 	async_hooks: misc.asyncHooks,
 	v8: misc.v8,
 	tty: misc.createTty({ isatty: os.isatty, write: (text) => std.out.puts(text) }),
