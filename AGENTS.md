@@ -116,5 +116,5 @@ Independent gaps can be worked at the same time by separate agents, each in its 
 
 ## Open work
 
-`node:test`; TLS client options (`ca`, `cert`/`key`, `servername`, ALPN, `rootCertificates`); `dns` resolvers; Brotli and Zstd;
+TLS client options (`ca`, `cert`/`key`, `servername`, ALPN, `rootCertificates`); `dns` resolvers; Brotli and Zstd;
 `crypto` DH/ECDH, primes, X509; HTTP/2; `v8.Serializer`; `URLPattern`; libuv subset on Windows. The legacy Windows path comes first.

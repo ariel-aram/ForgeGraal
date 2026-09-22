@@ -58,6 +58,7 @@ import { URL, URLSearchParams, urlModule } from "./node-url.js";
 import { createWebAssembly } from "./node-wasm.js";
 import * as web from "./node-web.js";
 import { Segmenter } from "./segmenter.js";
+import { createTestModule } from "./node-test.js";
 
 const globalObject = globalThis;
 
@@ -91,7 +92,7 @@ if (typeof globalThis.URL === "undefined") {
 			std.err.puts(text);
 			std.err.flush();
 		},
-		() => os.now()
+		() => os.now() / 1000
 	);
 }
 
@@ -834,14 +835,14 @@ Object.assign(processModule, {
 	},
 	hrtime: Object.assign(
 		(prev) => {
-			const now = os.now() * 1e6;
+			const now = os.now() * 1000;
 			const ns = prev ? now - (prev[0] * 1e9 + prev[1]) : now;
 			return [Math.floor(ns / 1e9), Math.floor(ns % 1e9)];
 		},
-		{ bigint: () => BigInt(Math.floor(os.now() * 1e6)) }
+		{ bigint: () => BigInt(Math.floor(os.now() * 1000)) }
 	),
 	nextTick: (fn, ...args) => queueMicrotask(() => fn(...args)),
-	uptime: () => os.now() / 1000,
+	uptime: () => os.now() / 1e6,
 	memoryUsage: Object.assign(
 		() => ({
 			rss: 50 * 1024 * 1024,
@@ -1847,9 +1848,18 @@ function createReadlineModule() {
 	return readline;
 }
 
+const { testModule, reportersModule } = createTestModule({
+	process: processModule,
+	EventEmitter: CallableEventEmitter,
+	CallableStream,
+	Buffer,
+});
+
 const builtins = {
 	assert,
 	"assert/strict": assert.strict,
+	test: testModule,
+	"test/reporters": reportersModule,
 	buffer: {
 		Buffer,
 		SlowBuffer,
@@ -2517,7 +2527,7 @@ Object.assign(globalObject, {
 globalObject.setImmediate = timers.setImmediate;
 globalObject.clearImmediate = timers.clearImmediate;
 if (typeof globalObject.performance === "undefined") {
-	globalObject.performance = { now: () => os.now(), timeOrigin: Date.now() };
+	globalObject.performance = { now: () => os.now() / 1000, timeOrigin: Date.now() };
 }
 
 installExtras({

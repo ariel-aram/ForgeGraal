@@ -55,13 +55,23 @@ const DIFFERENTIAL: Array<[string, string[]]> = [
 	["extras-corpus.cjs", []],
 	["intl-corpus.cjs", []],
 	["intl-fuzz.cjs", []],
+	["test-corpus.cjs", []],
 ];
 
 // The Intl corpora print dates in the machine's zone and use its default locale: pin both, for Node.js and the host alike.
 const PINNED_ENV = { ...process.env, TZ: "America/New_York", LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" };
+delete PINNED_ENV.NODE_TEST_CONTEXT;
+delete PINNED_ENV.NODE_TEST_WORKER_ID;
 
 // node:sqlite arrived in Node.js 22.5; the baseline for that corpus needs it.
 const hasNodeSqlite = spawnSync(process.execPath, ["-e", "require('node:sqlite')"]).status === 0;
+
+function normalizeOutput(fixture: string, text: string): string {
+	if (fixture === "test-corpus.cjs") {
+		return text.replace(/\(\d+(?:\.\d+)?ms\)/g, "(0ms)").replace(/duration_ms \d+(?:\.\d+)?/g, "duration_ms 0");
+	}
+	return text;
+}
 
 for (const [fixture, extra] of DIFFERENTIAL) {
 	test(`${fixture} prints exactly what Node.js prints`, {
@@ -85,7 +95,11 @@ for (const [fixture, extra] of DIFFERENTIAL) {
 			maxBuffer: 64 * 1024 * 1024,
 		});
 		assert.equal(onHost.status, 0, `host failed:\n${onHost.stdout}${onHost.stderr}`);
-		assert.equal(onHost.stdout, onNode.stdout, `the native host must match Node.js for ${fixture}`);
+		assert.equal(
+			normalizeOutput(fixture, onHost.stdout),
+			normalizeOutput(fixture, onNode.stdout),
+			`the native host must match Node.js for ${fixture}`
+		);
 		assert.doesNotMatch(onHost.stdout, /FAILED/);
 	});
 }
