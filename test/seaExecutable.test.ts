@@ -214,3 +214,67 @@ test("a single-file Windows build unpacks itself and runs (Wine)", {
 	assert.equal(JSON.parse(line).greeting, "hello from inside the executable");
 	assert.ok(existsSync(join(out, "app.exe.graak", ".sea")), "unpacked beside the executable");
 });
+
+test("win-legacy-x64 with --strategy sea defaults to native engine and builds a single .exe without Node bloat", {
+	timeout: 300_000,
+}, async () => {
+	const root = project();
+	const out = mkdtempSync(join(tmpdir(), "graak-sea-win7-"));
+	const file = join(out, "bot.exe");
+	// Note: no `engine: "native"` specified! engine is default "auto".
+	const result = await BinaryPackager.compile({
+		entrypoint: join(root, "index.js"),
+		target: TargetDevice.WinLegacyX64,
+		packageManager: "npm",
+		strategy: "sea",
+		output: file,
+		offline: true,
+	});
+
+	assert.equal(result.strategy, "quickjs");
+	assert.equal(result.runtimeVersion, null, "must not fall back to Node.js runtime");
+	assert.equal(result.outputPath, file);
+	assert.equal(result.launcherPath, file);
+	assert.ok(statSync(file).isFile(), "output is a single executable file, not a directory");
+	assert.ok(statSync(file).size < 6 * 1024 * 1024, "native SEA binary stays under 6 MB, avoiding +200 MB bloat");
+	assert.ok(!existsSync(join(out, "app")), "no loose app folder was generated");
+});
+
+test("win-legacy-x64 with .exe output path produces a single binary rather than an app folder", {
+	timeout: 300_000,
+}, async () => {
+	const root = project();
+	const out = mkdtempSync(join(tmpdir(), "graak-sea-win7-exe-"));
+	const file = join(out, "custom-name.exe");
+	// Note: neither engine nor strategy specified! Both default to "auto".
+	const result = await BinaryPackager.compile({
+		entrypoint: join(root, "index.js"),
+		target: TargetDevice.WinLegacyX64,
+		packageManager: "npm",
+		output: file,
+		offline: true,
+	});
+
+	assert.equal(result.strategy, "quickjs");
+	assert.equal(result.runtimeVersion, null);
+	assert.equal(result.outputPath, file);
+	assert.equal(result.launcherPath, file);
+	assert.ok(statSync(file).isFile(), "output must be an actual binary file, not a directory named .exe");
+	assert.ok(statSync(file).size < 6 * 1024 * 1024, "single binary is lightweight under 6 MB");
+});
+
+test("native single executable build throws when output path is an existing directory", async () => {
+	const root = project();
+	const outDir = mkdtempSync(join(tmpdir(), "graak-sea-dir-"));
+	await assert.rejects(
+		BinaryPackager.compile({
+			entrypoint: join(root, "index.js"),
+			target: TargetDevice.WinLegacyX64,
+			packageManager: "npm",
+			strategy: "sea",
+			output: outDir,
+			offline: true,
+		}),
+		/SEA output '.*' is a directory; pass a file path/
+	);
+});

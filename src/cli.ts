@@ -29,12 +29,13 @@ Compile options:
   -t, --target <name>        Target device (see 'graak targets')
   -o, --output <path>        Output file (single file) or directory (folder)
   -e, --engine <name>        auto (default, follows the target), native (Graak's own host) or node.
-                              With native, --strategy sea writes ONE self-unpacking executable and
-                              portable/auto a folder
+                              With native host targets, --strategy sea writes ONE self-unpacking executable and
+                              portable a folder
       --intl <mode>          Locale data for Intl on the Graak engine (about 7 MB): auto (default, ships it
                               when the program mentions Intl, toLocale*String or localeCompare), all or none
-  -s, --strategy <name>      auto (default), sea or portable. Without --engine it also opts a native-host
-                              target (see below) back onto Node.js, same as --node-binary
+  -s, --strategy <name>      auto (default), sea (single executable) or portable (folder bundle).
+                              sea writes a single standalone executable on native targets without Node.js.
+                              portable opts back onto Node.js (or folder layout with --engine native)
       --pm <name>            Package manager override (bun, deno, pnpm, npm, yarn)
       --node-binary <path>   Node.js runtime to use instead of the target's default. Also opts a
                               native-host target (below) back onto Node.js
@@ -61,8 +62,8 @@ every legacy Windows target (XP, Vista, "Legacy" 7), iSH, 32-bit Linux, and linu
 No Node.js binary is involved anywhere in that output. Native (.node) addons load there too: the
 host implements Node-API itself. A static host cannot dlopen, so a program that needs an addon gets the
 dynamically linked build (glibc on Linux) automatically. Addons compiled against V8 or NAN are
-rebuilt from their source against Graak's V8 layer for the target (no source, no rebuild). Pass --node-binary, --strategy
-sea/portable, or register a runtime with 'graak runtimes add', to opt a specific build back
+rebuilt from their source against Graak's V8 layer for the target (no source, no rebuild). Pass --node-binary, --engine node,
+--strategy portable, or register a runtime with 'graak runtimes add', to opt a specific build back
 onto Node.js instead.
 
 Targets still on Node.js (win-x86, win-modern-x64, linux-armv7, linux-modern-arm64, darwin-x64,
@@ -177,7 +178,7 @@ async function main(): Promise<void> {
 			);
 			if (meta.pinnedLegacyNode) {
 				console.log(
-					`  ${native ? "Node fallback " : "Pinned runtime"} : Node.js ${meta.pinnedLegacyNode.version} (${meta.pinnedLegacyNode.fileKey}), auto-fetched${native ? " (only with --node-binary or --strategy sea|portable)" : ""}`
+					`  ${native ? "Node fallback " : "Pinned runtime"} : Node.js ${meta.pinnedLegacyNode.version} (${meta.pinnedLegacyNode.fileKey}), auto-fetched${native ? " (only with --node-binary, --engine node or --strategy portable)" : ""}`
 				);
 			}
 			if (meta.bootstrapInstall) {

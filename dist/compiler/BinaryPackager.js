@@ -191,7 +191,7 @@ class BinaryPackager {
             // the same way a registered runtime already won over the old pinned-Node fallback:
             //   - an explicit --node-binary
             //   - a runtime already registered with `graak runtimes add` for this target
-            //   - an explicit --strategy sea/portable (asking for a Node-shaped output by name)
+            //   - an explicit --strategy portable (asking for a Node-shaped output by name)
             // An explicit engine settles it. Without one, the older rules apply.
             if (engine === "native" && !QuickJsPackager_1.QuickJsPackager.supports(target)) {
                 throw new structures_1.RuntimeError(`There is no Graak native host build for ${meta.name} yet, so --engine native cannot be used. ` +
@@ -201,14 +201,14 @@ class BinaryPackager {
                 ? false
                 : engine === "node" ||
                     Boolean(options.nodeBinary) ||
-                    strategy !== "auto" ||
+                    strategy === "portable" ||
                     RuntimeRegistry_1.RuntimeRegistry.find(target, root).length > 0;
             if (QuickJsPackager_1.QuickJsPackager.supports(target) && !explicitNodeOverride) {
                 // bun:sqlite is provided (SQLite is built into the host); the rest of Bun is not.
                 if (project.usesBunGlobals.length) {
                     warnings.push(`Bun APIs detected (${project.usesBunGlobals.slice(0, 5).join(", ")}). The native host provides bun:sqlite ` +
                         "but not the rest of Bun: anything under Bun.* or another bun:* module fails when reached. Use node: APIs, " +
-                        "or build with --node-binary / --strategy sea|portable to get the Bun polyfills on Node.js.");
+                        "or build with --node-binary / --engine node to get the Bun polyfills on Node.js.");
                 }
                 // Node-API is implemented by the host itself (quickjs/native/napi.c), so a native addon is
                 // not an obstacle here: it loads the way it would under Node.js, provided it was built for
@@ -267,10 +267,14 @@ class BinaryPackager {
                 log(`Packaging for the Graak native host on ${meta.name} (no Node.js runtime bundled)`);
                 const nativeHostBinary = await QuickJsPackager_1.QuickJsPackager.ensureNativeHost(target, nativeLibc ?? "musl", log);
                 lap("Preparing the native host");
-                // engine: "native" + strategy: "sea" is one self-unpacking executable; everything else is a folder.
-                const single = engine === "native" && strategy === "sea";
+                // strategy: "sea" (or an output path ending in .exe) is one self-unpacking executable; everything else is a folder.
                 const isWindowsTarget = meta.nodePlatform === "win32";
+                const outputEndsWithExe = options.output ? options.output.toLowerCase().endsWith(".exe") : false;
+                const single = strategy === "sea" || (outputEndsWithExe && strategy !== "portable");
                 const outputPath = (0, node_path_1.resolve)(options.output ?? (0, node_path_1.join)(defaultOutDir, `${project.name}-${target}${single && isWindowsTarget ? ".exe" : ""}`));
+                if (single && (0, node_fs_1.existsSync)(outputPath) && (0, node_fs_1.statSync)(outputPath).isDirectory()) {
+                    throw new structures_1.RuntimeError(`SEA output '${outputPath}' is a directory; pass a file path`);
+                }
                 const stage = single ? (0, node_fs_1.mkdtempSync)((0, node_path_1.join)((0, node_os_1.tmpdir)(), "graak-sea-")) : null;
                 const res = QuickJsPackager_1.QuickJsPackager.build({
                     target,
