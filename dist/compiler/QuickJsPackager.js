@@ -327,6 +327,9 @@ class QuickJsPackager {
                 (0, node_fs_1.chmodSync)(dest, entry.mode);
             sizeBytes += bytes.length;
             hash.update(entry.path).update(bytes);
+            if (entry.path === "package.json") {
+                (0, node_fs_1.writeFileSync)((0, node_path_1.join)(out, "package.json"), bytes);
+            }
         }
         const runtimeDir = (0, node_path_1.join)(out, "runtime");
         (0, node_fs_1.mkdirSync)(runtimeDir, { recursive: true });
@@ -356,6 +359,9 @@ class QuickJsPackager {
                 "@echo off",
                 "setlocal",
                 'set "GRAAK_DIR=%~dp0"',
+                'set "GRAAK=1"',
+                'set "GRAAK_APP_DIR=%GRAAK_DIR%app"',
+                'set "GRAAK_ROOT_DIR=%GRAAK_DIR%"',
                 `"%GRAAK_DIR%graak-c.exe" "%GRAAK_DIR%runtime\\node-compat.js" "%GRAAK_DIR%${appEntry.replace(/\//g, "\\")}" %*`,
                 "exit /b %ERRORLEVEL%",
                 "",
@@ -365,6 +371,9 @@ class QuickJsPackager {
             (0, node_fs_1.writeFileSync)(launcherPath, [
                 "#!/bin/sh",
                 'GRAAK_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd) || exit 1',
+                'export GRAAK="1"',
+                'export GRAAK_APP_DIR="$GRAAK_DIR/app"',
+                'export GRAAK_ROOT_DIR="$GRAAK_DIR"',
                 `exec "$GRAAK_DIR/graak-c" "$GRAAK_DIR/runtime/node-compat.js" "$GRAAK_DIR/${appEntry}" "$@"`,
                 "",
             ].join("\n"));

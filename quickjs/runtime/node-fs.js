@@ -82,6 +82,32 @@ function createFs({ os, std, Buffer, path, stream, EventEmitter, native, platfor
 		throw invalidArg(name, "of type string or an instance of Buffer or URL", value);
 	}
 
+	function resolvePackageJsonFallback(target) {
+		if (typeof target !== "string") return target;
+		if (
+			target === "package.json" ||
+			target === "./package.json" ||
+			target === ".\\package.json" ||
+			target.endsWith("/package.json") ||
+			target.endsWith("\\package.json")
+		) {
+			const [, err] = os.stat(target);
+			if (err !== 0) {
+				const appDir = globalThis.process?.env?.GRAAK_APP_DIR;
+				const rootDir = globalThis.process?.env?.GRAAK_ROOT_DIR;
+				if (appDir) {
+					const appPkg = path.join(appDir, "package.json");
+					if (os.stat(appPkg)[1] === 0) return appPkg;
+				}
+				if (rootDir) {
+					const rootPkg = path.join(rootDir, "package.json");
+					if (os.stat(rootPkg)[1] === 0) return rootPkg;
+				}
+			}
+		}
+		return target;
+	}
+
 	function encodingOf(options, fallback = null) {
 		if (typeof options === "string") return options;
 		return options?.encoding ?? fallback;
@@ -166,7 +192,7 @@ function createFs({ os, std, Buffer, path, stream, EventEmitter, native, platfor
 	/* ---------------------------------------------------------------- primitives */
 
 	function statCall(fn, syscall, file, options) {
-		const target = toPath(file);
+		const target = resolvePackageJsonFallback(toPath(file));
 		const [info, errno] = fn(target);
 		if (errno !== 0) {
 			if (options?.throwIfNoEntry === false && errno === 2) return undefined;
@@ -201,8 +227,12 @@ function createFs({ os, std, Buffer, path, stream, EventEmitter, native, platfor
 	}
 
 	function openSync(file, flags = "r", mode = 0o666) {
-		const target = toPath(file);
-		const fd = os.open(target, osFlags(flags), typeof mode === "string" ? Number.parseInt(mode, 8) : mode);
+		let target = toPath(file);
+		const f = osFlags(flags);
+		if (!(f & (os.O_WRONLY | os.O_CREAT | os.O_TRUNC))) {
+			target = resolvePackageJsonFallback(target);
+		}
+		const fd = os.open(target, f, typeof mode === "string" ? Number.parseInt(mode, 8) : mode);
 		if (fd < 0) throw fsError(fd, "open", target);
 		return fd;
 	}
@@ -298,14 +328,15 @@ function createFs({ os, std, Buffer, path, stream, EventEmitter, native, platfor
 	function readFileSync(file, options) {
 		const encoding = encodingOf(options);
 		const flag = typeof options === "object" && options?.flag ? options.flag : "r";
-		const fd = typeof file === "number" ? file : openSync(file, flag);
+		const resolved = typeof file === "number" ? file : resolvePackageJsonFallback(toPath(file));
+		const fd = typeof resolved === "number" ? resolved : openSync(resolved, flag);
 		try {
-			const [info, errno] = typeof file === "number" ? [null, 1] : os.stat(toPath(file));
+			const [info, errno] = typeof resolved === "number" ? [null, 1] : os.stat(toPath(resolved));
 			if (errno === 0 && (info.mode & S_IFMT) === S_IFDIR) throw fsError(21, "read");
 			const data = readAll(fd, errno === 0 ? info.size : 0);
 			return encoding && encoding !== "buffer" ? data.toString(encoding) : data;
 		} finally {
-			if (typeof file !== "number") os.close(fd);
+			if (typeof resolved !== "number") os.close(fd);
 		}
 	}
 
@@ -331,14 +362,14 @@ function createFs({ os, std, Buffer, path, stream, EventEmitter, native, platfor
 
 	const existsSync = (file) => {
 		try {
-			return os.stat(toPath(file))[1] === 0;
+			return os.stat(resolvePackageJsonFallback(toPath(file)))[1] === 0;
 		} catch {
 			return false;
 		}
 	};
 
 	function accessSync(file, mode = constants.F_OK) {
-		const target = toPath(file);
+		const target = resolvePackageJsonFallback(toPath(file));
 		const [info, errno] = os.stat(target);
 		if (errno !== 0) throw fsError(errno, "access", target);
 		// Without a permission probe, the mode bits stand in: writable means any write bit is set.

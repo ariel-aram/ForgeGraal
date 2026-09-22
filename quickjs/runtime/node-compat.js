@@ -884,6 +884,93 @@ Object.assign(processModule, {
 	emitWarning: (warning) => std.err.puts(`Warning: ${warning}\n`),
 });
 
+function formatSourceContext(error) {
+	if (!error) return "";
+	const stack = typeof error.stack === "string" ? error.stack : "";
+	if (!stack) return "";
+	const lines = stack.split("\n");
+	const parseFrame = (line) => {
+		const match = line.match(/\bat (?:.*?\((.+?):(\d+):(\d+)\)|(.+?):(\d+):(\d+))$/);
+		if (!match) return null;
+		const file = match[1] || match[4];
+		const lineNum = Number.parseInt(match[2] || match[5], 10);
+		const colNum = Number.parseInt(match[3] || match[6], 10);
+		return { file, lineNum, colNum };
+	};
+
+	let chosen = null;
+	for (const line of lines) {
+		const frame = parseFrame(line);
+		if (!frame || !frame.file || Number.isNaN(frame.lineNum) || frame.file.startsWith("native")) continue;
+		if (frame.file.includes("/runtime/node-") || frame.file.includes("\\runtime\\node-")) continue;
+		chosen = frame;
+		break;
+	}
+	if (!chosen) {
+		for (const line of lines) {
+			const frame = parseFrame(line);
+			if (!frame || !frame.file || Number.isNaN(frame.lineNum) || frame.file.startsWith("native")) continue;
+			chosen = frame;
+			break;
+		}
+	}
+	if (!chosen) return "";
+
+	let content = null;
+	try {
+		content = std.loadFile(chosen.file);
+	} catch {
+		try {
+			if (fs.readFileSync) content = fs.readFileSync(chosen.file, "utf8");
+		} catch {}
+	}
+	if (typeof content !== "string") return "";
+
+	const srcLines = content.split(/\r?\n/);
+	if (chosen.lineNum > 0 && chosen.lineNum <= srcLines.length) {
+		const srcLine = srcLines[chosen.lineNum - 1];
+		const col = Math.max(0, chosen.colNum - 1);
+		const pointer = `${" ".repeat(col)}^`;
+		return `${chosen.file}:${chosen.lineNum}\n${srcLine}\n${pointer}\n\n`;
+	}
+	return "";
+}
+
+function formatErrorWithContext(error) {
+	if (!error) return `Uncaught ${inspectValue(error)}`;
+	const prefix = formatSourceContext(error);
+	let body = "";
+	if (error instanceof Error) {
+		const name = error.name || "Error";
+		const msg = error.message || "";
+		const header = `${name}: ${msg}`;
+		let stack = typeof error.stack === "string" ? error.stack : "";
+		if (stack && !stack.startsWith(header)) {
+			stack = `${header}\n${stack}`;
+		} else if (!stack) {
+			stack = header;
+		}
+
+		const extra = {};
+		for (const key of Object.getOwnPropertyNames(error)) {
+			if (key !== "name" && key !== "message" && key !== "stack") {
+				extra[key] = error[key];
+			}
+		}
+		let extraText = "";
+		if (Object.keys(extra).length > 0) {
+			extraText = ` ${inspectValue(extra, { depth: 2, colors: false })}`;
+		}
+		if (error.cause !== undefined && !stack.includes("[cause]")) {
+			extraText += ` {\n  [cause]: ${inspectValue(error.cause, { depth: 2, colors: false })}\n}`;
+		}
+		body = stack + extraText;
+	} else {
+		body = `Uncaught ${inspectValue(error)}`;
+	}
+	return prefix + body;
+}
+
 /*
  * What Node does with an exception nothing caught: give 'uncaughtException' listeners the chance, and
  * otherwise print it and exit with status 1. Timers and the socket poller route their errors here.
@@ -897,8 +984,7 @@ function reportUncaught(error) {
 			error = thrown;
 		}
 	}
-	const text =
-		error instanceof Error ? error.stack || `${error.name}: ${error.message}` : `Uncaught ${inspectValue(error)}`;
+	const text = formatErrorWithContext(error);
 	std.err.puts(`${text}\n`);
 	processModule.exitCode = 1;
 	processModule.exit(1);
@@ -2552,5 +2638,18 @@ export { Buffer, builtins, createRequire, EventEmitter, fs, pathModule as path, 
 const entry = (globalObject.scriptArgs ?? [])[1];
 if (entry) {
 	const resolved = pathModule.resolve(entry);
-	createRequire(resolved)(resolved.startsWith("/") || /^[a-zA-Z]:/.test(resolved) ? resolved : `./${entry}`);
+	const appDir = pathModule.dirname(resolved);
+	processModule.env.GRAAK = "1";
+	if (!processModule.env.GRAAK_APP_DIR) processModule.env.GRAAK_APP_DIR = appDir;
+	if (!processModule.env.GRAAK_ROOT_DIR) processModule.env.GRAAK_ROOT_DIR = pathModule.dirname(appDir);
+	processModule.argv[1] = resolved;
+	try {
+		const target = resolved.startsWith("/") || /^[a-zA-Z]:/.test(resolved) ? resolved : `./${entry}`;
+		const res = createRequire(resolved)(target);
+		if (res && typeof res.then === "function") {
+			res.catch((err) => reportUncaught(err));
+		}
+	} catch (err) {
+		reportUncaught(err);
+	}
 }

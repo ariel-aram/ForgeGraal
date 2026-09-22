@@ -530,3 +530,79 @@ test("a musl-linked addon gets the dynamic musl host and runs on real Alpine", {
 	assert.equal(run.status, 0, run.stderr);
 	assert.equal(run.stdout.trim(), expected.stdout.trim());
 });
+
+test("QuickJsPackager places package.json at output root and falls back when read from another cwd", async () => {
+	const root = mkdtempSync(join(tmpdir(), "graak-pkg-test-"));
+	writeFileSync(join(root, "package.json"), JSON.stringify({ name: "pkg-bot", version: "3.4.5" }));
+	writeFileSync(
+		join(root, "index.js"),
+		`const fs = require("fs");
+const path = require("path");
+const p1 = JSON.parse(fs.readFileSync(path.join(process.cwd(), "package.json"), "utf8"));
+const p2 = JSON.parse(fs.readFileSync("package.json", "utf8"));
+console.log(JSON.stringify({ v1: p1.version, v2: p2.version }));`
+	);
+
+	const result = await BinaryPackager.compile({
+		entrypoint: join(root, "index.js"),
+		target: TargetDevice.LinuxModernX64,
+		packageManager: "npm",
+		offline: true,
+	});
+
+	assert.equal(existsSync(join(result.outputPath, "package.json")), true);
+
+	// 1. Run with cwd = outputPath (user in the dist directory)
+	const runFromOut = spawnSync(result.launcherPath, [], {
+		cwd: result.outputPath,
+		encoding: "utf-8",
+		timeout: 30_000,
+	});
+	assert.equal(runFromOut.status, 0, runFromOut.stderr);
+	const data1 = JSON.parse(runFromOut.stdout);
+	assert.equal(data1.v1, "3.4.5");
+	assert.equal(data1.v2, "3.4.5");
+
+	// 2. Run with cwd = an empty outside dir without package.json (fallback test)
+	const outside = mkdtempSync(join(tmpdir(), "graak-outside-"));
+	const runFromOutside = spawnSync(result.launcherPath, [], {
+		cwd: outside,
+		encoding: "utf-8",
+		timeout: 30_000,
+	});
+	assert.equal(runFromOutside.status, 0, runFromOutside.stderr);
+	const data2 = JSON.parse(runFromOutside.stdout);
+	assert.equal(data2.v1, "3.4.5");
+	assert.equal(data2.v2, "3.4.5");
+});
+
+test("QuickJs host formats uncaught errors with source line context and error properties without unhandled promise rejection", async () => {
+	const root = mkdtempSync(join(tmpdir(), "graak-err-test-"));
+	writeFileSync(join(root, "package.json"), JSON.stringify({ name: "err-bot", version: "1.0.0" }));
+	writeFileSync(
+		join(root, "index.js"),
+		`const err = new TypeError("not a function");
+err.code = "ERR_CALL_FAILED";
+throw err;`
+	);
+
+	const result = await BinaryPackager.compile({
+		entrypoint: join(root, "index.js"),
+		target: TargetDevice.LinuxModernX64,
+		packageManager: "npm",
+		offline: true,
+	});
+
+	const run = spawnSync(result.launcherPath, [], {
+		cwd: result.outputPath,
+		encoding: "utf-8",
+		timeout: 30_000,
+	});
+
+	assert.equal(run.status, 1);
+	assert.doesNotMatch(run.stderr, /Possibly unhandled promise rejection:/);
+	assert.match(run.stderr, /TypeError: not a function/);
+	assert.match(run.stderr, /index\.js:\d+/);
+	assert.match(run.stderr, /\^/);
+	assert.match(run.stderr, /ERR_CALL_FAILED/);
+});
