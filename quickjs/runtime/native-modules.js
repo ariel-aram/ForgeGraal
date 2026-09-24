@@ -119,6 +119,7 @@ function crc32Of(bytes, previous = 0) {
 /* The native calls throw engine errors; programs branch on zlib's own codes. */
 function zlibError(err) {
 	const error = err instanceof Error ? err : new Error(String(err));
+	if (error.code) return error;
 	const text = String(error.message);
 	if (/unexpected end|truncated|buf/i.test(text)) {
 		error.code = "Z_BUF_ERROR";
@@ -131,9 +132,23 @@ function zlibError(err) {
 	}
 	return error;
 }
+const receivedText = (value) => {
+	if (value === null || value === undefined) return `Received ${value}`;
+	if (typeof value === "function") return `Received function ${value.name}`;
+	if (typeof value === "object") return `Received an instance of ${value.constructor?.name ?? "Object"}`;
+	return `Received type ${typeof value} (${typeof value === "bigint" ? `${value}n` : String(value)})`;
+};
+const checkBuffer = (data) => {
+	if (typeof data === "string" || data instanceof ArrayBuffer || ArrayBuffer.isView(data)) return;
+	throw Object.assign(
+		new TypeError(`The "buffer" argument must be of type string or an instance of Buffer, TypedArray, DataView, or ArrayBuffer. ${receivedText(data)}`),
+		{ code: "ERR_INVALID_ARG_TYPE" }
+	);
+};
 const guarded = (fn) => (data, options) => {
+	checkBuffer(data);
 	try {
-		return asBuffer(fn(toBytes(data)));
+		return asBuffer(fn(toBytes(data), options));
 	} catch (err) {
 		throw zlibError(err);
 	}
@@ -193,7 +208,32 @@ const zlib = {
 zlib.codes = { Z_OK: 0, Z_STREAM_END: 1, Z_NEED_DICT: 2, Z_ERRNO: -1, Z_STREAM_ERROR: -2, Z_DATA_ERROR: -3, Z_MEM_ERROR: -4, Z_BUF_ERROR: -5, Z_VERSION_ERROR: -6 };
 Object.assign(zlib, zlib.constants);
 
-for (const name of ["inflate", "deflate", "inflateRaw", "deflateRaw", "gzip", "gunzip", "unzip"]) {
+/* Brotli: the encoder and decoder are compiled into the host. Options are Node's: { params, maxOutputLength }. */
+const BROTLI_CONSTANTS = {"BROTLI_DECODE":8,"BROTLI_ENCODE":9,"BROTLI_OPERATION_PROCESS":0,"BROTLI_OPERATION_FLUSH":1,"BROTLI_OPERATION_FINISH":2,"BROTLI_OPERATION_EMIT_METADATA":3,"BROTLI_PARAM_MODE":0,"BROTLI_MODE_GENERIC":0,"BROTLI_MODE_TEXT":1,"BROTLI_MODE_FONT":2,"BROTLI_DEFAULT_MODE":0,"BROTLI_PARAM_QUALITY":1,"BROTLI_MIN_QUALITY":0,"BROTLI_MAX_QUALITY":11,"BROTLI_DEFAULT_QUALITY":11,"BROTLI_PARAM_LGWIN":2,"BROTLI_MIN_WINDOW_BITS":10,"BROTLI_MAX_WINDOW_BITS":24,"BROTLI_LARGE_MAX_WINDOW_BITS":30,"BROTLI_DEFAULT_WINDOW":22,"BROTLI_PARAM_LGBLOCK":3,"BROTLI_MIN_INPUT_BLOCK_BITS":16,"BROTLI_MAX_INPUT_BLOCK_BITS":24,"BROTLI_PARAM_DISABLE_LITERAL_CONTEXT_MODELING":4,"BROTLI_PARAM_SIZE_HINT":5,"BROTLI_PARAM_LARGE_WINDOW":6,"BROTLI_PARAM_NPOSTFIX":7,"BROTLI_PARAM_NDIRECT":8,"BROTLI_DECODER_RESULT_ERROR":0,"BROTLI_DECODER_RESULT_SUCCESS":1,"BROTLI_DECODER_RESULT_NEEDS_MORE_INPUT":2,"BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT":3,"BROTLI_DECODER_PARAM_DISABLE_RING_BUFFER_REALLOCATION":0,"BROTLI_DECODER_PARAM_LARGE_WINDOW":1,"BROTLI_DECODER_NO_ERROR":0,"BROTLI_DECODER_SUCCESS":1,"BROTLI_DECODER_NEEDS_MORE_INPUT":2,"BROTLI_DECODER_NEEDS_MORE_OUTPUT":3,"BROTLI_DECODER_ERROR_FORMAT_EXUBERANT_NIBBLE":-1,"BROTLI_DECODER_ERROR_FORMAT_RESERVED":-2,"BROTLI_DECODER_ERROR_FORMAT_EXUBERANT_META_NIBBLE":-3,"BROTLI_DECODER_ERROR_FORMAT_SIMPLE_HUFFMAN_ALPHABET":-4,"BROTLI_DECODER_ERROR_FORMAT_SIMPLE_HUFFMAN_SAME":-5,"BROTLI_DECODER_ERROR_FORMAT_CL_SPACE":-6,"BROTLI_DECODER_ERROR_FORMAT_HUFFMAN_SPACE":-7,"BROTLI_DECODER_ERROR_FORMAT_CONTEXT_MAP_REPEAT":-8,"BROTLI_DECODER_ERROR_FORMAT_BLOCK_LENGTH_1":-9,"BROTLI_DECODER_ERROR_FORMAT_BLOCK_LENGTH_2":-10,"BROTLI_DECODER_ERROR_FORMAT_TRANSFORM":-11,"BROTLI_DECODER_ERROR_FORMAT_DICTIONARY":-12,"BROTLI_DECODER_ERROR_FORMAT_WINDOW_BITS":-13,"BROTLI_DECODER_ERROR_FORMAT_PADDING_1":-14,"BROTLI_DECODER_ERROR_FORMAT_PADDING_2":-15,"BROTLI_DECODER_ERROR_FORMAT_DISTANCE":-16,"BROTLI_DECODER_ERROR_DICTIONARY_NOT_SET":-19,"BROTLI_DECODER_ERROR_INVALID_ARGUMENTS":-20,"BROTLI_DECODER_ERROR_ALLOC_CONTEXT_MODES":-21,"BROTLI_DECODER_ERROR_ALLOC_TREE_GROUPS":-22,"BROTLI_DECODER_ERROR_ALLOC_CONTEXT_MAP":-25,"BROTLI_DECODER_ERROR_ALLOC_RING_BUFFER_1":-26,"BROTLI_DECODER_ERROR_ALLOC_RING_BUFFER_2":-27,"BROTLI_DECODER_ERROR_ALLOC_BLOCK_TYPE_TREES":-30,"BROTLI_DECODER_ERROR_UNREACHABLE":-31};
+Object.assign(zlib.constants, BROTLI_CONSTANTS);
+const brotliParam = (options, param, fallback) => {
+	const value = options?.params?.[param];
+	return value === undefined ? fallback : Number(value);
+};
+const brotliCompressBytes = (bytes, options) =>
+	native.brotliCompress(
+		bytes,
+		brotliParam(options, zlib.constants.BROTLI_PARAM_QUALITY, zlib.constants.BROTLI_DEFAULT_QUALITY),
+		brotliParam(options, zlib.constants.BROTLI_PARAM_LGWIN, zlib.constants.BROTLI_DEFAULT_WINDOW),
+		brotliParam(options, zlib.constants.BROTLI_PARAM_MODE, zlib.constants.BROTLI_DEFAULT_MODE)
+	);
+const brotliDecompressBytes = (bytes, options) => {
+	try {
+		return native.brotliDecompress(bytes, options?.maxOutputLength);
+	} catch (err) {
+		if (err.code === "ERR_BUFFER_TOO_LARGE") err.message = `Cannot create a Buffer larger than ${options.maxOutputLength} bytes`;
+		throw err;
+	}
+};
+zlib.brotliCompressSync = guarded(brotliCompressBytes);
+zlib.brotliDecompressSync = guarded(brotliDecompressBytes);
+
+for (const name of ["inflate", "deflate", "inflateRaw", "deflateRaw", "gzip", "gunzip", "unzip", "brotliCompress", "brotliDecompress"]) {
 	const sync = zlib[`${name}Sync`];
 	zlib[name] = (data, options, callback) => {
 		if (typeof options === "function") callback = options;
@@ -203,25 +243,13 @@ for (const name of ["inflate", "deflate", "inflateRaw", "deflateRaw", "gzip", "g
 		let result;
 		let error = null;
 		try {
-			result = sync(data);
+			result = sync(data, typeof options === "object" ? options : undefined);
 		} catch (err) {
 			error = err;
 		}
 		queueMicrotask(() => (error ? callback(error) : callback(null, result)));
 	};
 }
-
-const noBrotli = () => {
-	throw Object.assign(new Error("Brotli is not available in the Graak native host"), { code: "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM" });
-};
-Object.assign(zlib, {
-	brotliCompressSync: noBrotli,
-	brotliDecompressSync: noBrotli,
-	brotliCompress: noBrotli,
-	brotliDecompress: noBrotli,
-	createBrotliCompress: noBrotli,
-	createBrotliDecompress: noBrotli,
-});
 
 /*
  * The stream forms (createGzip, createGunzip, ...). Each buffers what is written and transforms it as one piece
@@ -233,6 +261,7 @@ zlib.attachStreams = (Transform) => {
 			if (!(this instanceof Codec)) return new Codec(options);
 			Transform.call(this, options);
 			this._chunks = [];
+			this._codecOptions = options;
 			this.bytesWritten = 0;
 		}
 		Object.setPrototypeOf(Codec.prototype, Transform.prototype);
@@ -245,7 +274,7 @@ zlib.attachStreams = (Transform) => {
 		Codec.prototype._flush = function (callback) {
 			let output;
 			try {
-				output = zlib[syncName](Buffer.concat(this._chunks));
+				output = zlib[syncName](Buffer.concat(this._chunks), this._codecOptions);
 			} catch (err) {
 				callback(err);
 				return;
@@ -269,7 +298,7 @@ zlib.attachStreams = (Transform) => {
 		Object.defineProperty(Codec, "name", { value: name });
 		return Codec;
 	};
-	const kinds = { Deflate: "deflateSync", Inflate: "inflateSync", DeflateRaw: "deflateRawSync", InflateRaw: "inflateRawSync", Gzip: "gzipSync", Gunzip: "gunzipSync", Unzip: "unzipSync" };
+	const kinds = { BrotliCompress: "brotliCompressSync", BrotliDecompress: "brotliDecompressSync", Deflate: "deflateSync", Inflate: "inflateSync", DeflateRaw: "deflateRawSync", InflateRaw: "inflateRawSync", Gzip: "gzipSync", Gunzip: "gunzipSync", Unzip: "unzipSync" };
 	for (const [name, syncName] of Object.entries(kinds)) {
 		const Codec = make(name, syncName);
 		zlib[name] = Codec;
@@ -341,6 +370,99 @@ function unwatchWrite(id) {
 }
 
 const toError = (err) => (err instanceof Error ? err : new Error(String(err)));
+
+/* ------------------------------------------------------------- TLS options */
+
+let cryptoTools = () => undefined;
+const nodeBuffer = () => globalThis.Buffer;
+const pemText = (value) => {
+	if (Array.isArray(value)) return value.map(pemText).join("\n");
+	if (typeof value === "string") return value;
+	if (value && typeof value === "object" && value.pem !== undefined) return pemText(value.pem);
+	return nodeBuffer().from(toBytes(value)).toString("utf8");
+};
+const keyText = (options) => {
+	let key = options.key;
+	if (Array.isArray(key)) key = key[0];
+	const passphrase = key && typeof key === "object" && key.passphrase !== undefined ? key.passphrase : options.passphrase;
+	if (key && typeof key === "object" && key.pem !== undefined) key = key.pem;
+	return { key: key === undefined ? undefined : pemText(key), passphrase: passphrase === undefined ? undefined : String(passphrase) };
+};
+const alpnNames = (value) => {
+	if (value === undefined || value === null) return undefined;
+	if (typeof value === "string") return value;
+	if (Array.isArray(value)) return value.join("\n");
+	const bytes = toBytes(value);
+	const names = [];
+	for (let i = 0; i < bytes.length; ) {
+		const length = bytes[i++];
+		names.push(nodeBuffer().from(bytes.subarray(i, i + length)).toString("latin1"));
+		i += length;
+	}
+	return names.join("\n");
+};
+const tlsVersion = (name, which) => {
+	if (name === undefined) return 0;
+	const known = { TLSv1: 10, "TLSv1.1": 11, "TLSv1.2": 12, "TLSv1.3": 13 };
+	if (!(name in known)) {
+		throw Object.assign(new TypeError(`The argument 'options.${which}' is invalid. Received '${name}'`), { code: "ERR_TLS_INVALID_PROTOCOL_VERSION" });
+	}
+	const code = known[name];
+	if (which === "maxVersion" && code < 12) {
+		throw Object.assign(new Error(`${name} is not available in the Graak native host: the TLS library supports TLSv1.2 and TLSv1.3`), { code: "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM" });
+	}
+	return which === "minVersion" && code < 12 ? 12 : code;
+};
+/* What the host's tls layer takes: strings for the PEM material, plain numbers and flags for the rest. */
+function tlsOptions(options) {
+	const o = { ...(options.secureContext?._options ?? {}), ...options };
+	if (o.pfx !== undefined) {
+		throw Object.assign(new Error("tls option 'pfx' is not available in the Graak native host: pass the key and certificate as PEM"), { code: "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM" });
+	}
+	const { key, passphrase } = keyText(o);
+	return {
+		servername: typeof o.servername === "string" && o.servername && !/^[0-9.]+$|:/.test(o.servername) ? o.servername : undefined,
+		ca: o.ca === undefined ? undefined : pemText(o.ca),
+		cert: o.cert === undefined ? undefined : pemText(o.cert),
+		key,
+		passphrase,
+		alpn: alpnNames(o.ALPNProtocols),
+		minVersion: tlsVersion(o.minVersion, "minVersion"),
+		maxVersion: tlsVersion(o.maxVersion, "maxVersion"),
+		requestCert: Boolean(o.requestCert),
+		rejectUnauthorized: o.rejectUnauthorized === undefined ? undefined : Boolean(o.rejectUnauthorized),
+		deferred: typeof o.checkServerIdentity === "function",
+	};
+}
+/* mbedTLS names cipher suites TLS-ECDHE-RSA-WITH-AES-128-GCM-SHA256; Node reports the OpenSSL name for TLS 1.2. */
+function cipherNames(mbed, version) {
+	const standard = mbed.replace(/^TLS1-3-/, "TLS_").replace(/-/g, "_");
+	if (version === "TLSv1.3") return { name: standard, standardName: standard };
+	const m = /^TLS_(ECDHE|DHE)_(RSA|ECDSA)_WITH_(AES_(?:128|256)|CHACHA20_POLY1305)(?:_(GCM|CBC))?_(SHA\d*)$/.exec(standard);
+	if (!m) return { name: standard, standardName: standard };
+	const [, kx, auth, cipher, mode, hash] = m;
+	const openssl = cipher.startsWith("AES")
+		? `${kx}-${auth}-AES${cipher.slice(4)}${mode === "GCM" ? `-GCM-${hash}` : hash === "SHA" ? "-SHA" : `-${hash}`}`
+		: `${kx}-${auth}-CHACHA20-POLY1305`;
+	return { name: openssl, standardName: standard };
+}
+const authorizationCode = (flags, peer) => {
+	if (!flags) return undefined;
+	if (flags & 0x01) return "CERT_HAS_EXPIRED";
+	if (flags & 0x200) return "CERT_NOT_YET_VALID";
+	if (flags & 0x02) return "CERT_REVOKED";
+	if (flags & 0x04) return "ERR_TLS_CERT_ALTNAME_INVALID";
+	if (flags & 0x08) return peer && peer.length === 1 ? "DEPTH_ZERO_SELF_SIGNED_CERT" : "UNABLE_TO_VERIFY_LEAF_SIGNATURE";
+	return "UNABLE_TO_VERIFY_LEAF_SIGNATURE";
+};
+let rootCertificatesCache = null;
+const rootCertificateList = () => {
+	if (!rootCertificatesCache) {
+		const blocks = String(native.caBundle()).match(/-----BEGIN CERTIFICATE-----[\s\S]*?-----END CERTIFICATE-----/g) ?? [];
+		rootCertificatesCache = Object.freeze(blocks);
+	}
+	return rootCertificatesCache;
+};
 
 /* The native errors are mbedTLS strings; give them the codes Node programs branch on. */
 function withCode(err, host, port) {
@@ -465,7 +587,90 @@ function createSocketClass(Duplex) {
 			return this._tls;
 		}
 		get authorized() {
-			return this._tls;
+			const info = this._tlsDetails();
+			return this._tls && info !== null && this._verifyFlags(info) === 0;
+		}
+		/* A caller-supplied checkServerIdentity that accepted the name also settles the host-name flag. */
+		_verifyFlags(info) {
+			return this._nameChecked ? info.verify & ~0x04 : info.verify;
+		}
+		get authorizationError() {
+			const info = this._tlsDetails();
+			return info && this._verifyFlags(info) ? authorizationCode(this._verifyFlags(info), info.peer) : undefined;
+		}
+		get alpnProtocol() {
+			if (!this._tls) return undefined;
+			return this._tlsDetails()?.alpn ?? false;
+		}
+		_tlsDetails() {
+			if (!this._tls || this.id === null) return this._tlsInfo ?? null;
+			if (!this._tlsInfo) {
+				try {
+					this._tlsInfo = native.tlsInfo(this.id);
+				} catch {
+					this._tlsInfo = null;
+				}
+			}
+			return this._tlsInfo ?? null;
+		}
+		getProtocol() {
+			return this._tls ? (this._tlsDetails()?.version ?? null) : null;
+		}
+		getCipher() {
+			const info = this._tlsDetails();
+			if (!info) return null;
+			return { ...cipherNames(info.cipher, info.version), version: info.version };
+		}
+		getPeerCertificate(detailed) {
+			const info = this._tlsDetails();
+			const tools = cryptoTools();
+			if (!info || !info.peer.length || !tools) return {};
+			const build = (index) => {
+				const cert = tools.legacyCertificate(native.x509Info(info.peer[index]), true);
+				if (detailed && index + 1 < info.peer.length) cert.issuerCertificate = build(index + 1);
+				else if (detailed) cert.issuerCertificate = cert;
+				return cert;
+			};
+			return detailed ? build(0) : tools.legacyCertificate(native.x509Info(info.peer[0]), true);
+		}
+		getPeerX509Certificate() {
+			const info = this._tlsDetails();
+			const X509 = cryptoTools()?.X509Certificate;
+			return info?.peer.length && X509 ? new X509(info.peer[0]) : undefined;
+		}
+		getX509Certificate() {
+			return undefined;
+		}
+		getSession() {
+			return undefined;
+		}
+		getTLSTicket() {
+			return undefined;
+		}
+		isSessionReused() {
+			return false;
+		}
+		getEphemeralKeyInfo() {
+			return {};
+		}
+		getFinished() {
+			return undefined;
+		}
+		getPeerFinished() {
+			return undefined;
+		}
+		setSession() {}
+		setServername() {}
+		setMaxSendFragment() {
+			return true;
+		}
+		enableTrace() {}
+		disableRenegotiation() {}
+		renegotiate(options, callback) {
+			const err = Object.assign(new Error("TLS renegotiation is not available in the Graak native host"), { code: "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM" });
+			if (typeof callback === "function") queueMicrotask(() => callback(err));
+			else throw err;
+			return false;
 		}
 		get bufferSize() {
 			return this.writableLength;
@@ -518,6 +723,13 @@ function createSocketClass(Duplex) {
 			// NODE_TLS_REJECT_UNAUTHORIZED=0 turns verification off for the whole process, as in Node.
 			const rejectUnauthorized = options.rejectUnauthorized ?? globalThis.process?.env?.NODE_TLS_REJECT_UNAUTHORIZED !== "0";
 			if (options.path) return this._connectUnix(options.path, listener);
+			let tlsCfg;
+			try {
+				tlsCfg = tls ? tlsOptions(options) : undefined;
+			} catch (err) {
+				queueMicrotask(() => this.destroy(err));
+				return this;
+			}
 			if (listener) this.once(tls ? "secureConnect" : "connect", listener);
 			this.connecting = true;
 			this._tls = tls;
@@ -534,7 +746,7 @@ function createSocketClass(Duplex) {
 				};
 				let id;
 				try {
-					id = native.connectStart(host, Number(portNumber), tls, tls && rejectUnauthorized === false);
+					id = native.connectStart(host, Number(portNumber), tls, tls && rejectUnauthorized === false, tlsCfg);
 				} catch (err) {
 					fail(err);
 					return;
@@ -559,6 +771,16 @@ function createSocketClass(Duplex) {
 					unwatchWrite(id);
 					this._adopt(id, tls);
 					this.connecting = false;
+					if (tls && tlsCfg.deferred) {
+						// The caller supplied checkServerIdentity: the host verified the chain and left the name to it.
+						const cert = this.getPeerCertificate();
+						const failure = rejectUnauthorized === false ? undefined : options.checkServerIdentity(options.servername || host, cert);
+						if (failure) {
+							this.destroy(failure);
+							return;
+						}
+						this._nameChecked = true;
+					}
 					this.emit("connect");
 					if (tls) this.emit("secureConnect");
 					this.emit("ready");
@@ -766,6 +988,7 @@ function createServerClass(EventEmitter, Socket, tlsServer) {
 				options = {};
 			}
 			this._options = options ?? {};
+			this._tls = tlsServer ? tlsOptions(this._options) : undefined;
 			this.id = null;
 			this.listening = false;
 			this._connections = new Set();
@@ -807,8 +1030,9 @@ function createServerClass(EventEmitter, Socket, tlsServer) {
 					options.host ?? null,
 					port,
 					options.backlog ?? 511,
-					tlsServer ? String(this._options.cert) : undefined,
-					tlsServer ? String(this._options.key) : undefined
+					tlsServer ? this._tls.cert : undefined,
+					tlsServer ? this._tls.key : undefined,
+					tlsServer ? this._tls : undefined
 				);
 			} catch (err) {
 				const error = toError(err);
@@ -833,19 +1057,60 @@ function createServerClass(EventEmitter, Socket, tlsServer) {
 				}
 				if (sid === null) return;
 				const socket = new Socket();
-				socket._adopt(sid, Boolean(tlsServer));
 				if (this.maxConnections !== undefined && this._connections.size >= this.maxConnections) {
-					socket.destroy();
+					native.close(sid);
 					continue;
 				}
-				this._connections.add(socket);
-				socket.once("close", () => {
-					this._connections.delete(socket);
-					this._maybeClosed();
-				});
+				if (tlsServer) {
+					this._handshake(sid, socket);
+					continue;
+				}
+				socket._adopt(sid, false);
+				this._track(socket);
 				this.emit("connection", socket);
-				if (tlsServer) this.emit("secureConnection", socket);
 			}
+		}
+
+		_track(socket) {
+			this._connections.add(socket);
+			socket.once("close", () => {
+				this._connections.delete(socket);
+				this._maybeClosed();
+			});
+		}
+
+		/* A TLS connection is announced once its handshake is done, as Node does, so ALPN and the client certificate are known. */
+		_handshake(sid, socket) {
+			const startedAt = Date.now();
+			const timeout = this._options.handshakeTimeout ?? 120000;
+			const abort = (err) => {
+				unwatch(sid);
+				try {
+					native.close(sid);
+				} catch {}
+				socket.id = null;
+				this.emit("tlsClientError", err, socket);
+			};
+			const step = () => {
+				let done;
+				try {
+					done = native.connectStatus(sid);
+				} catch (err) {
+					abort(withCode(err));
+					return;
+				}
+				if (!done) {
+					if (Date.now() - startedAt > timeout) abort(Object.assign(new Error("TLS handshake timeout"), { code: "ERR_TLS_HANDSHAKE_TIMEOUT" }));
+					return;
+				}
+				unwatch(sid);
+				socket._adopt(sid, true);
+				this._track(socket);
+				this.emit("connection", socket);
+				this.emit("secureConnection", socket);
+			};
+			watch(sid, step);
+			step();
 		}
 
 		address() {
@@ -1115,6 +1380,7 @@ function createDgram(EventEmitter) {
 
 function createNetModules(EventEmitter, Duplex, options = {}) {
 	unixFs = options.fs ?? unixFs;
+	cryptoTools = options.cryptoTools ?? cryptoTools;
 	const Socket = createSocketClass(Duplex);
 	const Server = createServerClass(EventEmitter, Socket, false);
 	const TlsServer = createServerClass(EventEmitter, Socket, true);
@@ -1155,15 +1421,33 @@ function createNetModules(EventEmitter, Duplex, options = {}) {
 			return connect({ ...options, host: options.host ?? options.servername ?? "localhost", tls: true }, port, listener);
 		},
 		createServer(options, listener) {
-			if (!options?.key || !options?.cert) {
+			if (typeof options === "function") {
+				listener = options;
+				options = {};
+			}
+			const merged = { ...(options?.secureContext?._options ?? {}), ...options };
+			if (!merged.key || !merged.cert) {
 				throw new TypeError("tls.createServer needs { key, cert } as PEM strings or Buffers");
 			}
-			return new TlsServer({ ...options, key: String(options.key), cert: String(options.cert) }, listener);
+			return new TlsServer(options, listener);
 		},
-		createSecureContext: (options) => ({ ...options }),
+		createSecureContext(options = {}) {
+			tlsOptions(options);
+			return { context: {}, _options: { ...options } };
+		},
+		checkServerIdentity: (hostname, cert) => cryptoTools()?.checkServerIdentity(hostname, cert),
+		getCiphers: () => [
+			"tls_aes_256_gcm_sha384", "tls_chacha20_poly1305_sha256", "tls_aes_128_gcm_sha256",
+			"ecdhe-ecdsa-aes256-gcm-sha384", "ecdhe-rsa-aes256-gcm-sha384", "ecdhe-ecdsa-chacha20-poly1305", "ecdhe-rsa-chacha20-poly1305",
+			"ecdhe-ecdsa-aes128-gcm-sha256", "ecdhe-rsa-aes128-gcm-sha256",
+		],
 		// Certificates are verified against the CA bundle compiled into the host, which is exactly
 		// why this works on an old machine whose own certificate store is years stale.
-		rootCertificates: [],
+		get rootCertificates() {
+			return rootCertificateList();
+		},
+		DEFAULT_ECDH_CURVE: "auto",
+		DEFAULT_CIPHERS: "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384",
 		DEFAULT_MIN_VERSION: "TLSv1.2",
 		DEFAULT_MAX_VERSION: "TLSv1.3",
 	};

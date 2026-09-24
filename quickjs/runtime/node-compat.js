@@ -37,6 +37,7 @@ import { createCrypto } from "./node-crypto.js";
 import { installExtras } from "./node-extras.js";
 import * as fetchApi from "./node-fetch.js";
 import { createFs } from "./node-fs.js";
+import { createHttp2 } from "./node-http2.js";
 import {
 	createConsole,
 	format as inspectFormat,
@@ -1739,9 +1740,10 @@ const NEEDS_NATIVE_WORK =
  */
 const nativeLayer = globalThis.__graak_native ?? null;
 let nativeModules = null;
+let http2Module = null;
 if (nativeLayer) {
 	const nm = await import("./native-modules.js");
-	const { net, tls, dgram } = nm.createNetModules(EventEmitter, streamModule.Duplex, { fs });
+	const { net, tls, dgram } = nm.createNetModules(EventEmitter, streamModule.Duplex, { fs, cryptoTools: () => nativeModules?.crypto?.tools && { ...nativeModules.crypto.tools, X509Certificate: nativeModules.crypto.X509Certificate } });
 	const { http, https } = (await import("./node-http.js")).createHttpModules(
 		{ net, tls },
 		EventEmitter,
@@ -2009,43 +2011,19 @@ const builtins = {
 	https: nativeModules?.https ?? notImplemented("https", NEEDS_NATIVE_WORK),
 	dns: dnsModule ?? notImplemented("dns", NEEDS_NATIVE_WORK),
 	"dns/promises": dnsModule?.promises ?? notImplemented("dns/promises", NEEDS_NATIVE_WORK),
-	http2: (() => {
-		// Present so that `x instanceof http2.Http2ServerRequest` (which servers use to tell HTTP/1 from
-		// HTTP/2) answers false instead of throwing. Opening an HTTP/2 connection is what is unsupported:
-		// it needs HPACK header compression and stream multiplexing, a protocol implementation of its own.
-		const unsupported = (name) => () => {
-			throw Object.assign(
-				new Error(
-					`http2.${name}() is not implemented: HTTP/2 needs HPACK and stream multiplexing, which Graak's ` +
-						"native host does not provide. HTTP/1.1 (http, https) and WebSocket are supported."
-				),
-				{ code: "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM" }
-			);
-		};
-		class Http2Session extends EventEmitter {}
-		class Http2Stream extends EventEmitter {}
-		class Http2ServerRequest extends EventEmitter {}
-		class Http2ServerResponse extends EventEmitter {}
-		return {
-			Http2Session,
-			Http2Stream,
-			Http2ServerRequest,
-			Http2ServerResponse,
-			constants: {
-				HTTP2_HEADER_STATUS: ":status",
-				HTTP2_HEADER_METHOD: ":method",
-				HTTP2_HEADER_PATH: ":path",
-				HTTP2_HEADER_AUTHORITY: ":authority",
-				HTTP2_HEADER_SCHEME: ":scheme",
-				HTTP2_HEADER_CONTENT_TYPE: "content-type",
-			},
-			sensitiveHeaders: Symbol("nodejs.http2.sensitiveHeaders"),
-			connect: unsupported("connect"),
-			createServer: unsupported("createServer"),
-			createSecureServer: unsupported("createSecureServer"),
-			getDefaultSettings: unsupported("getDefaultSettings"),
-		};
-	})(),
+	// Built on first use: HTTP/2 is a large module and most programs never open a session.
+	get http2() {
+		if (!nativeModules) {
+			return notImplemented("http2", NEEDS_NATIVE_WORK);
+		}
+		http2Module ??= createHttp2(
+			{ net: nativeModules.net, tls: nativeModules.tls, http: nativeModules.http, fs, url: { URL } },
+			EventEmitter,
+			streamModule,
+			Buffer
+		);
+		return http2Module;
+	},
 	crypto: nativeModules?.crypto ?? notImplemented("crypto", "It needs a native crypto library (hashing, HMAC and the TLS primitives)."),
 	zlib: nativeModules?.zlib ?? notImplemented("zlib", "It needs a native compression library."),
 	worker_threads:

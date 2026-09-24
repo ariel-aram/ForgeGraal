@@ -169,12 +169,13 @@ on Node.js and on the packaged host and compares the output byte for byte.
 | Module | What is covered |
 | --- | --- |
 | `http`, `https` | Server and client. HTTP/1.1 keep-alive, chunked bodies both ways, pipelined requests, `Expect: 100-continue`, HEAD/204/304 framing, `Upgrade` (WebSocket servers such as `ws`), backpressure and `drain`, `closeAllConnections`. HTTPS servers take a PEM `key` and `cert`. |
-| `net`, `tls` | `createServer`, `connect`, half-close, timeouts, `pause`/`resume`, `remoteAddress` and friends. `rejectUnauthorized: false` and `NODE_TLS_REJECT_UNAUTHORIZED=0` work as in Node. |
+| `net`, `tls` | `createServer`, `connect`, half-close, timeouts, `pause`/`resume`, `remoteAddress` and friends. TLS takes `ca`, `cert`/`key` (with `passphrase`), `servername`, `ALPNProtocols`, `minVersion`/`maxVersion` (TLS 1.2 and 1.3), `requestCert`, `rejectUnauthorized`, `checkServerIdentity` and `secureContext`, and sockets report `alpnProtocol`, `authorized`, `authorizationError`, `getProtocol()`, `getCipher()`, `getPeerCertificate()` and `getPeerX509Certificate()`. `tls.rootCertificates` is the CA bundle compiled into the host. `rejectUnauthorized: false` and `NODE_TLS_REJECT_UNAUTHORIZED=0` work as in Node. Not covered: `pfx`, `ciphers` (the suite list is mbedTLS's), session resumption and renegotiation. A server built on mbedTLS answers a TLS version mismatch with a handshake_failure alert where OpenSSL sends protocol_version. |
+| `http2` | Server (`createServer`, `createSecureServer` with ALPN, `allowHTTP1` falling back to `http`) and client (`connect`) over cleartext prior-knowledge h2c and TLS: HPACK with Huffman coding, multiplexed streams with flow control both ways, settings, ping, `goaway`, RST_STREAM, trailers, server push, informational responses, `respondWithFile`, the core `stream` API and the compatibility `request`/`response` API, Node's error codes and messages. Verified against Node.js, curl and nghttp2 in both directions. Not covered: the HTTP/1.1 Upgrade to h2c (Node has no server side for it either), stream priority (accepted and ignored) and `origin` frames. |
 | `fetch`, `Request`, `Response`, `Headers`, `FormData` | Streaming bodies, redirects (follow, manual, error), gzip/deflate, `AbortSignal`, `clone()`, multipart, `Response.json()` and `Response.redirect()`. |
 | `stream` | `Readable`, `Writable`, `Duplex`, `Transform`, `PassThrough`, `pipeline`, `finished`, `Readable.from`, async iteration, `stream/promises`, and the web-stream bridges. |
 | `fs`, `fs/promises` | Sync, callback and promise forms, file descriptors, `Stats`/`Dirent`, streams, `cp`, `rm`, `mkdtemp`, recursive `readdir`, and Node's error codes and messages. |
-| `crypto` | Hash and HMAC (md5, sha1, sha224/256/384/512, ripemd160), random values, PBKDF2, HKDF, scrypt, AES (ECB, CBC, CTR, GCM), ChaCha20-Poly1305, RSA and ECDSA sign/verify from PEM keys, `timingSafeEqual`, and Web Crypto for digest, HMAC, AES-GCM and key derivation. Output is byte-identical to Node's. |
-| `Buffer`, `events`, `zlib`, `string_decoder` | Complete `Buffer`, an `EventEmitter` that tolerates being mixed into plain objects, gzip/deflate/raw in sync, callback and stream forms. |
+| `crypto` | Hash and HMAC (md5, sha1, sha224/256/384/512, ripemd160), random values, PBKDF2, HKDF, scrypt, AES (ECB, CBC, CTR, GCM), ChaCha20-Poly1305, RSA (PKCS#1 v1.5, PSS) and ECDSA (DER or IEEE P1363) sign/verify, `publicEncrypt`/`privateDecrypt` with PKCS#1 v1.5 and OAEP, key objects (`createPrivateKey`, `createPublicKey`, PEM, DER and JWK in and out, `equals`, `asymmetricKeyDetails`), `generateKeyPair` and `generateKeySync` for RSA and EC, `createECDH` and `crypto.diffieHellman`, `createDiffieHellman` and the MODP groups, `generatePrime` and `checkPrime`, `X509Certificate`, `timingSafeEqual`, and Web Crypto for digest, HMAC, AES-GCM and key derivation. Output is byte-identical to Node's. |
+| `Buffer`, `events`, `zlib`, `string_decoder` | Complete `Buffer`, an `EventEmitter` that tolerates being mixed into plain objects, gzip/deflate/raw and Brotli (`brotliCompress`, `brotliDecompress`, `params`, `maxOutputLength`, Node's error codes) in sync, callback and stream forms. |
 | `os`, `process`, `vm`, `module`, `url`, `worker_threads`, `readline`, `punycode` | Provided. `process` has real standard streams, `exitCode`, `beforeExit`/`exit` and signals; `vm` contexts are sandbox objects in one realm, not a security boundary. |
 | `child_process` | `spawnSync`, `execSync`, `execFileSync`, `exec`, `execFile` and `spawn`, with byte-exact output, `input`, `ENOENT` for a missing program, and `signal` for a killed one. A child runs to completion: what a `spawn`ed child's stdin is given is fed to it at once, and its output arrives as 'data' events when it ends, so an interactive back-and-forth with a running child is not possible. `fork` (no IPC channel) is not provided. |
 | `dgram`, `net` over a path | UDP sockets (`createSocket('udp4'/'udp6')`, `bind`, `send`, `message`, broadcast, TTL, multicast membership) and unix-domain sockets (`listen(path)`, `connect(path)`). Windows before 10 has no AF_UNIX, so there a socket path is a file that names a loopback TCP port: programs built with Graak reach each other that way, but a program that is not one of them cannot connect. |
@@ -209,7 +210,7 @@ served from a packaged `linux-modern-x64` build; **`ws`** as a WebSocket server 
 binary frames; **discord.js 14** with **ForgeScript**, whose REST client makes a real request to Discord; and native
 addons such as **@napi-rs/canvas**, **sharp** and **better-sqlite3**.
 
-Not provided, and said so when used: HTTP/2, Brotli, `cluster`, `inspector`, `repl`, `wasi`, and in `crypto` key generation, Diffie-Hellman, RSA-OAEP/PSS and key objects other than secret keys. An
+Not provided, and said so when used: `cluster`, `inspector`, `repl`, `wasi`, Zstd, and in `crypto` the Ed25519, Ed448, X25519, X448 and DSA key types (mbedTLS has no signature scheme for them), `pfx` and exporting a private key protected by a passphrase. An
 exception nothing catches is handled as Node handles it: `process.on("uncaughtException")` gets it, otherwise it is
 printed and the process exits with status 1. A server binds IPv4 unless told otherwise (`listen(port)` is `0.0.0.0`).
 
@@ -295,9 +296,9 @@ that merely loads proves nothing. `tools/engine-conformance.js` measures any eng
 | Node.js 12.22.12 (the Windows 7 pin) | 5/10 | 1/10 | 1/8 | 29/30 | **36/58** |
 | quickjs-ng, bare engine | 10/10 | 10/10 | 0/8 | 0/30 | **20/58** |
 | quickjs-ng + JavaScript layer | 10/10 | 10/10 | 8/8 | 21/30 | **49/58** |
-| quickjs-ng + JavaScript layer + native host | 10/10 | 10/10 | 8/8 | 29/30 | **57/58** |
+| quickjs-ng + JavaScript layer + native host | 10/10 | 10/10 | 8/8 | 30/30 | **58/58** |
 
-The one gap is `http2`, left as an error that explains itself rather than a stub.
+There is no gap in the 58 that is left as a stub.
 
 ### Native host
 

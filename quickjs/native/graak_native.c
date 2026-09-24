@@ -91,6 +91,22 @@ extern const char graak_ca_bundle[];
 #define FG_EADDRNOTAVAIL EADDRNOTAVAIL
 #endif
 
+typedef struct {
+    char *servername;
+    char *ca;         /* PEM: replaces the compiled-in bundle (client), or verifies client certificates (server) */
+    char *cert;       /* PEM: a client certificate */
+    char *key;
+    char *passphrase;
+    char *alpn;       /* protocol names joined by '\n' */
+    int min_version;  /* 0 = default, 12 or 13 */
+    int max_version;
+    int request_cert; /* server: ask the client for a certificate */
+    int reject_unauthorized; /* -1 = not given */
+    int deferred;     /* client: the caller checks the host name itself (checkServerIdentity) */
+} fg_tls_cfg;
+
+static void fg_tls_cfg_free(fg_tls_cfg *c);
+
 #define FG_MAX_SOCKETS 256
 
 typedef struct {
@@ -108,16 +124,22 @@ typedef struct {
     char *pem_key;
     mbedtls_x509_crt srvcert;
     mbedtls_pk_context srvkey;
+    /* Options the caller gave (tls.connect / tls.createServer). A socket owns copies: mbedTLS keeps the ALPN list
+       pointers, and a listener hands its options to every socket it accepts. */
+    fg_tls_cfg cfg;
+    const char *alpn_ptrs[10];
+    mbedtls_x509_crt clicert;
+    mbedtls_pk_context clikey;
 } fg_socket;
 
 /* A fixed table rather than a growing map: ids are indices, an out-of-range or unused id is
    rejected, and JavaScript therefore cannot reach memory by guessing a number. */
 static fg_socket fg_sockets[FG_MAX_SOCKETS];
 static mbedtls_entropy_context fg_entropy;
-static mbedtls_ctr_drbg_context fg_drbg;
+mbedtls_ctr_drbg_context fg_drbg;
 static int fg_rng_ready = 0;
 
-static int fg_rng_init(void)
+int fg_rng_init(void)
 {
     static const char *pers = "graak";
     int ret;
@@ -166,11 +188,144 @@ static void fg_socket_release(fg_socket *sock)
         mbedtls_x509_crt_free(&sock->cacert);
         mbedtls_x509_crt_free(&sock->srvcert);
         mbedtls_pk_free(&sock->srvkey);
+        mbedtls_x509_crt_free(&sock->clicert);
+        mbedtls_pk_free(&sock->clikey);
     }
+    fg_tls_cfg_free(&sock->cfg);
     free(sock->pem_cert);
     free(sock->pem_key);
     mbedtls_net_free(&sock->net);
     memset(sock, 0, sizeof(*sock));
+}
+
+static void fg_tls_cfg_free(fg_tls_cfg *c)
+{
+    free(c->servername);
+    free(c->ca);
+    free(c->cert);
+    free(c->key);
+    free(c->passphrase);
+    free(c->alpn);
+    memset(c, 0, sizeof(*c));
+}
+
+static char *fg_prop_strdup(JSContext *ctx, JSValueConst obj, const char *name)
+{
+    JSValue v = JS_GetPropertyStr(ctx, obj, name);
+    char *out = NULL;
+    if (JS_IsString(v)) {
+        const char *cs = JS_ToCString(ctx, v);
+        if (cs) {
+            out = strdup(cs);
+            JS_FreeCString(ctx, cs);
+        }
+    }
+    JS_FreeValue(ctx, v);
+    return out;
+}
+
+static int fg_prop_int(JSContext *ctx, JSValueConst obj, const char *name, int fallback)
+{
+    JSValue v = JS_GetPropertyStr(ctx, obj, name);
+    int32_t n = fallback;
+    if (JS_IsNumber(v)) {
+        JS_ToInt32(ctx, &n, v);
+    } else if (JS_IsBool(v)) {
+        n = JS_ToBool(ctx, v);
+    }
+    JS_FreeValue(ctx, v);
+    return n;
+}
+
+/* Reads { servername, ca, cert, key, passphrase, alpn, minVersion, maxVersion, requestCert, rejectUnauthorized }. */
+static void fg_tls_cfg_parse(JSContext *ctx, JSValueConst obj, fg_tls_cfg *c)
+{
+    memset(c, 0, sizeof(*c));
+    c->reject_unauthorized = -1;
+    if (!JS_IsObject(obj)) return;
+    c->servername = fg_prop_strdup(ctx, obj, "servername");
+    c->ca = fg_prop_strdup(ctx, obj, "ca");
+    c->cert = fg_prop_strdup(ctx, obj, "cert");
+    c->key = fg_prop_strdup(ctx, obj, "key");
+    c->passphrase = fg_prop_strdup(ctx, obj, "passphrase");
+    c->alpn = fg_prop_strdup(ctx, obj, "alpn");
+    c->min_version = fg_prop_int(ctx, obj, "minVersion", 0);
+    c->max_version = fg_prop_int(ctx, obj, "maxVersion", 0);
+    c->request_cert = fg_prop_int(ctx, obj, "requestCert", 0);
+    c->reject_unauthorized = fg_prop_int(ctx, obj, "rejectUnauthorized", -1);
+    c->deferred = fg_prop_int(ctx, obj, "deferred", 0);
+}
+
+static void fg_tls_cfg_copy(fg_tls_cfg *to, const fg_tls_cfg *from)
+{
+    *to = *from;
+    to->servername = from->servername ? strdup(from->servername) : NULL;
+    to->ca = from->ca ? strdup(from->ca) : NULL;
+    to->cert = from->cert ? strdup(from->cert) : NULL;
+    to->key = from->key ? strdup(from->key) : NULL;
+    to->passphrase = from->passphrase ? strdup(from->passphrase) : NULL;
+    to->alpn = from->alpn ? strdup(from->alpn) : NULL;
+}
+
+/* Applies the options to a socket whose ssl_config already has its defaults. `is_client` picks which side the
+   certificate options mean. Returns an mbedTLS error code, or 0. */
+static int fg_tls_apply(fg_socket *sock, int is_client, int insecure)
+{
+    fg_tls_cfg *c = &sock->cfg;
+    int ret = 0;
+
+    if (c->min_version == 13) {
+        mbedtls_ssl_conf_min_tls_version(&sock->conf, MBEDTLS_SSL_VERSION_TLS1_3);
+    }
+    if (c->max_version == 12) {
+        mbedtls_ssl_conf_max_tls_version(&sock->conf, MBEDTLS_SSL_VERSION_TLS1_2);
+    }
+    if (c->alpn && c->alpn[0]) {
+        int n = 0;
+        char *tok = c->alpn;
+        char *nl;
+        while (tok && *tok && n < 9) {
+            sock->alpn_ptrs[n++] = tok;
+            nl = strchr(tok, '\n');
+            if (nl) {
+                *nl = 0;
+                tok = nl + 1;
+            } else {
+                tok = NULL;
+            }
+        }
+        sock->alpn_ptrs[n] = NULL;
+        ret = mbedtls_ssl_conf_alpn_protocols(&sock->conf, sock->alpn_ptrs);
+        if (ret != 0) return ret;
+    }
+    if (is_client) {
+        const char *pem = c->ca ? c->ca : graak_ca_bundle;
+        ret = mbedtls_x509_crt_parse(&sock->cacert, (const unsigned char *) pem, strlen(pem) + 1);
+        if (ret < 0) return ret;
+        mbedtls_ssl_conf_authmode(&sock->conf, (insecure || c->deferred) ? MBEDTLS_SSL_VERIFY_OPTIONAL : MBEDTLS_SSL_VERIFY_REQUIRED);
+        mbedtls_ssl_conf_ca_chain(&sock->conf, &sock->cacert, NULL);
+        if (c->cert && c->key) {
+            mbedtls_x509_crt_init(&sock->clicert);
+            mbedtls_pk_init(&sock->clikey);
+            ret = mbedtls_x509_crt_parse(&sock->clicert, (const unsigned char *) c->cert, strlen(c->cert) + 1);
+            if (ret != 0) return ret;
+            ret = mbedtls_pk_parse_key(&sock->clikey, (const unsigned char *) c->key, strlen(c->key) + 1,
+                                       (const unsigned char *) c->passphrase, c->passphrase ? strlen(c->passphrase) : 0,
+                                       mbedtls_ctr_drbg_random, &fg_drbg);
+            if (ret != 0) return ret;
+            ret = mbedtls_ssl_conf_own_cert(&sock->conf, &sock->clicert, &sock->clikey);
+            if (ret != 0) return ret;
+        }
+    } else if (c->request_cert) {
+        int reject = c->reject_unauthorized != 0;
+        if (c->ca) {
+            ret = mbedtls_x509_crt_parse(&sock->cacert, (const unsigned char *) c->ca, strlen(c->ca) + 1);
+            if (ret < 0) return ret;
+            mbedtls_ssl_conf_ca_chain(&sock->conf, &sock->cacert, NULL);
+        }
+        mbedtls_ssl_conf_authmode(&sock->conf, reject && c->ca ? MBEDTLS_SSL_VERIFY_REQUIRED : MBEDTLS_SSL_VERIFY_OPTIONAL);
+    }
+    return 0;
 }
 
 static JSValue fg_connect(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
@@ -290,6 +445,40 @@ tls_failed:
         JS_FreeCString(ctx, host);
         return err;
     }
+}
+
+/* tlsInfo(id) -> { version, cipher, alpn, verify (mbedTLS flags, 0 = verified), peer: [DER, ...] } */
+static JSValue fg_tls_info(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    int32_t id;
+    fg_socket *sock;
+    JSValue o, peers;
+    const mbedtls_x509_crt *crt;
+    const char *alpn;
+    uint32_t i = 0;
+
+    if (JS_ToInt32(ctx, &id, argv[0])) {
+        return JS_EXCEPTION;
+    }
+    sock = fg_socket_get(ctx, id);
+    if (!sock) {
+        return JS_EXCEPTION;
+    }
+    if (!sock->is_tls || sock->hs_pending) {
+        return JS_NULL;
+    }
+    o = JS_NewObject(ctx);
+    JS_SetPropertyStr(ctx, o, "version", JS_NewString(ctx, mbedtls_ssl_get_version(&sock->ssl)));
+    JS_SetPropertyStr(ctx, o, "cipher", JS_NewString(ctx, mbedtls_ssl_get_ciphersuite(&sock->ssl)));
+    alpn = mbedtls_ssl_get_alpn_protocol(&sock->ssl);
+    JS_SetPropertyStr(ctx, o, "alpn", alpn ? JS_NewString(ctx, alpn) : JS_NULL);
+    JS_SetPropertyStr(ctx, o, "verify", JS_NewUint32(ctx, mbedtls_ssl_get_verify_result(&sock->ssl)));
+    peers = JS_NewArray(ctx);
+    for (crt = mbedtls_ssl_get_peer_cert(&sock->ssl); crt; crt = crt->next) {
+        JS_SetPropertyUint32(ctx, peers, i++, JS_NewUint8ArrayCopy(ctx, crt->raw.p, crt->raw.len));
+    }
+    JS_SetPropertyStr(ctx, o, "peer", peers);
+    return o;
 }
 
 /* Waits for a descriptor, so a write that would block does not spin. */
@@ -542,7 +731,7 @@ static JSValue fg_listen(JSContext *ctx, JSValueConst this_val, int argc, JSValu
     JSValue result;
 
     if (argc < 2 || JS_ToInt32(ctx, &port, argv[1])) {
-        return JS_ThrowTypeError(ctx, "listen(host, port, backlog, cert, key) needs a port");
+        return JS_ThrowTypeError(ctx, "listen(host, port, backlog, cert, key, options) needs a port");
     }
     if (JS_IsString(argv[0])) {
         host = JS_ToCString(ctx, argv[0]);
@@ -576,6 +765,9 @@ static JSValue fg_listen(JSContext *ctx, JSValueConst this_val, int argc, JSValu
         goto done;
     }
     sock->in_use = 1;
+    if (argc > 5) {
+        fg_tls_cfg_parse(ctx, argv[5], &sock->cfg);
+    }
     if (cert && key) {
         sock->pem_cert = strdup(cert);
         sock->pem_key = strdup(key);
@@ -591,8 +783,10 @@ static JSValue fg_listen(JSContext *ctx, JSValueConst this_val, int argc, JSValu
         mbedtls_pk_init(&probe_key);
         ret = mbedtls_x509_crt_parse(&probe_crt, (const unsigned char *) cert, strlen(cert) + 1);
         if (ret == 0) {
-            ret = mbedtls_pk_parse_key(&probe_key, (const unsigned char *) key, strlen(key) + 1, NULL, 0,
-                                       mbedtls_ctr_drbg_random, &fg_drbg);
+            ret = mbedtls_pk_parse_key(&probe_key, (const unsigned char *) key, strlen(key) + 1,
+                                       (const unsigned char *) sock->cfg.passphrase,
+                                       sock->cfg.passphrase ? strlen(sock->cfg.passphrase) : 0, mbedtls_ctr_drbg_random,
+                                       &fg_drbg);
         }
         mbedtls_x509_crt_free(&probe_crt);
         mbedtls_pk_free(&probe_key);
@@ -657,12 +851,18 @@ static JSValue fg_accept(JSContext *ctx, JSValueConst this_val, int argc, JSValu
         mbedtls_ssl_config_init(&sock->conf);
         mbedtls_x509_crt_init(&sock->srvcert);
         mbedtls_pk_init(&sock->srvkey);
+        mbedtls_x509_crt_init(&sock->cacert);
+        mbedtls_x509_crt_init(&sock->clicert);
+        mbedtls_pk_init(&sock->clikey);
+        fg_tls_cfg_copy(&sock->cfg, &lis->cfg);
         sock->is_tls = 1;
         ret = mbedtls_x509_crt_parse(&sock->srvcert, (const unsigned char *) lis->pem_cert,
                                      strlen(lis->pem_cert) + 1);
         if (ret == 0) {
             ret = mbedtls_pk_parse_key(&sock->srvkey, (const unsigned char *) lis->pem_key,
-                                       strlen(lis->pem_key) + 1, NULL, 0, mbedtls_ctr_drbg_random, &fg_drbg);
+                                       strlen(lis->pem_key) + 1, (const unsigned char *) sock->cfg.passphrase,
+                                       sock->cfg.passphrase ? strlen(sock->cfg.passphrase) : 0, mbedtls_ctr_drbg_random,
+                                       &fg_drbg);
         }
         if (ret == 0) {
             ret = mbedtls_ssl_config_defaults(&sock->conf, MBEDTLS_SSL_IS_SERVER, MBEDTLS_SSL_TRANSPORT_STREAM,
@@ -671,6 +871,9 @@ static JSValue fg_accept(JSContext *ctx, JSValueConst this_val, int argc, JSValu
         if (ret == 0) {
             mbedtls_ssl_conf_rng(&sock->conf, mbedtls_ctr_drbg_random, &fg_drbg);
             ret = mbedtls_ssl_conf_own_cert(&sock->conf, &sock->srvcert, &sock->srvkey);
+        }
+        if (ret == 0) {
+            ret = fg_tls_apply(sock, 0, 0);
         }
         if (ret == 0) {
             ret = mbedtls_ssl_setup(&sock->ssl, &sock->conf);
@@ -891,7 +1094,7 @@ static JSValue fg_connect_start(JSContext *ctx, JSValueConst this_val, int argc,
     fg_socket *sock;
 
     if (argc < 2 || JS_ToInt32(ctx, &port, argv[1])) {
-        return JS_ThrowTypeError(ctx, "connectStart(host, port, tls, insecure) needs a host and a port");
+        return JS_ThrowTypeError(ctx, "connectStart(host, port, tls, insecure, options) needs a host and a port");
     }
     host = JS_ToCString(ctx, argv[0]);
     if (!host) {
@@ -964,21 +1167,24 @@ static JSValue fg_connect_start(JSContext *ctx, JSValueConst this_val, int argc,
         mbedtls_ssl_init(&sock->ssl);
         mbedtls_ssl_config_init(&sock->conf);
         mbedtls_x509_crt_init(&sock->cacert);
-        ret = mbedtls_x509_crt_parse(&sock->cacert, (const unsigned char *) graak_ca_bundle,
-                                     strlen(graak_ca_bundle) + 1);
-        if (ret >= 0) {
-            ret = mbedtls_ssl_config_defaults(&sock->conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM,
-                                              MBEDTLS_SSL_PRESET_DEFAULT);
+        mbedtls_x509_crt_init(&sock->clicert);
+        mbedtls_pk_init(&sock->clikey);
+        if (argc > 4) {
+            fg_tls_cfg_parse(ctx, argv[4], &sock->cfg);
+        }
+        sock->cfg.reject_unauthorized = insecure ? 0 : 1;
+        ret = mbedtls_ssl_config_defaults(&sock->conf, MBEDTLS_SSL_IS_CLIENT, MBEDTLS_SSL_TRANSPORT_STREAM,
+                                          MBEDTLS_SSL_PRESET_DEFAULT);
+        if (ret == 0) {
+            mbedtls_ssl_conf_rng(&sock->conf, mbedtls_ctr_drbg_random, &fg_drbg);
+            ret = fg_tls_apply(sock, 1, insecure);
         }
         if (ret == 0) {
-            mbedtls_ssl_conf_authmode(&sock->conf, insecure ? MBEDTLS_SSL_VERIFY_NONE : MBEDTLS_SSL_VERIFY_REQUIRED);
-            mbedtls_ssl_conf_ca_chain(&sock->conf, &sock->cacert, NULL);
-            mbedtls_ssl_conf_rng(&sock->conf, mbedtls_ctr_drbg_random, &fg_drbg);
             ret = mbedtls_ssl_setup(&sock->ssl, &sock->conf);
         }
         if (ret == 0) {
             /* SNI, and the name the certificate is checked against. An IP literal is sent as-is. */
-            ret = mbedtls_ssl_set_hostname(&sock->ssl, host);
+            ret = mbedtls_ssl_set_hostname(&sock->ssl, sock->cfg.servername ? sock->cfg.servername : host);
         }
         if (ret != 0) {
             sock->in_use = 1;
@@ -1044,13 +1250,58 @@ static JSValue fg_connect_status(JSContext *ctx, JSValueConst this_val, int argc
         int st = fg_handshake_step(sock, &code);
         if (st < 0) {
             char buf[128];
+            const char *ecode = "ERR_TLS_HANDSHAKE";
             mbedtls_strerror(code, buf, sizeof(buf));
-            return fg_throw_code(ctx, code == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED ? "UNABLE_TO_VERIFY_LEAF_SIGNATURE"
-                                                                                  : "ERR_TLS_HANDSHAKE",
-                                 "TLS handshake failed: %s", buf);
+            if (code == MBEDTLS_ERR_X509_CERT_VERIFY_FAILED) {
+                uint32_t flags = mbedtls_ssl_get_verify_result(&sock->ssl);
+                if (flags & MBEDTLS_X509_BADCERT_EXPIRED) {
+                    ecode = "CERT_HAS_EXPIRED";
+                } else if (flags & MBEDTLS_X509_BADCERT_CN_MISMATCH) {
+                    ecode = "ERR_TLS_CERT_ALTNAME_INVALID";
+                } else if (flags & MBEDTLS_X509_BADCERT_NOT_TRUSTED) {
+                    const mbedtls_x509_crt *peer = mbedtls_ssl_get_peer_cert(&sock->ssl);
+                    if (!peer && sock->ssl.MBEDTLS_PRIVATE(session_negotiate)) {
+                        /* A handshake that failed verification never reached the session; the negotiation still holds it. */
+                        peer = sock->ssl.MBEDTLS_PRIVATE(session_negotiate)->MBEDTLS_PRIVATE(peer_cert);
+                    }
+                    ecode = peer && !peer->next && peer->issuer_raw.len == peer->subject_raw.len &&
+                                    memcmp(peer->issuer_raw.p, peer->subject_raw.p, peer->subject_raw.len) == 0
+                                ? "DEPTH_ZERO_SELF_SIGNED_CERT"
+                                : "UNABLE_TO_VERIFY_LEAF_SIGNATURE";
+                } else {
+                    ecode = "UNABLE_TO_VERIFY_LEAF_SIGNATURE";
+                }
+            } else if (code == MBEDTLS_ERR_SSL_NO_APPLICATION_PROTOCOL) {
+                ecode = "ERR_SSL_TLSV1_ALERT_NO_APPLICATION_PROTOCOL";
+            } else if (code == MBEDTLS_ERR_SSL_FATAL_ALERT_MESSAGE) {
+                /* The alert that came in is still in the record buffer: level, then description. */
+                int alert = sock->ssl.MBEDTLS_PRIVATE(in_msg) ? sock->ssl.MBEDTLS_PRIVATE(in_msg)[1] : 0;
+                switch (alert) {
+                case 70: ecode = "ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION"; break;
+                case 40: ecode = "ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE"; break;
+                case 120: ecode = "ERR_SSL_TLSV1_ALERT_NO_APPLICATION_PROTOCOL"; break;
+                case 116: ecode = "ERR_SSL_TLSV13_ALERT_CERTIFICATE_REQUIRED"; break;
+                case 42: ecode = "ERR_SSL_SSLV3_ALERT_BAD_CERTIFICATE"; break;
+                case 48: ecode = "ERR_SSL_TLSV1_ALERT_UNKNOWN_CA"; break;
+                default: break;
+                }
+            } else if (code == MBEDTLS_ERR_SSL_BAD_PROTOCOL_VERSION) {
+                ecode = "ERR_SSL_TLSV1_ALERT_PROTOCOL_VERSION";
+            } else if (code == MBEDTLS_ERR_SSL_HANDSHAKE_FAILURE) {
+                ecode = "ERR_SSL_SSL/TLS_ALERT_HANDSHAKE_FAILURE";
+            }
+            return fg_throw_code(ctx, ecode, "TLS handshake failed: %s", buf);
         }
         if (st == 0) {
             return JS_FALSE;
+        }
+        if (sock->cfg.deferred && sock->cfg.reject_unauthorized) {
+            /* Everything but the host name is checked here; the name is the caller's to check. */
+            uint32_t flags = mbedtls_ssl_get_verify_result(&sock->ssl) & ~MBEDTLS_X509_BADCERT_CN_MISMATCH;
+            if (flags) {
+                const char *ecode = (flags & MBEDTLS_X509_BADCERT_EXPIRED) ? "CERT_HAS_EXPIRED" : "UNABLE_TO_VERIFY_LEAF_SIGNATURE";
+                return fg_throw_code(ctx, ecode, "TLS handshake failed: %s", "certificate verification failed");
+            }
         }
     }
     return JS_TRUE;
@@ -2306,9 +2557,10 @@ static const JSCFunctionListEntry fg_native_funcs[] = {
     JS_CFUNC_DEF("close", 1, fg_close),
     JS_CFUNC_DEF("send", 3, fg_send),
     JS_CFUNC_DEF("shutdown", 1, fg_shutdown),
-    JS_CFUNC_DEF("listen", 5, fg_listen),
-    JS_CFUNC_DEF("connectStart", 4, fg_connect_start),
+    JS_CFUNC_DEF("listen", 6, fg_listen),
+    JS_CFUNC_DEF("connectStart", 5, fg_connect_start),
     JS_CFUNC_DEF("connectStatus", 1, fg_connect_status),
+    JS_CFUNC_DEF("tlsInfo", 1, fg_tls_info),
     JS_CFUNC_DEF("accept", 1, fg_accept),
     JS_CFUNC_DEF("poll", 3, fg_poll),
     JS_CFUNC_DEF("listenUnix", 2, fg_listen_unix),
@@ -2339,6 +2591,8 @@ extern const JSCFunctionListEntry graak_wasm_funcs[];
 extern const size_t graak_wasm_funcs_count;
 extern const JSCFunctionListEntry graak_sqlite_funcs[];
 extern const size_t graak_sqlite_funcs_count;
+extern const JSCFunctionListEntry graak_crypto_funcs[];
+extern const size_t graak_crypto_funcs_count;
 extern const JSCFunctionListEntry graak_ffi_funcs[];
 extern const size_t graak_ffi_funcs_count;
 void fg_sea_install(JSContext *ctx, JSValueConst native);
@@ -2365,6 +2619,7 @@ void graak_native_init(JSContext *ctx)
     /* SQLite (amalgamation compiled in) and libffi: node:sqlite, Deno KV and Deno.dlopen are built on these. */
     JS_SetPropertyFunctionList(ctx, native, graak_sqlite_funcs, (int) graak_sqlite_funcs_count);
     JS_SetPropertyFunctionList(ctx, native, graak_ffi_funcs, (int) graak_ffi_funcs_count);
+    JS_SetPropertyFunctionList(ctx, native, graak_crypto_funcs, (int) graak_crypto_funcs_count);
     /* A single-file build's payload: the fs layer reads the program's files from it (node-sea.js). */
     fg_sea_install(ctx, native);
     JS_SetPropertyStr(ctx, native, "backend", JS_NewString(ctx, "c"));

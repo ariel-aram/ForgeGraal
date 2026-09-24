@@ -5,8 +5,11 @@
  *
  * Streaming ciphers buffer what they are given and transform it when final() is called: the concatenation of
  * update() and final() outputs is exactly what Node produces, but an update() call alone returns nothing yet.
- * What is not provided says so: key generation, Diffie-Hellman and RSA-PSS/OAEP throw an explanation.
+ * The asymmetric half (key objects, key generation, RSA-PSS/OAEP, ECDH, Diffie-Hellman, X509Certificate) is in
+ * node-crypto2.js. What is not provided says so when used.
  */
+
+import { createAsymmetric } from "./node-crypto2.js";
 
 const HASHES = ["md5", "sha1", "sha224", "sha256", "sha384", "sha512", "ripemd160"];
 const CIPHERS = [
@@ -15,12 +18,6 @@ const CIPHERS = [
 ];
 
 const ALIASES = { "rsa-sha256": "sha256", "rsa-sha1": "sha1", "rsa-sha384": "sha384", "rsa-sha512": "sha512", "rsa-md5": "md5", sha256withrsaencryption: "sha256", sha1withrsaencryption: "sha1", sha512withrsaencryption: "sha512", "sha-1": "sha1", "sha-256": "sha256", "sha-384": "sha384", "sha-512": "sha512", sha2: "sha256" };
-
-function notSupported(name, why) {
-	return () => {
-		throw Object.assign(new Error(`crypto.${name} is not available in the Graak native host: ${why}`), { code: "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM" });
-	};
-}
 
 function createCrypto({ native, Buffer, stream, toBytes }) {
 	const buf = (bytes) => Buffer.from(bytes);
@@ -369,65 +366,17 @@ function createCrypto({ native, Buffer, stream, toBytes }) {
 
 	/* ---------------------------------------------------------- sign and verify */
 
-	const pemOf = (key) => {
-		if (key && typeof key === "object" && !ArrayBuffer.isView(key) && key.key !== undefined) return { pem: String(Buffer.from(bytesOf(key.key)).toString("utf8")), passphrase: key.passphrase };
-		return { pem: Buffer.from(bytesOf(key)).toString("utf8"), passphrase: undefined };
-	};
-
-	class Sign extends stream.Writable {
-		constructor(algorithm) {
-			super();
-			this._hash = hashName(algorithm);
-			this._chunks = [];
-		}
-		update(data, encoding) {
-			this._chunks.push(toBytes(data, encoding));
-			return this;
-		}
-		_write(chunk, encoding, callback) {
-			this._chunks.push(toBytes(chunk, encoding === "buffer" ? undefined : encoding));
-			callback();
-		}
-		sign(privateKey, outputEncoding) {
-			const { pem, passphrase } = pemOf(privateKey);
-			return out(native.pkSign(this._hash, pem, passphrase, concat(this._chunks)), outputEncoding);
-		}
-	}
-	class Verify extends stream.Writable {
-		constructor(algorithm) {
-			super();
-			this._hash = hashName(algorithm);
-			this._chunks = [];
-		}
-		update(data, encoding) {
-			this._chunks.push(toBytes(data, encoding));
-			return this;
-		}
-		_write(chunk, encoding, callback) {
-			this._chunks.push(toBytes(chunk, encoding === "buffer" ? undefined : encoding));
-			callback();
-		}
-		verify(publicKey, signature, signatureEncoding) {
-			const { pem } = pemOf(publicKey);
-			return native.pkVerify(this._hash, pem, concat(this._chunks), toBytes(signature, signatureEncoding));
-		}
-	}
-
 	/* ------------------------------------------------------------------ key objects */
 
 	class KeyObject {
-		constructor(type, data) {
+		constructor(type, data, asym) {
 			this.type = type;
-			this._keyData = data;
+			if (data) this._keyData = data;
+			// Asymmetric keys hold their DER and what the host says about them (see node-crypto2.js).
+			if (asym) Object.defineProperty(this, "_asym", { value: asym });
 		}
 		get symmetricKeySize() {
-			return this._keyData.length;
-		}
-		export() {
-			return buf(this._keyData);
-		}
-		equals(other) {
-			return other instanceof KeyObject && buf(this._keyData).equals(buf(other._keyData));
+			return this._keyData ? this._keyData.length : undefined;
 		}
 	}
 
@@ -490,6 +439,7 @@ function createCrypto({ native, Buffer, stream, toBytes }) {
 
 	/* ------------------------------------------------------------------- the module */
 
+	const asym = createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, concat, KeyObject });
 	const crypto = {
 		createHash: (algorithm, options) => new Hash(algorithm, options),
 		createHmac: (algorithm, key, options) => new Hmac(algorithm, key, options),
@@ -536,36 +486,34 @@ function createCrypto({ native, Buffer, stream, toBytes }) {
 		scryptSync,
 		createCipheriv,
 		createDecipheriv,
-		createSign: (algorithm) => new Sign(algorithm),
-		createVerify: (algorithm) => new Verify(algorithm),
-		sign: (algorithm, data, key) => new Sign(algorithm ?? "sha256").update(data).sign(key),
-		verify: (algorithm, data, key, signature) => new Verify(algorithm ?? "sha256").update(data).verify(key, signature),
 		createSecretKey: (key, encoding) => new KeyObject("secret", bytesOf(key, encoding)),
 		KeyObject,
 		getHashes: () => [...HASHES],
 		getCiphers: () => [...CIPHERS],
-		getCurves: () => ["prime256v1", "secp256r1", "secp384r1", "secp521r1", "secp256k1"],
 		getFips: () => 0,
 		setFips: () => {},
-		createDiffieHellman: notSupported("createDiffieHellman", "key agreement is not implemented"),
-		createECDH: notSupported("createECDH", "key agreement is not implemented"),
-		generateKeyPairSync: notSupported("generateKeyPairSync", "key generation is not implemented"),
-		generateKeyPair: notSupported("generateKeyPair", "key generation is not implemented"),
-		generateKeySync: notSupported("generateKeySync", "key generation is not implemented"),
-		createPrivateKey: notSupported("createPrivateKey", "key objects hold secret keys only; pass the PEM to sign() directly"),
-		createPublicKey: notSupported("createPublicKey", "key objects hold secret keys only; pass the PEM to verify() directly"),
-		publicEncrypt: notSupported("publicEncrypt", "RSA encryption is not implemented"),
-		privateDecrypt: notSupported("privateDecrypt", "RSA encryption is not implemented"),
-		constants: { RSA_PKCS1_PADDING: 1, RSA_NO_PADDING: 3, RSA_PKCS1_OAEP_PADDING: 4, RSA_PKCS1_PSS_PADDING: 6, POINT_CONVERSION_COMPRESSED: 2, POINT_CONVERSION_UNCOMPRESSED: 4 },
+		constants: { RSA_PKCS1_PADDING: 1, RSA_NO_PADDING: 3, RSA_PKCS1_OAEP_PADDING: 4, RSA_PKCS1_PSS_PADDING: 6, POINT_CONVERSION_COMPRESSED: 2, POINT_CONVERSION_UNCOMPRESSED: 4, POINT_CONVERSION_HYBRID: 6, ...asym.constants },
 		Hash,
 		Hmac,
 		Cipheriv,
 		Decipheriv: Cipheriv,
-		Sign,
-		Verify,
 		webcrypto,
 		subtle,
 	};
+	const {
+		Sign, Verify, sign, verify, createPrivateKey, createPublicKey, generateKeyPair, generateKeyPairSync, generateKeySync, generateKey,
+		publicEncrypt, privateDecrypt, privateEncrypt, publicDecrypt, ECDH, createECDH, diffieHellman, DiffieHellman, DiffieHellmanGroup,
+		createDiffieHellman, createDiffieHellmanGroup, getDiffieHellman, generatePrime, generatePrimeSync, checkPrime, checkPrimeSync,
+		X509Certificate, getCurves,
+	} = asym;
+	Object.assign(crypto, {
+		Sign, Verify, sign, verify, createSign: (algorithm) => new Sign(algorithm), createVerify: (algorithm) => new Verify(algorithm),
+		createPrivateKey, createPublicKey, generateKeyPair, generateKeyPairSync, generateKeySync, generateKey,
+		publicEncrypt, privateDecrypt, privateEncrypt, publicDecrypt, ECDH, createECDH, diffieHellman, DiffieHellman, DiffieHellmanGroup,
+		createDiffieHellman, createDiffieHellmanGroup, getDiffieHellman, generatePrime, generatePrimeSync, checkPrime, checkPrimeSync,
+		X509Certificate, getCurves,
+	});
+	Object.defineProperty(crypto, "tools", { value: asym.tools });
 	return crypto;
 }
 

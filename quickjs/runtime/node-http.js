@@ -314,6 +314,14 @@ function addHeader(headers, rawName, value) {
 
 /* ---------------------------------------------------------------- messages */
 
+/* The options an https request hands on to the TLS layer. */
+const TLS_OPTION_NAMES = ["ca", "cert", "key", "passphrase", "minVersion", "maxVersion", "ALPNProtocols", "checkServerIdentity", "secureContext", "pfx", "ciphers"];
+function tlsOptionsOf(opts) {
+	const out = {};
+	for (const name of TLS_OPTION_NAMES) if (opts[name] !== undefined) out[name] = opts[name];
+	return out;
+}
+
 function createHttpModules({ net, tls }, EventEmitter, stream, ForgeBuffer) {
 	const { Readable, Stream } = stream;
 	const Buf = () => ForgeBuffer ?? globalThis.Buffer;
@@ -1011,7 +1019,7 @@ function createHttpModules({ net, tls }, EventEmitter, stream, ForgeBuffer) {
 						port: this.port,
 						servername: opts.servername ?? this.host,
 						rejectUnauthorized: opts.rejectUnauthorized !== false,
-						...(secure ? {} : {}),
+						...(secure ? tlsOptionsOf(opts) : {}),
 				  });
 			this._bind(socket);
 			// 'socket' is announced after the caller could attach to the request.

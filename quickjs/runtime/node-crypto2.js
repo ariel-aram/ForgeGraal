@@ -1,0 +1,1032 @@
+/*
+ * The asymmetric half of Node's `crypto` on the native host: key objects (PEM, DER and JWK in and out), generateKeyPair,
+ * sign and verify with RSA PKCS#1 v1.5, RSA-PSS and ECDSA (DER or IEEE P1363), publicEncrypt and privateDecrypt with
+ * RSA PKCS#1 v1.5 and OAEP, ECDH, Diffie-Hellman, prime generation and testing, and X509Certificate.
+ *
+ * mbedTLS does the mathematics (see quickjs/native/fg_crypto.c); this file is the Node-shaped surface and the little
+ * DER writer that turns mbedTLS's PKCS#1 / SEC1 output into the PKCS#8 and SPKI forms Node exports.
+ *
+ * Not provided, and said so when used: Ed25519, Ed448, X25519, X448 and DSA keys (mbedTLS has no signature scheme
+ * for them), and encrypting a private key with a passphrase on export.
+ */
+
+import { MODP_PRIMES } from "./node-crypto-dh.js";
+
+const OID_RSA = "1.2.840.113549.1.1.1";
+const OID_EC = "1.2.840.10045.2.1";
+const CURVE_OIDS = {
+	secp192r1: "1.2.840.10045.3.1.1",
+	secp224r1: "1.3.132.0.33",
+	secp256r1: "1.2.840.10045.3.1.7",
+	secp384r1: "1.3.132.0.34",
+	secp521r1: "1.3.132.0.35",
+	secp192k1: "1.3.132.0.31",
+	secp224k1: "1.3.132.0.32",
+	secp256k1: "1.3.132.0.10",
+	brainpoolP256r1: "1.3.36.3.3.2.8.1.1.7",
+	brainpoolP384r1: "1.3.36.3.3.2.8.1.1.11",
+	brainpoolP512r1: "1.3.36.3.3.2.8.1.1.13",
+};
+const CURVE_ALIASES = { prime256v1: "secp256r1", "P-256": "secp256r1", "P-384": "secp384r1", "P-521": "secp521r1", prime192v1: "secp192r1" };
+const JWK_CURVES = { secp256r1: "P-256", secp384r1: "P-384", secp521r1: "P-521", secp256k1: "secp256k1" };
+const CURVES = ["prime192v1", "secp224r1", "prime256v1", "secp384r1", "secp521r1", "secp192k1", "secp224k1", "secp256k1", "brainpoolP256r1", "brainpoolP384r1", "brainpoolP512r1"];
+const UNSUPPORTED_KEY_TYPES = ["ed25519", "ed448", "x25519", "x448", "dsa", "dh"];
+
+const canonicalCurve = (name) => CURVE_ALIASES[name] ?? name;
+const codeError = (Ctor, code, message) => Object.assign(new Ctor(message), { code });
+const unavailable = (what, why) => codeError(Error, "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM", `${what} is not available in the Graak native host: ${why}`);
+
+/* ------------------------------------------------------------------------------------------------ DER */
+
+const join = (parts) => {
+	let total = 0;
+	for (const part of parts) total += part.length;
+	const out = new Uint8Array(total);
+	let offset = 0;
+	for (const part of parts) {
+		out.set(part, offset);
+		offset += part.length;
+	}
+	return out;
+};
+const derLength = (n) => (n < 128 ? [n] : n < 256 ? [0x81, n] : n < 65536 ? [0x82, n >> 8, n & 255] : [0x83, n >> 16, (n >> 8) & 255, n & 255]);
+const tlv = (tag, ...parts) => {
+	const body = join(parts);
+	return join([Uint8Array.of(tag, ...derLength(body.length)), body]);
+};
+const derSeq = (...parts) => tlv(0x30, ...parts);
+const derInt = (bytes) => {
+	let start = 0;
+	while (start < bytes.length - 1 && bytes[start] === 0) start++;
+	const trimmed = bytes.subarray(start);
+	return tlv(2, trimmed[0] & 0x80 ? join([Uint8Array.of(0), trimmed]) : trimmed);
+};
+const derOctets = (bytes) => tlv(4, bytes);
+const derBits = (bytes) => tlv(3, Uint8Array.of(0), bytes);
+const derNull = () => Uint8Array.of(5, 0);
+const derOid = (dotted) => {
+	const parts = dotted.split(".").map(Number);
+	const bytes = [parts[0] * 40 + parts[1]];
+	for (const part of parts.slice(2)) {
+		const stack = [part & 127];
+		for (let v = part >>> 7; v > 0; v >>>= 7) stack.push((v & 127) | 128);
+		bytes.push(...stack.reverse());
+	}
+	return tlv(6, Uint8Array.from(bytes));
+};
+/* One element at `pos`: its tag, where its content starts and ends, and where the next element begins. */
+const readTlv = (bytes, pos) => {
+	const tag = bytes[pos];
+	let length = bytes[pos + 1];
+	let start = pos + 2;
+	if (length & 0x80) {
+		const count = length & 0x7f;
+		length = 0;
+		for (let i = 0; i < count; i++) length = length * 256 + bytes[start + i];
+		start += count;
+	}
+	return { tag, start, end: start + length, next: start + length };
+};
+const readChildren = (bytes, element) => {
+	const out = [];
+	for (let pos = element.start; pos < element.end; ) {
+		const child = readTlv(bytes, pos);
+		out.push(child);
+		pos = child.next;
+	}
+	return out;
+};
+const unsignedBytes = (bytes, element) => {
+	let start = element.start;
+	while (start < element.end - 1 && bytes[start] === 0) start++;
+	return bytes.subarray(start, element.end);
+};
+
+const PEM_LINE = 64;
+const toPem = (label, der, Buffer) => {
+	const b64 = Buffer.from(der).toString("base64");
+	const lines = [];
+	for (let i = 0; i < b64.length; i += PEM_LINE) lines.push(b64.slice(i, i + PEM_LINE));
+	return `-----BEGIN ${label}-----\n${lines.join("\n")}\n-----END ${label}-----\n`;
+};
+
+/* ---------------------------------------------------------------------------------------------- factory */
+
+function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, concat, KeyObject }) {
+	const buf = (bytes) => Buffer.from(bytes);
+	const pem = (label, der) => toPem(label, der, Buffer);
+	const b64u = (bytes) => buf(bytes).toString("base64url");
+	const fromB64u = (text) => new Uint8Array(Buffer.from(String(text), "base64url"));
+	const invalidArg = (name, expected, value) =>
+		codeError(TypeError, "ERR_INVALID_ARG_TYPE", `The "${name}" argument must be ${expected}. Received ${value === null ? "null" : typeof value}`);
+	const noneOr = (value, encoding) => (encoding && encoding !== "buffer" ? buf(value).toString(encoding) : buf(value));
+
+	/* ------------------------------------------------------------------------------- key objects */
+
+	/* An asymmetric key object holds: priv (PKCS#1 or SEC1 DER, private keys only), spki (DER) and info (from the host). */
+	const makeKey = (info, asPublic) => {
+		const key = new KeyObject(info.private && !asPublic ? "private" : "public", null, {
+			priv: info.private && !asPublic ? info.pkcs : null,
+			spki: info.spki,
+			info,
+		});
+		return key;
+	};
+
+	const detectUnsupported = (bytes) => {
+		const text = buf(bytes).toString("latin1");
+		// The OIDs 1.3.101.110..113 (X25519, X448, Ed25519, Ed448) are 2B 65 6E..71.
+		if (/\x2b\x65[\x6e-\x71]/.test(text)) return "Ed25519, Ed448, X25519 and X448 keys";
+		return null;
+	};
+
+	const readKeyBytes = (input, isPrivate, formatHint) => {
+		let data = input;
+		if (typeof data === "string") return { data, isString: true };
+		data = toBytes(data);
+		const text = buf(data).toString("latin1");
+		if (formatHint !== "der" && /^\s*-----BEGIN /.test(text)) return { data: buf(data).toString("utf8"), isString: true };
+		return { data, isString: false };
+	};
+
+	const parseInput = (key, { wantPrivate, jwkOk = true } = {}) => {
+		if (key instanceof KeyObject) {
+			if (key.type === "secret") throw codeError(TypeError, "ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE", "Invalid key object type secret, expected private.");
+			if (wantPrivate && key.type !== "private") {
+				throw codeError(TypeError, "ERR_CRYPTO_INVALID_KEY_OBJECT_TYPE", `Invalid key object type ${key.type}, expected private.`);
+			}
+			return { keyObject: key };
+		}
+		let options = {};
+		let material = key;
+		if (key && typeof key === "object" && !ArrayBuffer.isView(key) && !(key instanceof ArrayBuffer)) {
+			options = key;
+			material = key.key;
+			if (material instanceof KeyObject) return { keyObject: material, options };
+			if (options.format === "jwk" && jwkOk) return { jwk: material ?? options.key, options };
+		}
+		if (material === undefined || material === null) throw invalidArg("key", "of type string or an instance of ArrayBuffer, Buffer, TypedArray, DataView, KeyObject, or CryptoKey", material);
+		if (typeof material === "object" && material.kty) return { jwk: material, options };
+		const { data } = readKeyBytes(material, wantPrivate, options.format);
+		const passphrase = options.passphrase === undefined ? undefined : typeof options.passphrase === "string" ? options.passphrase : buf(toBytes(options.passphrase)).toString("utf8");
+		return { data, passphrase, options };
+	};
+
+	const infoOf = (data, passphrase, wantPrivate) => {
+		try {
+			return native.keyInfo(data, passphrase, wantPrivate);
+		} catch (err) {
+			const bytes = typeof data === "string" ? buf(data, "utf8") : data;
+			const unsupported = detectUnsupported(bytes.length < 200000 ? decodePem(bytes) : bytes);
+			if (unsupported) throw unavailable(unsupported, "mbedTLS has no signature or key agreement for them");
+			if (err.code === "ERR_MISSING_PASSPHRASE") throw codeError(Error, "ERR_OSSL_CRYPTO_INTERRUPTED_OR_CANCELLED", "error:1C800064:Provider routines::bad decrypt");
+			throw err;
+		}
+	};
+	const decodePem = (bytes) => {
+		const text = buf(bytes).toString("latin1");
+		const m = /-----BEGIN [A-Z0-9 ]+-----([\s\S]*?)-----END/.exec(text);
+		return m ? new Uint8Array(Buffer.from(m[1].replace(/\s+/g, ""), "base64")) : bytes;
+	};
+
+	/* The material to hand to the host for `key`: private keys as DER, public ones as SPKI. */
+	const nativeKey = (parsed, wantPrivate) => {
+		if (parsed.keyObject) {
+			const asym = parsed.keyObject._asym;
+			return { data: wantPrivate ? asym.priv : asym.priv ?? asym.spki, passphrase: undefined, info: asym.info };
+		}
+		return { data: parsed.data, passphrase: parsed.passphrase, info: null };
+	};
+
+	/* ---- JWK in and out */
+	const rsaPrivateParts = (der) => {
+		const top = readTlv(der, 0);
+		const kids = readChildren(der, top).map((c) => unsignedBytes(der, c));
+		return { n: kids[1], e: kids[2], d: kids[3], p: kids[4], q: kids[5], dp: kids[6], dq: kids[7], qi: kids[8] };
+	};
+	const ecPrivateScalar = (der) => {
+		const top = readTlv(der, 0);
+		const kids = readChildren(der, top);
+		return der.subarray(kids[1].start, kids[1].end);
+	};
+	const ecPointOfSpki = (spki) => {
+		const top = readTlv(spki, 0);
+		const kids = readChildren(spki, top);
+		return spki.subarray(kids[1].start + 1, kids[1].end);
+	};
+	const exportJwk = (key) => {
+		const { info, priv } = key._asym;
+		if (info.type === "rsa") {
+			const jwk = { kty: "RSA", n: b64u(info.modulus), e: b64u(info.exponent) };
+			if (priv) {
+				const p = rsaPrivateParts(priv);
+				Object.assign(jwk, { d: b64u(p.d), p: b64u(p.p), q: b64u(p.q), dp: b64u(p.dp), dq: b64u(p.dq), qi: b64u(p.qi) });
+			}
+			return jwk;
+		}
+		if (info.type === "ec") {
+			const crv = JWK_CURVES[canonicalCurve(info.curve)];
+			if (!crv) throw unavailable(`JWK export for curve ${info.curve}`, "it has no JWK name");
+			const size = (info.bits + 7) >> 3;
+			const point = info.point;
+			const jwk = { kty: "EC", x: b64u(point.subarray(1, 1 + size)), y: b64u(point.subarray(1 + size)), crv };
+			if (priv) jwk.d = b64u(ecPrivateScalar(priv));
+			return jwk;
+		}
+		throw unavailable(`JWK export of ${info.type} keys`, "unsupported key type");
+	};
+	const pad = (bytes, size) => {
+		if (bytes.length >= size) return bytes;
+		const padded = new Uint8Array(size);
+		padded.set(bytes, size - bytes.length);
+		return padded;
+	};
+	const rsaSpki = (n, e) => derSeq(derSeq(derOid(OID_RSA), derNull()), derBits(derSeq(derInt(n), derInt(e))));
+	const ecSpki = (curve, point) => derSeq(derSeq(derOid(OID_EC), derOid(CURVE_OIDS[curve])), derBits(point));
+	const importJwk = (jwk, wantPrivate) => {
+		if (jwk.kty === "RSA") {
+			const n = fromB64u(jwk.n);
+			const e = fromB64u(jwk.e);
+			if (jwk.d && wantPrivate !== false) {
+				const parts = ["d", "p", "q", "dp", "dq", "qi"].map((k) => {
+					if (jwk[k] === undefined) throw codeError(TypeError, "ERR_CRYPTO_INVALID_JWK", "Invalid JWK RSA key");
+					return derInt(fromB64u(jwk[k]));
+				});
+				return { data: derSeq(derInt(Uint8Array.of(0)), derInt(n), derInt(e), ...parts), isPrivate: true };
+			}
+			return { data: rsaSpki(n, e), isPrivate: false };
+		}
+		if (jwk.kty === "EC") {
+			const curve = Object.keys(JWK_CURVES).find((k) => JWK_CURVES[k] === jwk.crv);
+			if (!curve) throw codeError(TypeError, "ERR_CRYPTO_INVALID_CURVE", `Invalid JWK EC curve ${jwk.crv}`);
+			const info = native.ecdhGenerate(curve, jwk.d ? fromB64u(jwk.d) : undefined);
+			const size = (info.priv.length);
+			const point = jwk.d ? info.pub : join([Uint8Array.of(4), pad(fromB64u(jwk.x), size), pad(fromB64u(jwk.y), size)]);
+			if (jwk.d && wantPrivate !== false) {
+				const sec1 = derSeq(derInt(Uint8Array.of(1)), derOctets(pad(fromB64u(jwk.d), size)), tlv(0xa0, derOid(CURVE_OIDS[curve])), tlv(0xa1, derBits(point)));
+				return { data: sec1, isPrivate: true };
+			}
+			return { data: ecSpki(curve, point), isPrivate: false };
+		}
+		throw unavailable(`JWK keys of type ${jwk.kty}`, "only RSA and EC keys are supported");
+	};
+
+	const createKey = (key, wantPrivate) => {
+		const parsed = parseInput(key, { wantPrivate });
+		if (parsed.keyObject) {
+			if (wantPrivate) return parsed.keyObject;
+			// createPublicKey(privateKeyObject): the public half
+			const asym = parsed.keyObject._asym;
+			return new KeyObject("public", null, { priv: null, spki: asym.spki, info: { ...asym.info, private: false } });
+		}
+		if (parsed.jwk) {
+			const imported = importJwk(parsed.jwk, wantPrivate);
+			return makeKey(infoOf(imported.data, undefined, imported.isPrivate && wantPrivate), !wantPrivate);
+		}
+		const info = infoOf(parsed.data, parsed.passphrase, wantPrivate);
+		return makeKey(info, !wantPrivate);
+	};
+
+	const rsaPkcs1Public = (info) => derSeq(derInt(info.modulus), derInt(info.exponent));
+	const pkcs8 = (asym) => {
+		const { info, priv } = asym;
+		if (info.type === "rsa") return derSeq(derInt(Uint8Array.of(0)), derSeq(derOid(OID_RSA), derNull()), derOctets(priv));
+		return derSeq(derInt(Uint8Array.of(0)), derSeq(derOid(OID_EC), derOid(CURVE_OIDS[canonicalCurve(info.curve)])), derOctets(priv));
+	};
+	const exportKey = (key, options = {}) => {
+		if (key.type === "secret") {
+			if (options.format === "jwk") return { kty: "oct", k: b64u(key._keyData) };
+			return buf(key._keyData);
+		}
+		const asym = key._asym;
+		const format = options.format ?? "pem";
+		if (format === "jwk") return exportJwk(key);
+		if (format !== "pem" && format !== "der") throw codeError(TypeError, "ERR_INVALID_ARG_VALUE", `The property 'options.format' is invalid. Received '${format}'`);
+		if (options.cipher || options.passphrase) throw unavailable("Exporting a private key protected with a passphrase", "key encryption is not implemented");
+		const type = options.type;
+		let der;
+		let label;
+		if (key.type === "public") {
+			if (type === "pkcs1") {
+				if (asym.info.type !== "rsa") throw codeError(TypeError, "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS", "The selected key encoding pkcs1 can only be used for RSA keys.");
+				der = rsaPkcs1Public(asym.info);
+				label = "RSA PUBLIC KEY";
+			} else if (type === "spki" || type === undefined) {
+				der = asym.spki;
+				label = "PUBLIC KEY";
+			} else {
+				throw codeError(TypeError, "ERR_INVALID_ARG_VALUE", `The property 'options.type' is invalid. Received '${type}'`);
+			}
+		} else if (type === "pkcs1") {
+			if (asym.info.type !== "rsa") throw codeError(TypeError, "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS", "The selected key encoding pkcs1 can only be used for RSA keys.");
+			der = asym.priv;
+			label = "RSA PRIVATE KEY";
+		} else if (type === "sec1") {
+			if (asym.info.type !== "ec") throw codeError(TypeError, "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS", "The selected key encoding sec1 can only be used for EC keys.");
+			der = asym.priv;
+			label = "EC PRIVATE KEY";
+		} else if (type === "pkcs8" || type === undefined) {
+			der = pkcs8(asym);
+			label = "PRIVATE KEY";
+		} else {
+			throw codeError(TypeError, "ERR_INVALID_ARG_VALUE", `The property 'options.type' is invalid. Received '${type}'`);
+		}
+		return format === "der" ? buf(der) : pem(label, der);
+	};
+
+	Object.defineProperties(KeyObject.prototype, {
+		asymmetricKeyType: {
+			get() {
+				const info = this._asym?.info;
+				return info ? info.type : undefined;
+			},
+		},
+		asymmetricKeyDetails: {
+			get() {
+				const info = this._asym?.info;
+				if (!info) return undefined;
+				if (info.type === "rsa") return { modulusLength: info.bits, publicExponent: BigInt(`0x${buf(info.exponent).toString("hex")}`) };
+				return { namedCurve: info.curve === "secp256r1" ? "prime256v1" : info.curve };
+			},
+		},
+	});
+	KeyObject.prototype.export = function (options) {
+		return exportKey(this, options);
+	};
+	KeyObject.prototype.equals = function (other) {
+		if (!(other instanceof KeyObject) || other.type !== this.type) return false;
+		if (this.type === "secret") return buf(this._keyData).equals(buf(other._keyData));
+		return buf(this._asym.spki).equals(buf(other._asym.spki)) && buf(this._asym.priv ?? []).equals(buf(other._asym.priv ?? []));
+	};
+
+	/* ---------------------------------------------------------------------------- key generation */
+
+	const generate = (type, options = {}) => {
+		const kind = String(type).toLowerCase();
+		if (UNSUPPORTED_KEY_TYPES.includes(kind)) throw unavailable(`generateKeyPair('${type}')`, "mbedTLS has no such keys; rsa and ec are supported");
+		let generated;
+		if (kind === "rsa" || kind === "rsa-pss") {
+			const bits = options.modulusLength;
+			if (!Number.isInteger(bits)) throw invalidArg("options.modulusLength", "of type number", bits);
+			if (bits < 512) throw codeError(RangeError, "ERR_OUT_OF_RANGE", `The property 'options.modulusLength' is out of range. Received ${bits}`);
+			generated = native.generateKey("rsa", bits, options.publicExponent);
+		} else if (kind === "ec") {
+			if (typeof options.namedCurve !== "string") throw invalidArg("options.namedCurve", "of type string", options.namedCurve);
+			try {
+				generated = native.generateKey("ec", options.namedCurve);
+			} catch (err) {
+				throw codeError(TypeError, "ERR_CRYPTO_INVALID_CURVE", "Invalid EC curve name");
+			}
+		} else {
+			throw codeError(TypeError, "ERR_INVALID_ARG_VALUE", `The argument 'type' must be a supported key type. Received '${type}'`);
+		}
+		const priv = makeKey(native.keyInfo(generated.pkcs, undefined, true), false);
+		const pub = makeKey(native.keyInfo(generated.spki, undefined, false), true);
+		const encode = (key, encoding) => (encoding ? exportKey(key, encoding) : key);
+		return { publicKey: encode(pub, options.publicKeyEncoding), privateKey: encode(priv, options.privateKeyEncoding) };
+	};
+	const generateKeyPairSync = (type, options) => generate(type, options);
+	const generateKeyPair = (type, options, callback) => {
+		if (typeof callback !== "function") throw invalidArg("callback", "of type function", callback);
+		let result;
+		let failure = null;
+		try {
+			result = generate(type, options);
+		} catch (err) {
+			failure = err;
+		}
+		queueMicrotask(() => (failure ? callback(failure) : callback(null, result.publicKey, result.privateKey)));
+	};
+	const generateKeySync = (type, options) => {
+		if (type !== "hmac" && type !== "aes") throw codeError(TypeError, "ERR_INVALID_ARG_VALUE", `The argument 'type' must be one of: 'hmac', 'aes'. Received '${type}'`);
+		const length = options?.length;
+		if (!Number.isInteger(length)) throw invalidArg("options.length", "of type number", length);
+		return new KeyObject("secret", native.randomBytes(length >> 3));
+	};
+
+	/* ------------------------------------------------------------------------- sign and verify */
+
+	const RSA_PSS = 6;
+	const digestOf = (algorithm, verbose) => {
+		try {
+			return hashName(algorithm);
+		} catch {
+			throw codeError(TypeError, "ERR_CRYPTO_INVALID_DIGEST", verbose ? `Invalid digest: ${algorithm}` : "Invalid digest");
+		}
+	};
+	const dsaDerToRaw = (der, size) => {
+		const top = readTlv(der, 0);
+		const [r, s] = readChildren(der, top).map((c) => pad(unsignedBytes(der, c), size));
+		return join([r, s]);
+	};
+	const dsaRawToDer = (raw) => {
+		const half = raw.length >> 1;
+		return derSeq(derInt(raw.subarray(0, half)), derInt(raw.subarray(half)));
+	};
+
+	const signOptions = (key) => {
+		const parsed = parseInput(key, { wantPrivate: true });
+		const options = parsed.options ?? {};
+		return { parsed, padding: options.padding === RSA_PSS ? 1 : 0, saltLength: options.saltLength ?? -2, dsaEncoding: options.dsaEncoding ?? "der" };
+	};
+
+	const doSign = (algorithm, data, key, oneShot) => {
+		const { parsed, padding, saltLength, dsaEncoding } = signOptions(key);
+		const material = nativeKey(parsed, true);
+		let signature = native.pkSignEx(digestOf(algorithm, oneShot), material.data, material.passphrase, data, padding, saltLength === -1 ? -1 : saltLength);
+		const info = material.info ?? (parsed.keyObject ? parsed.keyObject._asym.info : null);
+		if (dsaEncoding === "ieee-p1363") {
+			const keyInfo = info ?? infoOf(material.data, material.passphrase, true);
+			if (keyInfo.type === "ec") signature = dsaDerToRaw(signature, (keyInfo.bits + 7) >> 3);
+		}
+		return signature;
+	};
+	const doVerify = (algorithm, data, key, signature, oneShot) => {
+		const parsed = parseInput(key, { wantPrivate: false });
+		const options = parsed.options ?? {};
+		const material = nativeKey(parsed, false);
+		let bytes = toBytes(signature);
+		if ((options.dsaEncoding ?? "der") === "ieee-p1363") {
+			const info = material.info ?? infoOf(material.data, material.passphrase, false);
+			if (info.type === "ec") bytes = dsaRawToDer(bytes);
+		}
+		return native.pkVerifyEx(digestOf(algorithm, oneShot), material.data, data, bytes, options.padding === RSA_PSS ? 1 : 0, options.saltLength ?? -2);
+	};
+
+	class Sign extends stream.Writable {
+		constructor(algorithm) {
+			super();
+			this._algorithm = algorithm;
+			digestOf(algorithm, false);
+			this._chunks = [];
+		}
+		update(data, encoding) {
+			this._chunks.push(toBytes(data, encoding));
+			return this;
+		}
+		_write(chunk, encoding, callback) {
+			this._chunks.push(toBytes(chunk, encoding === "buffer" ? undefined : encoding));
+			callback();
+		}
+		sign(privateKey, outputEncoding) {
+			return out(doSign(this._algorithm, concat(this._chunks), privateKey), outputEncoding);
+		}
+	}
+	class Verify extends stream.Writable {
+		constructor(algorithm) {
+			super();
+			this._algorithm = algorithm;
+			digestOf(algorithm, false);
+			this._chunks = [];
+		}
+		update(data, encoding) {
+			this._chunks.push(toBytes(data, encoding));
+			return this;
+		}
+		_write(chunk, encoding, callback) {
+			this._chunks.push(toBytes(chunk, encoding === "buffer" ? undefined : encoding));
+			callback();
+		}
+		verify(publicKey, signature, signatureEncoding) {
+			return doVerify(this._algorithm, concat(this._chunks), publicKey, toBytes(signature, signatureEncoding));
+		}
+	}
+	const oneShotAlgorithm = (algorithm) => {
+		if (algorithm === null || algorithm === undefined) return "sha256";
+		return algorithm;
+	};
+	const sign = (algorithm, data, key, callback) => {
+		const compute = () => buf(doSign(oneShotAlgorithm(algorithm), toBytes(data), key, true));
+		if (typeof callback !== "function") return compute();
+		let result;
+		let failure = null;
+		try {
+			result = compute();
+		} catch (err) {
+			failure = err;
+		}
+		queueMicrotask(() => (failure ? callback(failure) : callback(null, result)));
+		return undefined;
+	};
+	const verify = (algorithm, data, key, signature, callback) => {
+		const compute = () => doVerify(oneShotAlgorithm(algorithm), toBytes(data), key, toBytes(signature), true);
+		if (typeof callback !== "function") return compute();
+		let result;
+		let failure = null;
+		try {
+			result = compute();
+		} catch (err) {
+			failure = err;
+		}
+		queueMicrotask(() => (failure ? callback(failure) : callback(null, result)));
+		return undefined;
+	};
+
+	/* ---------------------------------------------------------------------------- RSA encryption */
+
+	const rsaOp = (op, key, data, defaultPadding) => {
+		const parsed = parseInput(key, { wantPrivate: op === 1 || op === 2 });
+		const options = parsed.options ?? {};
+		const padding = options.padding ?? defaultPadding;
+		if (padding !== 1 && padding !== 4) {
+			throw unavailable(`RSA padding ${padding}`, "only RSA_PKCS1_PADDING (1) and RSA_PKCS1_OAEP_PADDING (4) are supported");
+		}
+		const material = nativeKey(parsed, op === 1 || op === 2);
+		const label = options.oaepLabel === undefined ? undefined : toBytes(options.oaepLabel);
+		return buf(native.rsaCrypt(op, material.data, material.passphrase, toBytes(data), padding, options.oaepHash ? hashName(options.oaepHash) : "sha1", label));
+	};
+
+	/* ------------------------------------------------------------------------------------ ECDH */
+
+	const ecdhCurve = (name) => {
+		if (typeof name !== "string") throw invalidArg("curve", "of type string", name);
+		return name;
+	};
+	const toBuf = (value, encoding) => toBytes(value, encoding);
+	class ECDH {
+		constructor(curve) {
+			this._curve = ecdhCurve(curve);
+			try {
+				native.ecdhGenerate(this._curve, undefined);
+			} catch (err) {
+				throw codeError(TypeError, "ERR_CRYPTO_INVALID_CURVE", "Invalid EC curve name");
+			}
+			this._priv = null;
+			this._pub = null;
+		}
+		generateKeys(encoding, format) {
+			const keys = native.ecdhGenerate(this._curve, undefined);
+			this._priv = keys.priv;
+			this._pub = keys.pub;
+			return this.getPublicKey(encoding, format);
+		}
+		computeSecret(otherPublicKey, inputEncoding, outputEncoding) {
+			if (!this._priv) throw codeError(Error, "ERR_CRYPTO_OPERATION_FAILED", "Failed to get ECDH private key");
+			const secret = native.ecdhCompute(this._curve, this._priv, toBuf(otherPublicKey, inputEncoding));
+			return noneOr(secret, outputEncoding);
+		}
+		getPublicKey(encoding, format = "uncompressed") {
+			if (!this._pub) throw codeError(Error, "ERR_CRYPTO_ECDH_INVALID_PUBLIC_KEY", "Failed to get ECDH public key");
+			return noneOr(convertPoint(this._curve, this._pub, format), encoding);
+		}
+		getPrivateKey(encoding) {
+			if (!this._priv) throw codeError(Error, "ERR_CRYPTO_OPERATION_FAILED", "Failed to get ECDH private key");
+			return noneOr(strip(this._priv), encoding);
+		}
+		setPrivateKey(privateKey, encoding) {
+			const keys = (() => {
+				try {
+					return native.ecdhGenerate(this._curve, toBuf(privateKey, encoding));
+				} catch (err) {
+					throw codeError(RangeError, "ERR_CRYPTO_INVALID_KEYTYPE", "Private key is not valid for specified curve.");
+				}
+			})();
+			this._priv = keys.priv;
+			this._pub = keys.pub;
+		}
+		setPublicKey(publicKey, encoding) {
+			this._pub = native.ecdhConvert(this._curve, toBuf(publicKey, encoding), 1);
+		}
+		static convertKey(key, curve, inputEncoding, outputEncoding, format = "uncompressed") {
+			if (typeof key !== "string" && !ArrayBuffer.isView(key)) throw invalidArg("key", "of type string or an instance of Buffer, TypedArray, or DataView", key);
+			const point = toBuf(key, inputEncoding);
+			const uncompressed = native.ecdhConvert(ecdhCurve(curve), point, 1);
+			return noneOr(convertPoint(curve, uncompressed, format), outputEncoding);
+		}
+	}
+	const convertPoint = (curve, point, format) => {
+		if (format === "compressed") return native.ecdhConvert(curve, point, 0);
+		if (format === "hybrid") {
+			const size = (point.length - 1) >> 1;
+			const hybrid = point.slice();
+			hybrid[0] = 6 | (point[point.length - 1] & 1);
+			return hybrid.subarray(0, 1 + 2 * size);
+		}
+		if (format !== "uncompressed") throw codeError(TypeError, "ERR_CRYPTO_ECDH_INVALID_FORMAT", `Invalid ECDH format: ${format}`);
+		return native.ecdhConvert(curve, point, 1);
+	};
+	const createECDH = (curve) => new ECDH(curve);
+
+	/* The scalar and point of an EC key object, for crypto.diffieHellman. */
+	const diffieHellman = (options) => {
+		const { privateKey, publicKey } = options ?? {};
+		if (!(privateKey instanceof KeyObject) || privateKey.type !== "private") throw invalidArg("options.privateKey", "an instance of KeyObject of type private", privateKey);
+		if (!(publicKey instanceof KeyObject) || publicKey.type !== "public") throw invalidArg("options.publicKey", "an instance of KeyObject of type public", publicKey);
+		const a = privateKey._asym.info;
+		const b = publicKey._asym.info;
+		if (a.type !== "ec" || b.type !== "ec") throw unavailable("crypto.diffieHellman for this key type", "only EC keys are supported");
+		if (a.curve !== b.curve) throw codeError(Error, "ERR_CRYPTO_INCOMPATIBLE_KEY", "Incompatible key types for Diffie-Hellman: different curves");
+		return buf(native.ecdhCompute(a.curve, ecPrivateScalar(privateKey._asym.priv), ecPointOfSpki(publicKey._asym.spki)));
+	};
+
+	/* ---------------------------------------------------------------------- Diffie-Hellman groups */
+
+	const bigOf = (bytes) => {
+		let hex = "";
+		for (const byte of bytes) hex += byte.toString(16).padStart(2, "0");
+		return BigInt(`0x${hex || "0"}`);
+	};
+	const bytesOfBig = (n) => {
+		let hex = n.toString(16);
+		if (hex.length & 1) hex = `0${hex}`;
+		return new Uint8Array(Buffer.from(hex, "hex"));
+	};
+	const strip = (bytes) => {
+		let i = 0;
+		while (i < bytes.length - 1 && bytes[i] === 0) i++;
+		return bytes.subarray(i);
+	};
+	class DiffieHellman {
+		constructor(prime, primeEncoding, generator, generatorEncoding, verifyErrorOverride) {
+			if (typeof prime === "number") {
+				if (prime < 512) throw codeError(TypeError, "ERR_INVALID_ARG_VALUE", "Invalid DH parameters");
+				if (prime > 16384) throw codeError(RangeError, "ERR_OUT_OF_RANGE", `The value of "sizeOrKey" is out of range. Received ${prime}`);
+				this._prime = native.genPrime(prime, true);
+				this._generator = Uint8Array.of(typeof primeEncoding === "number" ? primeEncoding : 2);
+			} else {
+				this._prime = strip(toBuf(prime, primeEncoding));
+				this._generator = generator === undefined ? Uint8Array.of(2) : typeof generator === "number" ? Uint8Array.of(generator) : strip(toBuf(generator, generatorEncoding));
+				if (this._generator.length === 1 && this._generator[0] < 2) throw codeError(RangeError, "ERR_OSSL_DH_BAD_GENERATOR", "bad generator");
+			}
+			this._verifyError = verifyErrorOverride;
+			this._priv = null;
+			this._pub = null;
+		}
+		get verifyError() {
+			if (this._verifyError !== undefined) return this._verifyError;
+			if (bigOf(this._prime).toString(2).length < 512) return 128; // DH_MODULUS_TOO_SMALL
+			if (!native.isPrime(this._prime, 20)) return 1;
+			const half = (bigOf(this._prime) - 1n) >> 1n;
+			return native.isPrime(bytesOfBig(half), 20) ? 0 : 2;
+		}
+		generateKeys(encoding) {
+			const size = this._prime.length;
+			let priv;
+			do {
+				priv = native.randomBytes(size);
+				priv[0] &= 0x7f;
+				priv = strip(priv);
+			} while (bigOf(priv) < 2n);
+			this._priv = priv;
+			this._pub = strip(native.modPow(this._generator, priv, this._prime));
+			return noneOr(this._pub, encoding);
+		}
+		computeSecret(otherPublicKey, inputEncoding, outputEncoding) {
+			if (!this._priv) throw codeError(Error, "ERR_CRYPTO_OPERATION_FAILED", "Failed to compute DH secret: no private key");
+			const peer = toBuf(otherPublicKey, inputEncoding);
+			const value = bigOf(peer);
+			if (value <= 1n) throw codeError(RangeError, "ERR_CRYPTO_INVALID_KEYLEN", "Supplied key is too small");
+			if (value >= bigOf(this._prime) - 1n) throw codeError(RangeError, "ERR_CRYPTO_INVALID_KEYLEN", "Supplied key is too large");
+			const secret = native.modPow(peer, this._priv, this._prime);
+			return noneOr(pad(secret, this._prime.length), outputEncoding);
+		}
+		getPrime(encoding) {
+			return noneOr(this._prime, encoding);
+		}
+		getGenerator(encoding) {
+			return noneOr(this._generator, encoding);
+		}
+		getPublicKey(encoding) {
+			if (!this._pub) throw codeError(Error, "ERR_CRYPTO_INVALID_STATE", "No public key - did you forget to generate one?");
+			return noneOr(this._pub, encoding);
+		}
+		getPrivateKey(encoding) {
+			if (!this._priv) throw codeError(Error, "ERR_CRYPTO_INVALID_STATE", "No private key - did you forget to generate one?");
+			return noneOr(this._priv, encoding);
+		}
+		setPublicKey(key, encoding) {
+			this._pub = strip(toBuf(key, encoding));
+		}
+		setPrivateKey(key, encoding) {
+			this._priv = strip(toBuf(key, encoding));
+		}
+	}
+	const createDiffieHellman = (...args) => {
+		const [first, second, third, fourth] = args;
+		if (typeof first === "number") return new DiffieHellman(first, second);
+		if (typeof second === "string" && typeof third !== "undefined") return new DiffieHellman(first, second, third, fourth);
+		if (typeof second === "string") return new DiffieHellman(first, second);
+		return new DiffieHellman(first, undefined, second, third);
+	};
+	const getDiffieHellman = (name) => {
+		const hex = MODP_PRIMES[name];
+		if (!hex) throw codeError(Error, "ERR_CRYPTO_UNKNOWN_DH_GROUP", "Unknown DH group");
+		const group = new DiffieHellman(new Uint8Array(Buffer.from(hex, "hex")), undefined, 2, undefined, 0);
+		// A named group has no way to set its keys.
+		group.setPrivateKey = undefined;
+		group.setPublicKey = undefined;
+		return group;
+	};
+
+	/* --------------------------------------------------------------------------------- primes */
+
+	const primeCandidate = (candidate) => {
+		if (typeof candidate === "bigint") return bytesOfBig(candidate);
+		if (candidate instanceof ArrayBuffer) return new Uint8Array(candidate);
+		if (ArrayBuffer.isView(candidate)) return new Uint8Array(candidate.buffer, candidate.byteOffset, candidate.byteLength);
+		throw invalidArg("candidate", "an instance of ArrayBuffer, SharedArrayBuffer, TypedArray, Buffer, DataView, or bigint", candidate);
+	};
+	const generatePrimeSync = (size, options = {}) => {
+		if (!Number.isInteger(size) || size < 1) throw codeError(RangeError, "ERR_OUT_OF_RANGE", `The value of "size" is out of range. It must be >= 1. Received ${size}`);
+		if (options.add !== undefined || options.rem !== undefined) throw unavailable("generatePrime with add/rem", "constrained prime generation is not implemented");
+		const bytes = native.genPrime(size, Boolean(options.safe));
+		if (options.bigint) return bigOf(bytes);
+		return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
+	};
+	const checkPrimeSync = (candidate, options = {}) => native.isPrime(primeCandidate(candidate), options.checks ?? 0);
+	const later = (compute, callback, undefinedError = false) => {
+		if (typeof callback !== "function") throw invalidArg("callback", "of type function", callback);
+		let result;
+		let failure = null;
+		try {
+			result = compute();
+		} catch (err) {
+			failure = err;
+		}
+		queueMicrotask(() => (failure ? callback(failure) : callback(undefinedError ? undefined : null, result)));
+	};
+	const generatePrime = (size, options, callback) => {
+		if (typeof options === "function") {
+			callback = options;
+			options = {};
+		}
+		later(() => generatePrimeSync(size, options), callback, true);
+	};
+	const checkPrime = (candidate, options, callback) => {
+		if (typeof options === "function") {
+			callback = options;
+			options = {};
+		}
+		later(() => checkPrimeSync(candidate, options), callback, true);
+	};
+
+	/* ------------------------------------------------------------------------------ X509 */
+
+	const shortMonth = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+	const asnDate = (iso) => {
+		const m = /^(\d+)-(\d+)-(\d+)T(\d+):(\d+):(\d+)Z$/.exec(iso);
+		return `${shortMonth[Number(m[2]) - 1]} ${String(Number(m[3])).padStart(2, " ")} ${m[4]}:${m[5]}:${m[6]} ${m[1]} GMT`;
+	};
+	const colon = (bytes) => buf(bytes).toString("hex").toUpperCase().replace(/(..)(?!$)/g, "$1:");
+	const fingerprint = (algorithm, raw) => colon(native.hash(algorithm, raw));
+	const dnObject = (pairs) => {
+		const result = { __proto__: null };
+		for (const [key, value] of pairs) {
+			if (key in result) result[key] = Array.isArray(result[key]) ? [...result[key], value] : [result[key], value];
+			else result[key] = value;
+		}
+		return result;
+	};
+	const dnString = (pairs) => pairs.map(([k, v]) => `${k}=${v}`).join("\n");
+	const altNameText = (alt) => alt.map(([kind, value]) => `${kind}:${kind === "DNS" || kind === "URI" || kind === "email" ? value : value}`).join(", ");
+
+	/* The object tls.TLSSocket#getPeerCertificate returns. */
+	const legacyCertificate = (info, forTls) => {
+		const cert = { __proto__: null };
+		cert.subject = dnObject(info.subject);
+		cert.issuer = dnObject(info.issuer);
+		if (info.altNames.length) cert.subjectaltname = altNameText(info.altNames);
+		if (forTls) cert.infoAccess = undefined;
+		cert.ca = info.ca;
+		if (info.type === "rsa") {
+			cert.modulus = buf(info.modulus).toString("hex").toUpperCase();
+			cert.exponent = `0x${buf(info.exponent).toString("hex").replace(/^0+/, "")}`;
+			cert.pubkey = buf(info.spki);
+			cert.bits = info.bits;
+		} else {
+			cert.pubkey = buf(info.point);
+			cert.bits = info.bits;
+		}
+		cert.valid_from = asnDate(info.validFrom);
+		cert.valid_to = asnDate(info.validTo);
+		cert.fingerprint = fingerprint("sha1", info.raw);
+		cert.fingerprint256 = fingerprint("sha256", info.raw);
+		cert.fingerprint512 = fingerprint("sha512", info.raw);
+		if (info.extKeyUsage.length) cert.ext_key_usage = info.extKeyUsage;
+		cert.serialNumber = info.serial;
+		cert.raw = buf(info.raw);
+		if (info.type === "ec") {
+			cert.asn1Curve = info.curve === "secp256r1" ? "prime256v1" : info.curve;
+			cert.nistCurve = JWK_CURVES[canonicalCurve(info.curve)];
+		} else if (forTls) {
+			cert.asn1Curve = undefined;
+			cert.nistCurve = undefined;
+		}
+		return cert;
+	};
+
+	const hostMatches = (pattern, host) => {
+		pattern = pattern.toLowerCase();
+		host = host.toLowerCase();
+		if (!pattern.includes("*")) return pattern === host;
+		const p = pattern.split(".");
+		const h = host.split(".");
+		if (p.length !== h.length || p[0].indexOf("*") === -1 || p.slice(1).some((part) => part.includes("*"))) return false;
+		if (p.length < 3) return false;
+		const [head, tail] = p[0].split("*");
+		return h[0].startsWith(head) && h[0].endsWith(tail) && h[0].length >= head.length + tail.length && p.slice(1).join(".") === h.slice(1).join(".");
+	};
+	const canonicalIp = (text) => {
+		if (!text.includes(":")) return text;
+		const [head, tail] = text.toLowerCase().split("::");
+		const left = head ? head.split(":") : [];
+		const right = tail === undefined ? [] : tail ? tail.split(":") : [];
+		const fill = tail === undefined ? [] : Array(8 - left.length - right.length).fill("0");
+		return [...left, ...fill, ...right].map((group) => group.replace(/^0+(?=.)/, "")).join(":");
+	};
+	/* The shortest spelling of an IPv6 address, as OpenSSL prints it in error text. */
+	const compressIp = (text) => {
+		if (!text.includes(":")) return text;
+		const groups = canonicalIp(text).split(":");
+		let best = { start: -1, length: 0 };
+		for (let i = 0; i < groups.length; ) {
+			if (groups[i] !== "0") {
+				i++;
+				continue;
+			}
+			let j = i;
+			while (j < groups.length && groups[j] === "0") j++;
+			if (j - i > best.length) best = { start: i, length: j - i };
+			i = j;
+		}
+		if (best.length < 2) return groups.join(":");
+		return `${groups.slice(0, best.start).join(":")}::${groups.slice(best.start + best.length).join(":")}`;
+	};
+	const isIpText = (text) => /^[0-9.]+$/.test(text) || text.includes(":");
+	/* tls.checkServerIdentity: undefined when the certificate is valid for `hostname`, an Error when not. */
+	const checkServerIdentity = (hostname, cert) => {
+		const altnames = cert.subjectaltname ? String(cert.subjectaltname).split(", ") : [];
+		const dns = altnames.filter((a) => a.startsWith("DNS:")).map((a) => a.slice(4));
+		const ips = altnames.filter((a) => a.startsWith("IP Address:")).map((a) => compressIp(a.slice(11)));
+		let reason;
+		if (isIpText(hostname)) {
+			if (!ips.includes(compressIp(hostname))) reason = `IP: ${hostname} is not in the cert's list: ${ips.join(", ")}`;
+		} else if (dns.length) {
+			if (!dns.some((name) => hostMatches(name, hostname))) reason = `Host: ${hostname}. is not in the cert's altnames: ${altnames.join(", ")}`;
+		} else {
+			const cn = cert.subject?.CN;
+			const names = Array.isArray(cn) ? cn : cn ? [cn] : [];
+			if (!names.some((name) => hostMatches(name, hostname))) reason = `Host: ${hostname}. is not cert's CN: ${names.join(", ")}`;
+		}
+		if (!reason) return undefined;
+		return Object.assign(new Error(`Hostname/IP does not match certificate's altnames: ${reason}`), {
+			code: "ERR_TLS_CERT_ALTNAME_INVALID",
+			reason,
+			host: hostname,
+			cert,
+		});
+	};
+
+	const certBytes = (value) => {
+		if (typeof value === "string") return value;
+		if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
+			const bytes = toBytes(value);
+			const text = buf(bytes).toString("latin1");
+			return /^\s*-----BEGIN /.test(text) ? buf(bytes).toString("utf8") : bytes;
+		}
+		throw invalidArg("buffer", "of type string or an instance of Buffer, TypedArray, or DataView", value);
+	};
+	class X509Certificate {
+		constructor(buffer) {
+			const source = certBytes(buffer);
+			try {
+				this._info = native.x509Info(source);
+			} catch (err) {
+				throw codeError(Error, "ERR_OSSL_PEM_NO_START_LINE", "error:0480006C:PEM routines::no start line");
+			}
+			this._legacy = null;
+		}
+		get raw() {
+			return buf(this._info.raw);
+		}
+		get subject() {
+			return dnString(this._info.subject);
+		}
+		get issuer() {
+			return dnString(this._info.issuer);
+		}
+		get subjectAltName() {
+			return this._info.altNames.length ? altNameText(this._info.altNames) : undefined;
+		}
+		get infoAccess() {
+			return undefined;
+		}
+		get validFrom() {
+			return asnDate(this._info.validFrom);
+		}
+		get validTo() {
+			return asnDate(this._info.validTo);
+		}
+		get validFromDate() {
+			return new Date(this._info.validFrom);
+		}
+		get validToDate() {
+			return new Date(this._info.validTo);
+		}
+		get fingerprint() {
+			return fingerprint("sha1", this._info.raw);
+		}
+		get fingerprint256() {
+			return fingerprint("sha256", this._info.raw);
+		}
+		get fingerprint512() {
+			return fingerprint("sha512", this._info.raw);
+		}
+		get keyUsage() {
+			return this._info.extKeyUsage.length ? this._info.extKeyUsage : undefined;
+		}
+		get serialNumber() {
+			return this._info.serial;
+		}
+		get ca() {
+			return this._info.ca;
+		}
+		get publicKey() {
+			return makeKey(native.keyInfo(this._info.spki, undefined, false), true);
+		}
+		get issuerCertificate() {
+			return undefined;
+		}
+		checkHost(name, options) {
+			const dns = this._info.altNames.filter(([kind]) => kind === "DNS").map(([, value]) => value);
+			const subject = options?.subject ?? "default";
+			const common = this._info.subject.filter(([key]) => key === "CN").map(([, value]) => value);
+			const candidates = subject === "always" ? [...dns, ...common] : subject === "never" || dns.length ? dns : common;
+			return candidates.find((pattern) => hostMatches(pattern, String(name)));
+		}
+		checkEmail(email) {
+			const match = this._info.altNames.some(([kind, value]) => kind === "email" && value.toLowerCase() === String(email).toLowerCase());
+			return match ? email : undefined;
+		}
+		checkIP(ip) {
+			const wanted = canonicalIp(String(ip));
+			const found = this._info.altNames.find(([kind, value]) => kind === "IP Address" && canonicalIp(value) === wanted);
+			return found ? String(ip) : undefined;
+		}
+		checkIssued(other) {
+			if (!(other instanceof X509Certificate)) throw invalidArg("otherCert", "an instance of X509Certificate", other);
+			return native.x509CheckIssued(this._info.raw, other._info.raw);
+		}
+		checkPrivateKey(privateKey) {
+			if (!(privateKey instanceof KeyObject) || privateKey.type !== "private") throw invalidArg("privateKey", "an instance of KeyObject of type private", privateKey);
+			return native.keyMatchesCert(this._info.raw, privateKey._asym.priv, undefined);
+		}
+		verify() {
+			throw unavailable("X509Certificate#verify", "checking a certificate against a bare public key is not implemented; use checkIssued");
+		}
+		toString() {
+			return pem("CERTIFICATE", this._info.raw);
+		}
+		toJSON() {
+			return this.toString();
+		}
+		toLegacyObject() {
+			return legacyCertificate(this._info);
+		}
+	}
+
+	return {
+		KeyObject,
+		createPrivateKey: (key) => createKey(key, true),
+		createPublicKey: (key) => createKey(key, false),
+		generateKeyPair,
+		generateKeyPairSync,
+		generateKeySync,
+		generateKey: (type, options, callback) => later(() => generateKeySync(type, options), callback),
+		Sign,
+		Verify,
+		sign,
+		verify,
+		publicEncrypt: (key, data) => rsaOp(0, key, data, 4),
+		privateDecrypt: (key, data) => rsaOp(1, key, data, 4),
+		privateEncrypt: (key, data) => rsaOp(2, key, data, 1),
+		publicDecrypt: (key, data) => rsaOp(3, key, data, 1),
+		ECDH,
+		createECDH,
+		diffieHellman,
+		DiffieHellman,
+		DiffieHellmanGroup: DiffieHellman,
+		createDiffieHellman,
+		createDiffieHellmanGroup: getDiffieHellman,
+		getDiffieHellman,
+		generatePrime,
+		generatePrimeSync,
+		checkPrime,
+		checkPrimeSync,
+		X509Certificate,
+		getCurves: () => [...CURVES].sort(),
+		tools: { legacyCertificate, checkServerIdentity, asnDate, dnString },
+		constants: {
+			RSA_PSS_SALTLEN_DIGEST: -1,
+			RSA_PSS_SALTLEN_MAX_SIGN: -2,
+			RSA_PSS_SALTLEN_AUTO: -2,
+			DH_CHECK_P_NOT_SAFE_PRIME: 2,
+			DH_CHECK_P_NOT_PRIME: 1,
+			DH_UNABLE_TO_CHECK_GENERATOR: 4,
+			DH_NOT_SUITABLE_GENERATOR: 8,
+			RSA_X931_PADDING: 5,
+		},
+	};
+}
+
+export { createAsymmetric };

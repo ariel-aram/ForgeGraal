@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds the Graak native host: quickjs-ng + mbedTLS + miniz + the Brotli decoder + the Graak native layer.
+# Builds the Graak native host: quickjs-ng + mbedTLS + miniz + Brotli + the Graak native layer.
 #
 # This is the only backend Graak ships -- one C binary, every target, no Node.js and no
 # second language required to reach it. It uses only Winsock 2 and CryptoAPI on Windows, both
@@ -134,7 +134,7 @@ if [ ! -f libffi/configure ]; then
 fi
 
 if [ ! -f brotli/c/dec/decode.c ]; then
-	# The decoder only: single-file executables carry their application Brotli-compressed (see fg_sea.c).
+	# Decoder (single-file executables carry their application Brotli-compressed, see fg_sea.c) and encoder (zlib.brotliCompress).
 	echo "[build] fetching Brotli $BROTLI_VERSION"
 	rm -rf brotli
 	git clone -q --depth 1 --branch "$BROTLI_VERSION" https://github.com/google/brotli.git brotli
@@ -242,6 +242,7 @@ fi
 	"$SCRIPT_DIR/napi.c" \
 	"$SCRIPT_DIR/fg_wasm.c" \
 	"$SCRIPT_DIR/fg_sqlite.c" \
+	"$SCRIPT_DIR/fg_crypto.c" \
 	"$SCRIPT_DIR/fg_ffi.c" \
 	wasm3/source/m3_bind.c wasm3/source/m3_code.c wasm3/source/m3_compile.c wasm3/source/m3_core.c \
 	wasm3/source/m3_emit.c wasm3/source/m3_env.c wasm3/source/m3_exec.c wasm3/source/m3_function.c \
@@ -251,6 +252,7 @@ fi
 	brotli/c/common/constants.c brotli/c/common/context.c brotli/c/common/dictionary.c brotli/c/common/platform.c \
 	brotli/c/common/shared_dictionary.c brotli/c/common/transform.c \
 	brotli/c/dec/bit_reader.c brotli/c/dec/decode.c brotli/c/dec/huffman.c brotli/c/dec/state.c \
+	brotli/c/enc/backward_references.c brotli/c/enc/backward_references_hq.c brotli/c/enc/bit_cost.c brotli/c/enc/block_splitter.c brotli/c/enc/brotli_bit_stream.c brotli/c/enc/cluster.c brotli/c/enc/command.c brotli/c/enc/compound_dictionary.c brotli/c/enc/compress_fragment.c brotli/c/enc/compress_fragment_two_pass.c brotli/c/enc/dictionary_hash.c brotli/c/enc/encode.c brotli/c/enc/encoder_dict.c brotli/c/enc/entropy_encode.c brotli/c/enc/fast_log.c brotli/c/enc/histogram.c brotli/c/enc/literal_cost.c brotli/c/enc/memory.c brotli/c/enc/metablock.c brotli/c/enc/static_dict.c brotli/c/enc/utf8_util.c \
 	sqlite/sqlite3.c \
 	quickjs-ng/quickjs.c quickjs-ng/libregexp.c quickjs-ng/libunicode.c \
 	quickjs-ng/dtoa.c quickjs-ng/quickjs-libc.c \
