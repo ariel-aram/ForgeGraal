@@ -788,35 +788,6 @@ function createWorkerThreads(WorkerImpl, EventEmitter) {
 	};
 }
 
-/* ------------------------------------------------------------------------ dns */
-
-function createDns(lookupHost) {
-	const lookup = (hostname, optionsOrCallback, maybeCallback) => {
-		const callback = typeof optionsOrCallback === "function" ? optionsOrCallback : maybeCallback;
-		try {
-			const address = lookupHost(hostname);
-			callback?.(null, address, address.includes(":") ? 6 : 4);
-		} catch (err) {
-			callback?.(err);
-		}
-	};
-	const promises = {
-		lookup: (hostname) =>
-			new Promise((resolve, reject) =>
-				lookup(hostname, (err, address, family) => (err ? reject(err) : resolve({ address, family })))
-			),
-		resolve4: (hostname) => promises.lookup(hostname).then((r) => [r.address]),
-	};
-	return {
-		lookup,
-		promises,
-		resolve4: (hostname, callback) => lookup(hostname, (err, address) => callback?.(err, err ? undefined : [address])),
-		resolve: (hostname, callback) => lookup(hostname, (err, address) => callback?.(err, err ? undefined : [address])),
-		setServers: () => {},
-		getServers: () => [],
-	};
-}
-
 export {
 	asyncHooks,
 	AsyncLocalStorage,
@@ -827,5 +798,4 @@ export {
 	createReadline,
 	createChildProcess,
 	createWorkerThreads,
-	createDns,
 };

@@ -59,7 +59,7 @@ import { createWebAssembly } from "./node-wasm.js";
 import * as web from "./node-web.js";
 import { Segmenter } from "./segmenter.js";
 import { createTestModule } from "./node-test.js";
-import { createDnsModule } from "./node-dns.js";
+import { createDns } from "./node-dns.js";
 
 const globalObject = globalThis;
 
@@ -1950,15 +1950,21 @@ const childProcessModule =
 		}
 	) ?? notImplemented("child_process", "This engine build exposes no exec().");
 
-const { dnsModule, dnsPromisesModule } = createDnsModule({
-	dgram: nativeModules?.dgram,
-	net: nativeModules?.net,
-	fs,
-	child_process: childProcessModule,
-	process: processModule,
-	Buffer,
-	EventEmitter: CallableEventEmitter,
-});
+const dnsModule = nativeModules
+	? createDns({
+			dgram: nativeModules.dgram,
+			net: nativeModules.net,
+			fs,
+			Buffer,
+			platform: processModule.platform,
+			env: processModule.env,
+			inspect: (value, options) => util.inspect(value, options),
+			toASCII: (name) => builtins.punycode.toASCII(name),
+			// Windows has no resolv.conf: the servers are read from the output of ipconfig (or nslookup).
+			exec: (file, args, input) =>
+				childProcessModule.execFileSync(file, args, { input, encoding: "latin1", windowsHide: true }),
+		})
+	: null;
 
 const builtins = {
 	assert,
@@ -2003,8 +2009,8 @@ const builtins = {
 	tls: nativeModules?.tls ?? notImplemented("tls", NEEDS_NATIVE_WORK),
 	http: nativeModules?.http ?? notImplemented("http", NEEDS_NATIVE_WORK),
 	https: nativeModules?.https ?? notImplemented("https", NEEDS_NATIVE_WORK),
-	dns: nativeModules ? dnsModule : notImplemented("dns", NEEDS_NATIVE_WORK),
-	"dns/promises": nativeModules ? dnsPromisesModule : notImplemented("dns/promises", NEEDS_NATIVE_WORK),
+	dns: dnsModule ?? notImplemented("dns", NEEDS_NATIVE_WORK),
+	"dns/promises": dnsModule?.promises ?? notImplemented("dns/promises", NEEDS_NATIVE_WORK),
 	http2: (() => {
 		// Present so that `x instanceof http2.Http2ServerRequest` (which servers use to tell HTTP/1 from
 		// HTTP/2) answers false instead of throwing. Opening an HTTP/2 connection is what is unsupported:
