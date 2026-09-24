@@ -1922,13 +1922,6 @@ function createReadlineModule() {
 	return readline;
 }
 
-const { testModule, reportersModule } = createTestModule({
-	process: processModule,
-	EventEmitter: CallableEventEmitter,
-	CallableStream,
-	Buffer,
-});
-
 const childProcessModule =
 	misc.createChildProcess(
 		os.exec ? os : { ...os, exec: nativeLayer?.exec, getpid: nativeLayer?.getpid },
@@ -1969,8 +1962,6 @@ const dnsModule = nativeModules
 const builtins = {
 	assert,
 	"assert/strict": assert.strict,
-	test: testModule,
-	"test/reporters": reportersModule,
 	buffer: {
 		Buffer,
 		SlowBuffer,
@@ -2078,6 +2069,18 @@ const builtins = {
 	...(nativeModules?.dgram ? { dgram: nativeModules.dgram } : {}),
 	...(nativeModules?.sqlite ? { sqlite: nativeModules.sqlite.node, "bun:sqlite": nativeModules.sqlite.bun } : {}),
 };
+
+/*
+ * node:test is built on first use, and it is reachable only through the `node:` scheme, as in Node: a bare `test` is
+ * left for a package of that name.
+ */
+const SCHEME_ONLY = new Set(["test", "test/reporters"]);
+{
+	let testModules;
+	const load = () => (testModules ??= createTestModule(builtins, globalObject));
+	Object.defineProperty(builtins, "test", { get: () => load().test, enumerable: true, configurable: true });
+	Object.defineProperty(builtins, "test/reporters", { get: () => load().reporters, enumerable: true, configurable: true });
+}
 
 /* -------------------------------------------------------- CommonJS require */
 
@@ -2281,7 +2284,7 @@ function resolveTsBaseUrl(specifier, fromDir) {
 
 function resolveModule(specifier, fromDir) {
 	const bare = specifier.startsWith("node:") ? specifier.slice(5) : specifier;
-	if (bare in builtins) return { builtin: bare };
+	if (bare in builtins && !(SCHEME_ONLY.has(bare) && !specifier.startsWith("node:"))) return { builtin: bare };
 	if (specifier.startsWith("#")) {
 		const found = resolvePackageImport(specifier, fromDir);
 		if (found) return found;
@@ -2591,6 +2594,7 @@ function createRequire(fromFile, parentModule) {
 	builtins.vm = createVm({ evalScript });
 	builtins.module = createModuleModule({
 		builtins,
+		schemeOnly: SCHEME_ONLY,
 		moduleCache,
 		createRequire,
 		resolveModule,

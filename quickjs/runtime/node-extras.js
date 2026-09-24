@@ -306,6 +306,8 @@ function installExtras(deps) {
 		p.getBuiltinModule ??= (id) => {
 			const name = String(id).startsWith("node:") ? String(id).slice(5) : String(id);
 			if (!(name in builtins) || name in { sea: 1, test: 1 } && !builtins[name]) return undefined;
+			// node:test is reachable only through the scheme, as it is for require().
+			if ((name === "test" || name === "test/reporters") && !String(id).startsWith("node:")) return undefined;
 			try {
 				return builtins[name];
 			} catch {

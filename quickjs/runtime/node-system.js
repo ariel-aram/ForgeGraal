@@ -350,7 +350,16 @@ function createVm({ evalScript }) {
 
 /* ---------------------------------------------------------------------- module */
 
-function createModuleModule({ builtins, moduleCache, createRequire, resolveModule, pathModule, readText, evalScript }) {
+function createModuleModule({
+	builtins,
+	schemeOnly = new Set(),
+	moduleCache,
+	createRequire,
+	resolveModule,
+	pathModule,
+	readText,
+	evalScript,
+}) {
 	function Module(id = "", parent) {
 		this.id = id;
 		this.path = pathModule.dirname(id);
@@ -380,10 +389,12 @@ function createModuleModule({ builtins, moduleCache, createRequire, resolveModul
 	const wrapper = ["(function (exports, require, module, __filename, __dirname) { ", "\n});"];
 	Module.wrapper = wrapper;
 	Module.wrap = (script) => wrapper[0] + script + wrapper[1];
-	Module.builtinModules = Object.keys(builtins).filter((name) => !name.startsWith("_"));
+	Module.builtinModules = Object.keys(builtins)
+		.filter((name) => !name.startsWith("_"))
+		.map((name) => (schemeOnly.has(name) ? `node:${name}` : name));
 	Module.isBuiltin = (name) => {
 		const bare = String(name).startsWith("node:") ? String(name).slice(5) : String(name);
-		return bare in builtins;
+		return bare in builtins && !(schemeOnly.has(bare) && !String(name).startsWith("node:"));
 	};
 	Module.createRequire = (filename) => {
 		return createRequire(filename);

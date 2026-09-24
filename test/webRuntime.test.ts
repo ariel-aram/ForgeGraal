@@ -56,6 +56,8 @@ const DIFFERENTIAL: Array<[string, string[]]> = [
 	["intl-corpus.cjs", []],
 	["intl-fuzz.cjs", []],
 	["test-corpus.cjs", []],
+	["nodetest-corpus.cjs", []],
+	["nodetest-run-corpus.cjs", []],
 	["dns-corpus.cjs", []],
 ];
 

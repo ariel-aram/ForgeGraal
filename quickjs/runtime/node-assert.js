@@ -78,14 +78,43 @@ function createAssert({ inspect }) {
 			this.actual = actual;
 			this.expected = expected;
 			this.operator = operator;
+			this.diff = options.diff ?? "simple";
 			Object.defineProperty(this, "name", { value: "AssertionError", enumerable: false, writable: true, configurable: true });
 			if (Error.captureStackTrace) Error.captureStackTrace(this, options.stackStartFn || options.stackStartFunction || this.constructor);
-			// The stack's first line names the error the way Node prints it.
-			this.stack;
-			this.name = "AssertionError";
+			// The engine's stack is only the frames; Node's opens `AssertionError [ERR_ASSERTION]: message`.
+			const frames = typeof this.stack === "string" ? this.stack.split("\n").filter((line) => /^\s+at /.test(line)).join("\n") : "";
+			Object.defineProperty(this, "stack", {
+				value: `AssertionError [ERR_ASSERTION]: ${this.message}${frames ? `\n${frames}` : ""}`,
+				enumerable: false,
+				writable: true,
+				configurable: true,
+			});
 		}
 		toString() {
 			return `${this.name} [${this.code}]: ${this.message}`;
+		}
+		[Symbol.for("nodejs.util.inspect.custom")](recurseTimes, ctx) {
+			// Long strings are cut short, and `actual` and `expected` are inspected no deeper than the error itself: they would
+			// be too verbose next to the message, which already shows both values side by side.
+			const addEllipsis = (string) => {
+				const lines = string.split("\n", 11);
+				if (lines.length > 10) {
+					lines.length = 10;
+					return `${lines.join("\n")}\n...`;
+				}
+				if (string.length > 512) return `${string.slice(512)}...`;
+				return string;
+			};
+			const tmpActual = this.actual;
+			const tmpExpected = this.expected;
+			if (typeof this.actual === "string") this.actual = addEllipsis(this.actual);
+			if (typeof this.expected === "string") this.expected = addEllipsis(this.expected);
+			try {
+				return inspect(this, { ...ctx, customInspect: false, depth: 0 });
+			} finally {
+				this.actual = tmpActual;
+				this.expected = tmpExpected;
+			}
 		}
 	}
 

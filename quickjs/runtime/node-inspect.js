@@ -216,7 +216,7 @@ function formatValue(ctx, value, recurseTimes, typedArray) {
 
 	const proxy = null;
 	const maybeCustom = value[custom];
-	if (typeof maybeCustom === "function" && maybeCustom !== inspect) {
+	if (ctx.customInspect !== false && typeof maybeCustom === "function" && maybeCustom !== inspect) {
 		const depth = ctx.depth === null ? null : ctx.depth - recurseTimes;
 		const ret = maybeCustom.call(value, depth, { ...ctx, depth }, inspect);
 		if (ret !== value) {
@@ -279,7 +279,8 @@ function formatProperty(ctx, value, recurseTimes, key, type) {
 }
 
 function formatError(err, constructor, tag, ctx) {
-	let stack = typeof err.stack === "string" && err.stack ? err.stack : Error.prototype.toString.call(err);
+	// The engine ends a stack with a newline; Node's does not, and an inspected error must not carry a blank line.
+	let stack = typeof err.stack === "string" && err.stack ? err.stack.replace(/\n+$/, "") : Error.prototype.toString.call(err);
 	// The engine's stack is only the "at ..." frames; Node's opens with "Name: message", which is what
 	// a person reading a log expects to see first.
 	const header = Error.prototype.toString.call(err);
@@ -289,9 +290,12 @@ function formatError(err, constructor, tag, ctx) {
 	if (constructor !== null && constructor !== name && !stack.includes(constructor) && stack.startsWith(name)) {
 		stack = `${constructor} [${name}]${stack.slice(name.length)}`;
 	}
+	// An error whose stack has no frames is bracketed, as Node does.
+	if (!/\n\s*at /.test(stack)) stack = `[${stack}]`;
 	const cause = err.cause;
 	let extra = "";
-	if (cause !== undefined && !stack.includes("[cause]")) {
+	// An own, enumerable `cause` is an ordinary property and is listed with the others; only a hidden one is shown here.
+	if (cause !== undefined && !Object.prototype.propertyIsEnumerable.call(err, "cause") && !stack.includes("[cause]")) {
 		extra = ` {\n${" ".repeat(ctx.indentationLvl + 2)}[cause]: ${formatValue(ctx, cause, 0)}\n${" ".repeat(ctx.indentationLvl)}}`;
 	}
 	return stack + extra;
@@ -369,7 +373,7 @@ function formatRaw(ctx, value, recurseTimes, typedArray) {
 		} else if (constructor === "Object") {
 			if (value instanceof Error || Object.prototype.toString.call(value) === "[object Error]") {
 				base = formatError(value, constructor, tag, ctx);
-				keys = keys.filter((k) => k !== "stack" && k !== "message" && k !== "cause");
+				keys = keys.filter((k) => k !== "stack" && k !== "message" && (k !== "cause" || Object.prototype.propertyIsEnumerable.call(value, "cause")));
 				if (keys.length === 0) return base;
 			} else if (tag !== "") {
 				braces[0] = `${getPrefix(constructor, tag, "Object")}{`;
@@ -387,7 +391,7 @@ function formatRaw(ctx, value, recurseTimes, typedArray) {
 			if (keys.length === 0) return base;
 		} else if (value instanceof Error) {
 			base = formatError(value, constructor, tag, ctx);
-			keys = keys.filter((k) => k !== "stack" && k !== "message" && k !== "cause");
+			keys = keys.filter((k) => k !== "stack" && k !== "message" && (k !== "cause" || Object.prototype.propertyIsEnumerable.call(value, "cause")));
 			if (keys.length === 0) return base;
 		} else if (value instanceof ArrayBuffer) {
 			const prefix = getPrefix(constructor, tag, "ArrayBuffer");
