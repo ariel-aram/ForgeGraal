@@ -23,6 +23,7 @@ import {
 	TargetDevice,
 	type TargetMetadata,
 } from "../structures";
+import { AppTrimmer } from "./AppTrimmer";
 import { Archive } from "./Archive";
 import { BinaryInspector } from "./BinaryInspector";
 import { BUN_TRANSPILABLE_EXTENSIONS, BunTranspiler } from "./BunTranspiler";
@@ -113,6 +114,11 @@ export interface BuildOptions {
 	 * a package it bundles mentions `Intl`, `toLocale*String` or `localeCompare`; `all` always; `none` never.
 	 */
 	intl?: IntlData;
+	/**
+	 * On the Graak engine, ship only the files the program can load (see AppTrimmer): its own files, the modules they
+	 * reach, and whole packages where loading is computed at run time. `false` ships every collected file. Default true.
+	 */
+	trim?: boolean;
 	onLog?: (message: string) => void;
 }
 
@@ -391,6 +397,21 @@ export class BinaryPackager {
 				BinaryPackager.applyWin7Compat(project, target, options, warnings, log);
 				lap("Patching addons for Windows 7");
 				BinaryPackager.checkNativeAddons(project.nativeAddons, target, options, warnings, "native");
+				if (options.trim !== false) {
+					const trimmed = AppTrimmer.trim(project.entries, {
+						target,
+						convertedFromTypeScript: new Set(converted.renamed.values()),
+					});
+					project.entries = trimmed.entries;
+					const mb = (bytes: number) => `${(bytes / 1048576).toFixed(1)} MB`;
+					log(
+						`Kept the ${trimmed.after.files} of ${trimmed.before.files} files the program can load ` +
+							`(${mb(trimmed.before.bytes)} -> ${mb(trimmed.after.bytes)}` +
+							(trimmed.droppedPackages.length ? `, ${trimmed.droppedPackages.length} unused packages left out` : "") +
+							"; --no-trim ships everything)"
+					);
+					lap("Trimming the application");
+				}
 				log(`Packaging for the Graak native host on ${meta.name} (no Node.js runtime bundled)`);
 				const nativeHostBinary = await QuickJsPackager.ensureNativeHost(target, nativeLibc ?? "musl", log);
 				lap("Preparing the native host");

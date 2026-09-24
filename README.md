@@ -99,14 +99,25 @@ graak compile dist/index.js --target win-xp-x86 --engine native --strategy sea -
    JSX become CommonJS with esbuild. Converted files are cached on disk, so a rebuild skips them.
 3. **Adapt.** Native addons are checked, V8/NAN addons are rebuilt from source for the target, and for Windows Vista and 7
    the imports those systems lack are redirected to Graak's compatibility DLLs.
-4. **Package.** Output is one of three strategies:
+4. **Trim.** For the Graak engine, only the files the program can load ship. Its own files always do; from them the
+   module graph is followed file by file with the host's own resolution rules (`exports` with `require` first, `imports`,
+   `main`, index files), and packages nothing reaches are left out. Type declarations, docs, source maps (unless
+   `source-map-support` is loaded), tests, examples, addon build inputs (C sources, headers, `binding.gyp`) and binaries
+   built for another platform go too. Nothing is bundled or minified, so `__dirname`, stack traces and module identity
+   stay as they were. Where loading is decided at run time, the package ships whole instead: code that requires a
+   computed name (a command loader, `require(variable)`, `createRequire`) keeps its package and every package it
+   depends on; code that reads files by path (`__dirname`, `import.meta.url`), a `require.resolve()` target, or a
+   package with a native addon keeps that package. A ForgeScript bot goes from 8,650 files (23.8 MB) to 2,472
+   (8.6 MB); an Express, ws and better-sqlite3 server from 36.7 MB to 5.8 MB on Windows 7. The log says what was
+   kept; `--no-trim` ships every collected file.
+5. **Package.** Output is one of three strategies:
    - **native**: the Graak host `graak-c[.exe]`, `runtime/` (the Node.js-shaped standard library), `app/` (your program
      and its `node_modules`, as loose files) and a launcher. Files the program writes to `app/`, SQLite databases
      included, stay put across rebuilds. With `--engine native --strategy sea` it is [one file](#one-file).
    - **sea**: a [Node.js Single Executable Application](https://nodejs.org/api/single-executable-applications.html)
      injected into a target Node.js runtime (>= 20.12), extracting its archive beside itself on first start.
    - **portable**: a folder with the archive, `boot.cjs`, a launcher and the runtime when one is available.
-5. `--engine node`, `--node-binary`, `--strategy sea|portable` (without `--engine native`) or a runtime registered with
+6. `--engine node`, `--node-binary`, `--strategy sea|portable` (without `--engine native`) or a runtime registered with
    `graak runtimes add` move a Graak-engine target onto Node.js. Everything else stays on the Graak engine.
 
 A build that takes long says where: any stage of 750 ms or more prints how long it took.
@@ -569,7 +580,8 @@ graak version
 | `--offline` | Never download runtimes or fetch addon sources |
 | `--include-dev` | Bundle devDependencies too |
 | `--include-env` | Bundle `.env` files (they usually contain secrets) |
-| `--allow-native-mismatch` | Bundle native addons built for another platform |
+| `--allow-native-mismatch` | Build even when native addons are built for another platform (a trimmed Graak-engine build leaves those binaries out; `--no-trim` keeps them) |
+| `--no-trim` | Graak engine: ship every collected file instead of only the ones the program can load ([Trim](#how-a-build-works)) |
 
 ---
 

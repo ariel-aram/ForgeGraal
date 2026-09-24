@@ -33,6 +33,9 @@ Compile options:
                               portable a folder
       --intl <mode>          Locale data for Intl on the Graak engine (about 7 MB): auto (default, ships it
                               when the program mentions Intl, toLocale*String or localeCompare), all or none
+      --no-trim              Graak engine: ship every collected file instead of only the ones the program
+                              can load (docs, type declarations, tests, unused packages and other
+                              platforms' binaries are left out by default)
   -s, --strategy <name>      auto (default), sea (single executable) or portable (folder bundle).
                               sea writes a single standalone executable on native targets without Node.js.
                               portable opts back onto Node.js (or folder layout with --engine native)
@@ -54,7 +57,8 @@ Compile options:
       --offline              Never download runtimes
       --include-dev          Bundle devDependencies too
       --include-env          Bundle .env files (they usually contain secrets such as tokens)
-      --allow-native-mismatch  Bundle native addons built for another platform
+      --allow-native-mismatch  Build even when native addons are built for another platform (a
+                              trimmed Graak-engine build leaves those binaries out; --no-trim keeps them)
   -h, --help                 Show this help
 
 Most targets default to the Graak native host (quickjs-ng + quickjs/native/), not Node.js:
@@ -301,6 +305,7 @@ async function main(): Promise<void> {
 				includeDev: values["include-dev"],
 				includeEnv: values["include-env"],
 				allowNativeMismatch: values["allow-native-mismatch"],
+				trim: !values["no-trim"],
 				staticSite:
 					values.static || values.spa || values.port || values.host || values.index
 						? {
@@ -358,6 +363,7 @@ function parse() {
 			"include-dev": { type: "boolean" },
 			"include-env": { type: "boolean" },
 			"allow-native-mismatch": { type: "boolean" },
+			"no-trim": { type: "boolean" },
 			static: { type: "boolean" },
 			spa: { type: "boolean" },
 			port: { type: "string" },
