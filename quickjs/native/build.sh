@@ -1,5 +1,5 @@
 #!/bin/sh
-# Builds the Graak native host: quickjs-ng + mbedTLS + miniz + the Graak native layer.
+# Builds the Graak native host: quickjs-ng + mbedTLS + miniz + the Brotli decoder + the Graak native layer.
 #
 # This is the only backend Graak ships -- one C binary, every target, no Node.js and no
 # second language required to reach it. It uses only Winsock 2 and CryptoAPI on Windows, both
@@ -50,6 +50,7 @@ SQLITE_VERSION="${SQLITE_VERSION:-3460100}"
 SQLITE_YEAR="${SQLITE_YEAR:-2024}"
 LIBFFI_VERSION="${LIBFFI_VERSION:-3.4.6}"
 LIBUV_VERSION="${LIBUV_VERSION:-1.48.0}"
+BROTLI_VERSION="${BROTLI_VERSION:-v1.1.0}"
 
 if [ -z "$TARGET" ]; then
 	echo "usage: $0 <win-xp-x86|win-x86|win-x64|linux-x86|linux-x64|linux-x64-glibc|linux-x64-musl-dyn|linux-x86-musl-dyn|native> [output-dir]" >&2
@@ -130,6 +131,13 @@ if [ ! -f libffi/configure ]; then
 	mkdir -p libffi
 	(cd libffi && curl -sL -o libffi.tar.gz "https://github.com/libffi/libffi/releases/download/v$LIBFFI_VERSION/libffi-$LIBFFI_VERSION.tar.gz" \
 		&& tar -xzf libffi.tar.gz --strip-components=1)
+fi
+
+if [ ! -f brotli/c/dec/decode.c ]; then
+	# The decoder only: single-file executables carry their application Brotli-compressed (see fg_sea.c).
+	echo "[build] fetching Brotli $BROTLI_VERSION"
+	rm -rf brotli
+	git clone -q --depth 1 --branch "$BROTLI_VERSION" https://github.com/google/brotli.git brotli
 fi
 
 if [ ! -f libuv/include/uv.h ]; then
@@ -226,7 +234,7 @@ fi
 	-D_GNU_SOURCE -DMINIZ_NO_TIME -DMINIZ_NO_STDIO \
 	-DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_RTREE -DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_USE_URI=1 \
 	$NAPI_CFLAGS \
-	-I quickjs-ng -I mbedtls/include -I miniz -I wasm3/source -I sqlite -I libuv/include -I "$LIBFFI_BUILD/include" -I "$SCRIPT_DIR" -I "$SCRIPT_DIR/include" \
+	-I quickjs-ng -I mbedtls/include -I miniz -I wasm3/source -I sqlite -I brotli/c/include -I libuv/include -I "$LIBFFI_BUILD/include" -I "$SCRIPT_DIR" -I "$SCRIPT_DIR/include" \
 	-o "$EXE" \
 	"$SCRIPT_DIR/fg_main.c" \
 	"$SCRIPT_DIR/fg_sea.c" \
@@ -240,6 +248,9 @@ fi
 	wasm3/source/m3_info.c wasm3/source/m3_module.c wasm3/source/m3_optimize.c wasm3/source/m3_parse.c \
 	"$SCRIPT_DIR/ca_bundle.c" \
 	miniz/miniz.c \
+	brotli/c/common/constants.c brotli/c/common/context.c brotli/c/common/dictionary.c brotli/c/common/platform.c \
+	brotli/c/common/shared_dictionary.c brotli/c/common/transform.c \
+	brotli/c/dec/bit_reader.c brotli/c/dec/decode.c brotli/c/dec/huffman.c brotli/c/dec/state.c \
 	sqlite/sqlite3.c \
 	quickjs-ng/quickjs.c quickjs-ng/libregexp.c quickjs-ng/libunicode.c \
 	quickjs-ng/dtoa.c quickjs-ng/quickjs-libc.c \

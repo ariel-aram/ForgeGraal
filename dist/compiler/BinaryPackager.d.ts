@@ -37,7 +37,7 @@ export interface BuildOptions {
     strategy?: BuildStrategy;
     /**
      * `native` runs the program on the Graak native host and `node` on a Node.js runtime; `auto` (the default) follows
-     * the target. `strategy: "sea"` (or an output path ending in `.exe`) writes one self-unpacking executable; `portable`
+     * the target. `strategy: "sea"` (or an output path ending in `.exe`) writes one executable that runs the application from inside itself; `portable`
      * produces a directory bundle.
      */
     engine?: BuildEngine;

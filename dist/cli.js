@@ -29,7 +29,7 @@ Compile options:
   -t, --target <name>        Target device (see 'graak targets')
   -o, --output <path>        Output file (single file) or directory (folder)
   -e, --engine <name>        auto (default, follows the target), native (Graak's own host) or node.
-                              With native host targets, --strategy sea writes ONE self-unpacking executable and
+                              With native host targets, --strategy sea writes ONE executable that runs in place and
                               portable a folder
       --intl <mode>          Locale data for Intl on the Graak engine (about 7 MB): auto (default, ships it
                               when the program mentions Intl, toLocale*String or localeCompare), all or none
@@ -304,7 +304,7 @@ async function main() {
             console.log(`  Output   : ${result.outputPath}`);
             console.log(`  Run      : ${result.launcherPath}`);
             if (result.strategy === "quickjs") {
-                console.log(`  Layout   : ${result.outputPath === result.launcherPath ? "one self-unpacking file" : "folder"}`);
+                console.log(`  Layout   : ${result.outputPath === result.launcherPath ? "one file" : "folder"}`);
             }
             console.log(`  Runtime  : ${result.strategy === "quickjs"
                 ? `Graak native host (no Node.js)`

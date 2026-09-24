@@ -15,6 +15,8 @@
 
 void graak_native_init(JSContext *ctx);
 int fg_sea_prepare(int *argc, char ***argv);
+char *fg_sea_read_file(const char *path, size_t *len);
+JSModuleDef *fg_sea_module_loader(JSContext *ctx, const char *name, void *opaque, JSValueConst attributes);
 void graak_napi_shutdown(void);
 
 static char *read_file(const char *path, size_t *len_out)
@@ -58,7 +60,7 @@ int main(int argc, char **argv)
     JSValue result;
     int status = 0;
 
-    /* A single-file build carries its application after the executable; unpack it and run it. */
+    /* A single-file build carries its application after the executable; index it and run it from there. */
     if (fg_sea_prepare(&argc, &argv) < 0) {
         return 1;
     }
@@ -98,14 +100,18 @@ int main(int argc, char **argv)
     js_std_init_handlers(rt);
     /* An unhandled rejection is an error in the program, not something to ignore: report it and fail. */
     JS_SetHostPromiseRejectionTracker(rt, js_std_promise_rejection_tracker, NULL);
-    JS_SetModuleLoaderFunc(rt, NULL, js_module_loader, NULL);
+    /* The engine's loader, except that a single-file build's modules are read from its payload. */
+    JS_SetModuleLoaderFunc2(rt, NULL, fg_sea_module_loader, js_module_check_attributes, NULL);
     js_init_module_std(ctx, "qjs:std");
     js_init_module_os(ctx, "qjs:os");
     js_std_add_helpers(ctx, argc - 1, argv + 1);
 
     graak_native_init(ctx);
 
-    source = read_file(argv[1], &len);
+    source = fg_sea_read_file(argv[1], &len);
+    if (!source) {
+        source = read_file(argv[1], &len);
+    }
     if (!source) {
         fprintf(stderr, "graak: cannot read '%s'\n", argv[1]);
         JS_FreeContext(ctx);

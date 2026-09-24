@@ -281,7 +281,7 @@ class BinaryPackager {
                 log(`Packaging for the Graak native host on ${meta.name} (no Node.js runtime bundled)`);
                 const nativeHostBinary = await QuickJsPackager_1.QuickJsPackager.ensureNativeHost(target, nativeLibc ?? "musl", log);
                 lap("Preparing the native host");
-                // strategy: "sea" (or an output path ending in .exe) is one self-unpacking executable; everything else is a folder.
+                // strategy: "sea" (or an output path ending in .exe) is one executable; everything else is a folder.
                 const isWindowsTarget = meta.nodePlatform === "win32";
                 const outputEndsWithExe = options.output ? options.output.toLowerCase().endsWith(".exe") : false;
                 const single = strategy === "sea" || (outputEndsWithExe && strategy !== "portable");
@@ -312,9 +312,9 @@ class BinaryPackager {
                         finalPath = outputPath;
                         finalLauncher = outputPath;
                         finalSize = (0, node_fs_1.statSync)(outputPath).size;
-                        warnings.push("This is one self-unpacking executable: on first start it unpacks the application next to itself " +
-                            `(${(0, node_path_1.basename)(outputPath)}.graak, or the temp directory when that folder is read-only). ` +
-                            "Delete that folder to force a fresh unpack.");
+                        warnings.push("This is one executable that runs the application from inside itself, without unpacking it. Only " +
+                            "files that must exist on disk (native addons, programs it starts, SQLite databases it ships) are " +
+                            `extracted, beside it in ${(0, node_path_1.basename)(outputPath)}.graak or in the temp directory when that folder is read-only.`);
                     }
                     finally {
                         (0, node_fs_1.rmSync)(stage, { recursive: true, force: true });

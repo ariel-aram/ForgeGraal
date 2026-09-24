@@ -165,6 +165,7 @@ const RUNTIME_FILES = [
     "segmenter.js",
     "segmenter-tables.js",
     "native-modules.js",
+    "node-sea.js",
 ];
 const INTL_USE = /\bIntl\b|\btoLocale(?:String|DateString|TimeString|UpperCase|LowerCase)\b|\blocaleCompare\b/;
 const SCANNED_EXTENSIONS = new Set([".js", ".cjs", ".mjs", ".jsx", ".ts", ".cts", ".mts", ".tsx"]);

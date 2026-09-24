@@ -19,8 +19,8 @@
  *     qjs --std quickjs/runtime/node-compat.js your-entry.js
  */
 
-import * as os from "qjs:os";
-import * as std from "qjs:std";
+import * as engineOs from "qjs:os";
+import * as engineStd from "qjs:std";
 import { installIntl } from "./intl.js";
 import { createAssert } from "./node-assert.js";
 import {
@@ -60,6 +60,13 @@ import * as web from "./node-web.js";
 import { Segmenter } from "./segmenter.js";
 import { createTestModule } from "./node-test.js";
 import { createDns } from "./node-dns.js";
+
+// A single-file build runs from its executable's payload: os and std are wrapped to read the program from it.
+const sea = globalThis.__graak_native?.sea
+	? (await import("./node-sea.js")).installSea({ os: engineOs, std: engineStd, native: globalThis.__graak_native })
+	: null;
+const os = sea?.os ?? engineOs;
+const std = sea?.std ?? engineStd;
 
 const globalObject = globalThis;
 
@@ -2656,6 +2663,8 @@ if (entry) {
 	try {
 		const target = resolved.startsWith("/") || /^[a-zA-Z]:/.test(resolved) ? resolved : `./${entry}`;
 		const res = createRequire(resolved)(target);
+		// The payload blocks kept for start-up are memory from here on; a later require decompresses what it needs.
+		sea?.release();
 		if (res && typeof res.then === "function") {
 			res.catch((err) => reportUncaught(err));
 		}

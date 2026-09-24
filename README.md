@@ -256,10 +256,18 @@ Server-rendered frameworks are programs, not sites: package their server entry f
 ### One file
 
 `--engine native --strategy sea` writes **one executable** instead of a folder. The application (the compatibility layer,
-your program and its `node_modules`, deflated) is appended to a copy of the host, and on first start the host unpacks it
-next to itself (`<name>.graak`, or the temp directory when that folder is read-only) and runs it. Later starts find the
-unpacked copy by the payload's SHA-256 and skip straight to running. The host is about 4.5 MB, so a small program or a
-static site is a **single file of about 5 MB**, and an Express application is about 8 MB.
+your program and its `node_modules`) is appended to a copy of the host in Brotli-compressed blocks of about 2 MB, and the
+host runs it **from inside itself**: modules and every `fs` read of the program's own files are served from the payload,
+decompressed on demand, under a directory `<name>.graak` that exists only there. Nothing is unpacked. Files that must be
+real are extracted one at a time, beside the executable in `<name>.graak` (or in the temp directory when that folder is
+read-only): a native addon and the shared libraries the payload carries, a program started with `child_process`, an
+SQLite database or FFI library opened from the payload. The host is about 4.5 MB, so a small program or a static site is
+a **single file of about 5 MB**; a discord.js bot with its dependencies is about 7.5 MB.
+
+The payload is read-only, like the files of an installed program. Writing to one of its paths writes a real file there
+(creating the directories it needs), and that process reads the real file from then on; the next start sees the
+payload's copy again. A native addon that creates files beside itself without going through `fs` finds no such
+directory unless something created it first.
 
 ```sh
 graak compile dist/index.js --target win-legacy-x64 --engine native --strategy sea --output app.exe
@@ -302,7 +310,7 @@ only Winsock 2 and CryptoAPI on Windows, both present since the 1990s:
 - **Hashing, HMAC, secure randomness** (mbedTLS), **compression** (miniz), **WebAssembly** (wasm3), **SQLite** (the amalgamation),
   **foreign function calls** (libffi), **UDP and unix-domain sockets**, **timers, filesystem and process**.
 - **Node-API** for native addons (plus the part of libuv's ABI that addons such as rocksdb-native call), and
-  **self-unpacking single files**.
+  **single files that run in place** (a Brotli decoder reads the payload).
 
 One source tree serves every target; only the cross-compiler differs.
 

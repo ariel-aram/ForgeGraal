@@ -80,7 +80,7 @@ export interface BuildOptions {
 	strategy?: BuildStrategy;
 	/**
 	 * `native` runs the program on the Graak native host and `node` on a Node.js runtime; `auto` (the default) follows
-	 * the target. `strategy: "sea"` (or an output path ending in `.exe`) writes one self-unpacking executable; `portable`
+	 * the target. `strategy: "sea"` (or an output path ending in `.exe`) writes one executable that runs the application from inside itself; `portable`
 	 * produces a directory bundle.
 	 */
 	engine?: BuildEngine;
@@ -415,7 +415,7 @@ export class BinaryPackager {
 				log(`Packaging for the Graak native host on ${meta.name} (no Node.js runtime bundled)`);
 				const nativeHostBinary = await QuickJsPackager.ensureNativeHost(target, nativeLibc ?? "musl", log);
 				lap("Preparing the native host");
-				// strategy: "sea" (or an output path ending in .exe) is one self-unpacking executable; everything else is a folder.
+				// strategy: "sea" (or an output path ending in .exe) is one executable; everything else is a folder.
 				const isWindowsTarget = meta.nodePlatform === "win32";
 				const outputEndsWithExe = options.output ? options.output.toLowerCase().endsWith(".exe") : false;
 				const single = strategy === "sea" || (outputEndsWithExe && strategy !== "portable");
@@ -449,9 +449,9 @@ export class BinaryPackager {
 						finalLauncher = outputPath;
 						finalSize = statSync(outputPath).size;
 						warnings.push(
-							"This is one self-unpacking executable: on first start it unpacks the application next to itself " +
-								`(${basename(outputPath)}.graak, or the temp directory when that folder is read-only). ` +
-								"Delete that folder to force a fresh unpack."
+							"This is one executable that runs the application from inside itself, without unpacking it. Only " +
+								"files that must exist on disk (native addons, programs it starts, SQLite databases it ships) are " +
+								`extracted, beside it in ${basename(outputPath)}.graak or in the temp directory when that folder is read-only.`
 						);
 					} finally {
 						rmSync(stage, { recursive: true, force: true });

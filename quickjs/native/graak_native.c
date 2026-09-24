@@ -2341,6 +2341,7 @@ extern const JSCFunctionListEntry graak_sqlite_funcs[];
 extern const size_t graak_sqlite_funcs_count;
 extern const JSCFunctionListEntry graak_ffi_funcs[];
 extern const size_t graak_ffi_funcs_count;
+void fg_sea_install(JSContext *ctx, JSValueConst native);
 
 void graak_native_init(JSContext *ctx)
 {
@@ -2364,6 +2365,8 @@ void graak_native_init(JSContext *ctx)
     /* SQLite (amalgamation compiled in) and libffi: node:sqlite, Deno KV and Deno.dlopen are built on these. */
     JS_SetPropertyFunctionList(ctx, native, graak_sqlite_funcs, (int) graak_sqlite_funcs_count);
     JS_SetPropertyFunctionList(ctx, native, graak_ffi_funcs, (int) graak_ffi_funcs_count);
+    /* A single-file build's payload: the fs layer reads the program's files from it (node-sea.js). */
+    fg_sea_install(ctx, native);
     JS_SetPropertyStr(ctx, native, "backend", JS_NewString(ctx, "c"));
 #ifdef _WIN32
     JS_SetPropertyStr(ctx, native, "platform", JS_NewString(ctx, "win32"));

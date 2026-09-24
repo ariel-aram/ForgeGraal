@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -246,7 +246,10 @@ test("a trimmed native build runs exactly as the untrimmed one, with the unused 
 	write("package.json", pkg("trim-app", { dependencies: { greet: "1", unused: "1" } }));
 	write(
 		"index.js",
-		'const greet = require("greet");\nconsole.log(JSON.stringify({ hello: greet("world"), data: require("greet/data.json").n }));'
+		'const greet = require("greet");\nconsole.log(JSON.stringify({ hello: greet("world"), data: require("greet/data.json").n }));\n' +
+			'const fs = require("fs"), path = require("path");\n' +
+			'const has = (p) => fs.existsSync(path.join(__dirname, "node_modules", p));\n' +
+			'console.log(JSON.stringify({ unused: has("unused"), readme: has("greet/README.md"), data: has("greet/data.json") }));'
 	);
 	write(
 		"node_modules/greet/package.json",
@@ -277,19 +280,20 @@ test("a trimmed native build runs exactly as the untrimmed one, with the unused 
 		});
 		// No Node.js anywhere: the single executable needs nothing on PATH.
 		const ran = spawnSync(out, [], { encoding: "utf-8", env: { PATH: "/nonexistent" } });
-		return { unpacked: `${out}.graak`, logs, ran, result };
+		return { logs, ran, result };
 	};
+	const [expectedResult] = expected.stdout.split("\n");
 	const lean = await run(true);
 	assert.equal(lean.ran.status, 0, lean.ran.stderr);
-	assert.equal(lean.ran.stdout, expected.stdout);
-	assert.ok(!existsSync(join(lean.unpacked, "app/node_modules/unused")), "the unused package is left out");
-	assert.ok(!existsSync(join(lean.unpacked, "app/node_modules/greet/README.md")));
-	assert.ok(existsSync(join(lean.unpacked, "app/node_modules/greet/data.json")));
+	const [leanResult, leanProbe] = lean.ran.stdout.split("\n");
+	assert.equal(leanResult, expectedResult);
+	assert.deepEqual(JSON.parse(leanProbe), { unused: false, readme: false, data: true });
 	assert.ok(lean.logs.some((line) => /Kept the \d+ of \d+ files the program can load/.test(line)));
 
 	const full = await run(false);
-	assert.equal(full.ran.stdout, expected.stdout);
-	assert.ok(existsSync(join(full.unpacked, "app/node_modules/unused/index.js")), "trim: false ships everything");
+	const [fullResult, fullProbe] = full.ran.stdout.split("\n");
+	assert.equal(fullResult, expectedResult);
+	assert.deepEqual(JSON.parse(fullProbe), { unused: true, readme: true, data: true });
 	assert.ok(lean.result.files < full.result.files);
 });
 
