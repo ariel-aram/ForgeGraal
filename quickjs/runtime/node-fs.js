@@ -84,12 +84,14 @@ function createFs({ os, std, Buffer, path, stream, EventEmitter, native, platfor
 
 	function resolvePackageJsonFallback(target) {
 		if (typeof target !== "string") return target;
+		// Only the working directory's package.json, the one a program reads for its own name and version. A
+		// package.json anywhere else is a real lookup (the module resolver walks up directories for one) that has to fail.
 		if (
 			target === "package.json" ||
 			target === "./package.json" ||
 			target === ".\\package.json" ||
-			target.endsWith("/package.json") ||
-			target.endsWith("\\package.json")
+			((target.endsWith("/package.json") || target.endsWith("\\package.json")) &&
+				path.resolve(path.dirname(target)) === path.resolve("."))
 		) {
 			const [, err] = os.stat(target);
 			if (err !== 0) {

@@ -8,6 +8,7 @@ t("write/read", () => { fs.writeFileSync(f, "héllo"); return [fs.readFileSync(f
 t("append", () => { fs.appendFileSync(f, " world"); return fs.readFileSync(f, "utf8"); });
 t("stat", () => { const s = fs.statSync(f); return [s.size, s.isFile(), s.isDirectory(), s.mtime instanceof Date, typeof s.mtimeMs, (s.mode & 0o777).toString(8).length]; });
 t("exists", () => [fs.existsSync(f), fs.existsSync(f + "x")]);
+t("missing package.json", () => [fs.existsSync(path.join(dir, "package.json")), fs.statSync(path.join(dir, "package.json"), { throwIfNoEntry: false })]);
 t("enoent", () => fs.readFileSync(path.join(dir, "nope")));
 t("enoent stat", () => fs.statSync(path.join(dir, "nope")));
 t("throwIfNoEntry", () => fs.statSync(path.join(dir, "nope"), { throwIfNoEntry: false }));
