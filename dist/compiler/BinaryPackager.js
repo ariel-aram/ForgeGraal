@@ -9,6 +9,7 @@ const ForgeDBIntegration_1 = require("../integrations/ForgeDBIntegration");
 const launcher_1 = require("../runtime/launcher");
 const nativeShim_1 = require("../runtime/nativeShim");
 const structures_1 = require("../structures");
+const AppTrimmer_1 = require("./AppTrimmer");
 const Archive_1 = require("./Archive");
 const BinaryInspector_1 = require("./BinaryInspector");
 const BunTranspiler_1 = require("./BunTranspiler");
@@ -264,6 +265,19 @@ class BinaryPackager {
                 BinaryPackager.applyWin7Compat(project, target, options, warnings, log);
                 lap("Patching addons for Windows 7");
                 BinaryPackager.checkNativeAddons(project.nativeAddons, target, options, warnings, "native");
+                if (options.trim !== false) {
+                    const trimmed = AppTrimmer_1.AppTrimmer.trim(project.entries, {
+                        target,
+                        convertedFromTypeScript: new Set(converted.renamed.values()),
+                    });
+                    project.entries = trimmed.entries;
+                    const mb = (bytes) => `${(bytes / 1048576).toFixed(1)} MB`;
+                    log(`Kept the ${trimmed.after.files} of ${trimmed.before.files} files the program can load ` +
+                        `(${mb(trimmed.before.bytes)} -> ${mb(trimmed.after.bytes)}` +
+                        (trimmed.droppedPackages.length ? `, ${trimmed.droppedPackages.length} unused packages left out` : "") +
+                        "; --no-trim ships everything)");
+                    lap("Trimming the application");
+                }
                 log(`Packaging for the Graak native host on ${meta.name} (no Node.js runtime bundled)`);
                 const nativeHostBinary = await QuickJsPackager_1.QuickJsPackager.ensureNativeHost(target, nativeLibc ?? "musl", log);
                 lap("Preparing the native host");

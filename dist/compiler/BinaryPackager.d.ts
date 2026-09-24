@@ -71,6 +71,11 @@ export interface BuildOptions {
      * a package it bundles mentions `Intl`, `toLocale*String` or `localeCompare`; `all` always; `none` never.
      */
     intl?: IntlData;
+    /**
+     * On the Graak engine, ship only the files the program can load (see AppTrimmer): its own files, the modules they
+     * reach, and whole packages where loading is computed at run time. `false` ships every collected file. Default true.
+     */
+    trim?: boolean;
     onLog?: (message: string) => void;
 }
 export interface BuildResult {

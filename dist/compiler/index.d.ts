@@ -1,3 +1,4 @@
+export * from "./AppTrimmer";
 export * from "./Archive";
 export * from "./BinaryInspector";
 export * from "./BinaryPackager";
