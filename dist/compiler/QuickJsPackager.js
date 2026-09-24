@@ -159,6 +159,8 @@ const RUNTIME_FILES = [
     "intl.js",
     "intl-zone.js",
     "node-test.js",
+    "node-test-mock.js",
+    "node-test-util.js",
     "node-dns.js",
     "segmenter.js",
     "segmenter-tables.js",

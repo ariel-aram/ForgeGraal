@@ -654,7 +654,7 @@ pnpm typecheck && pnpm build && pnpm test && pnpm check
 
 `pnpm test` compiles first and runs everything under `test/` with Node's test runner. Checks that need something extra
 skip themselves when it is missing: a built host (`GRAAK_C`), `qjs` (`GRAAK_QJS`), the musl.cc toolchains on `PATH`, NAN
-sources (`GRAAK_NAN_DIR`), `deno` (the Deno corpora and project compare against real Deno; the project needs the jsr and npm packages reachable or cached) and the `fg-wine` Docker image, which runs the Windows host. `dist/` is committed, so run
+sources (`GRAAK_NAN_DIR`), `deno` (the Deno corpora and project compare against real Deno; the project needs the jsr and npm packages reachable or cached) and the `fg-wine` Docker image, which runs the Windows host (build it with `docker build -t fg-wine -f test/docker/fg-wine.Dockerfile test/docker`). `dist/` is committed, so run
 `pnpm build` before committing.
 
 Layout: `src/compiler` (collect, convert, package), `src/structures` (targets, errors), `src/runtime` (launchers and
