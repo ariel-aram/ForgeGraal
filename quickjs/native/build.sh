@@ -261,6 +261,7 @@ fi
 	"$SCRIPT_DIR/fg_sqlite.c" \
 	"$SCRIPT_DIR/fg_crypto.c" \
 	"$SCRIPT_DIR/fg_ffi.c" \
+	"$SCRIPT_DIR/fg_proc.c" \
 	wasm3/source/m3_bind.c wasm3/source/m3_code.c wasm3/source/m3_compile.c wasm3/source/m3_core.c \
 	wasm3/source/m3_emit.c wasm3/source/m3_env.c wasm3/source/m3_exec.c wasm3/source/m3_function.c \
 	wasm3/source/m3_info.c wasm3/source/m3_module.c wasm3/source/m3_optimize.c wasm3/source/m3_parse.c \

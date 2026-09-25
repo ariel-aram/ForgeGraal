@@ -45,6 +45,7 @@ import {
 	inspect as inspectValue,
 	setPromiseStateReader,
 } from "./node-inspect.js";
+import { createChildProcess as createStreamingChild } from "./node-child.js";
 import * as misc from "./node-misc.js";
 import * as v8Serdes from "./node-v8.js";
 import { createConsumers, createStreamModule } from "./node-stream.js";
@@ -794,9 +795,14 @@ const fs = {};
 
 /* ------------------------------------------------------------------ process */
 
+// qjs:os hands the path back as a string; an older engine returned [path, error].
+const exePathOf = () => {
+	const found = os.exePath?.();
+	return (Array.isArray(found) ? found[0] : found) || "qjs";
+};
 const processModule = new EventEmitter();
 Object.assign(processModule, {
-	argv: [os.exePath?.()[0] ?? "qjs", ...(globalObject.scriptArgs ?? []).slice(1)],
+	argv: [exePathOf(), ...(globalObject.scriptArgs ?? []).slice(1)],
 	argv0: "node",
 	execArgv: [],
 	title: "node",
@@ -828,7 +834,7 @@ Object.assign(processModule, {
 		tls: true,
 	},
 	pid: os.getpid?.() ?? globalThis.__graak_native?.getpid?.() ?? 0,
-	execPath: os.exePath?.()[0] ?? "qjs",
+	execPath: exePathOf(),
 	cwd: () => os.getcwd()[0],
 	chdir: (dir) => os.chdir(dir),
 	exit: (code) => {
@@ -1966,6 +1972,27 @@ const childProcessModule =
 		}
 	) ?? notImplemented("child_process", "This engine build exposes no exec().");
 
+// spawn() with live pipes, fork() and the IPC channel come from the native layer's process table (fg_proc.c).
+const streamingChild =
+	nativeLayer?.procSpawn && childProcessModule.spawnSync
+		? createStreamingChild({
+				native: nativeLayer,
+				EventEmitter,
+				stream: streamModule,
+				Buffer,
+				process: processModule,
+				isSea: Boolean(sea),
+				shellArgv: (command) =>
+					processModule.platform === "win32" ? ["cmd.exe", "/d", "/s", "/c", command] : ["/bin/sh", "-c", command],
+			})
+		: null;
+if (streamingChild) {
+	childProcessModule.spawn = streamingChild.spawn;
+	childProcessModule.fork = streamingChild.fork;
+	childProcessModule.ChildProcess = streamingChild.ChildProcess;
+	streamingChild.installChannel();
+}
+
 const dnsModule = nativeModules
 	? createDns({
 			dgram: nativeModules.dgram,
@@ -2644,7 +2671,10 @@ export { Buffer, builtins, createRequire, EventEmitter, fs, pathModule as path, 
  * When given a script argument, run it as the entry point. This is what makes
  * `qjs node-compat.js app.js` behave like `node app.js`.
  */
-const entry = (globalObject.scriptArgs ?? [])[1];
+// A forked copy of a single-file program is told which of its modules to run through the environment.
+const forkEntry = processModule.env.GRAAK_FORK_ENTRY;
+delete processModule.env.GRAAK_FORK_ENTRY;
+const entry = forkEntry || (globalObject.scriptArgs ?? [])[1];
 if (entry) {
 	const resolved = pathModule.resolve(entry);
 	const appDir = pathModule.dirname(resolved);

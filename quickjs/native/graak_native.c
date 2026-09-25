@@ -2783,6 +2783,8 @@ extern const size_t graak_crypto_funcs_count;
 extern const JSCFunctionListEntry graak_ffi_funcs[];
 extern const size_t graak_ffi_funcs_count;
 void fg_sea_install(JSContext *ctx, JSValueConst native);
+extern const JSCFunctionListEntry graak_proc_funcs[];
+extern const size_t graak_proc_funcs_count;
 
 void graak_native_init(JSContext *ctx)
 {
@@ -2807,6 +2809,8 @@ void graak_native_init(JSContext *ctx)
     JS_SetPropertyFunctionList(ctx, native, graak_sqlite_funcs, (int) graak_sqlite_funcs_count);
     JS_SetPropertyFunctionList(ctx, native, graak_ffi_funcs, (int) graak_ffi_funcs_count);
     JS_SetPropertyFunctionList(ctx, native, graak_crypto_funcs, (int) graak_crypto_funcs_count);
+    /* Child processes with live pipes and the fork() IPC channel (fg_proc.c). */
+    JS_SetPropertyFunctionList(ctx, native, graak_proc_funcs, (int) graak_proc_funcs_count);
     /* A single-file build's payload: the fs layer reads the program's files from it (node-sea.js). */
     fg_sea_install(ctx, native);
     JS_SetPropertyStr(ctx, native, "backend", JS_NewString(ctx, "c"));
