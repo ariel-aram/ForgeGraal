@@ -308,7 +308,7 @@ export function createSubtle({ native, Buffer, toBytes, crypto, hashName }) {
 	const jwkCurve = (algorithm) => algorithm.namedCurve;
 
 	const exportKey = (format, key) => {
-		if (!["raw", "spki", "pkcs8", "jwk"].includes(format)) throw typeError(`Failed to execute 'exportKey' on 'SubtleCrypto': 1st argument '${format}' is not a valid enum value of type KeyFormat.`, "ERR_INVALID_ARG_VALUE");
+		if (!["raw", "raw-secret", "spki", "pkcs8", "jwk"].includes(format)) throw typeError(`Failed to execute 'exportKey' on 'SubtleCrypto': 1st argument '${format}' is not a valid enum value of type KeyFormat.`, "ERR_INVALID_ARG_VALUE");
 		const k = internal(key, "key");
 		if (ARGON2.includes(k.algorithm.name)) throw fail("NotSupportedError", `${k.algorithm.name} key export is not supported`);
 		if (!k.extractable) throw fail("InvalidAccessError", "key is not extractable");
