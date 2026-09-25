@@ -1045,7 +1045,7 @@ function installExtras(deps) {
 	// ---- net.BlockList, net.SocketAddress -----------------------------------------------------------------------------
 	{
 		const net = builtins.net;
-		if (net) {
+		if (net && !net.__graakUnavailable) {
 			const ipv4ToInt = (ip) => ip.split(".").reduce((a, c) => a * 256 + Number(c), 0);
 			class SocketAddress {
 				constructor(options = {}) {
@@ -1102,7 +1102,7 @@ function installExtras(deps) {
 	// ---- tls -------------------------------------------------------------------------------------------------------
 	{
 		const tls = builtins.tls;
-		if (tls) {
+		if (tls && !tls.__graakUnavailable) {
 			tls.DEFAULT_CIPHERS ??= "TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-AES256-GCM-SHA384";
 			tls.DEFAULT_ECDH_CURVE ??= "auto";
 			tls.CLIENT_RENEG_LIMIT ??= 3;
@@ -1158,7 +1158,7 @@ function installExtras(deps) {
 			ah.asyncWrapProviders ??= {};
 		}
 		const repl = builtins.repl;
-		if (repl) {
+		if (repl && !repl.__graakUnavailable) {
 			repl.REPL_MODE_SLOPPY ??= Symbol("repl-sloppy");
 			repl.REPL_MODE_STRICT ??= Symbol("repl-strict");
 			repl.writer ??= (value) => util.inspect(value);
@@ -1185,7 +1185,7 @@ function installExtras(deps) {
 	// ---- crypto: small members ----------------------------------------------------------------------------------------
 	{
 		const c = builtins.crypto;
-		if (c) {
+		if (c && !c.__graakUnavailable) {
 			c.randomUUIDv7 ??= () => {
 				const bytes = c.randomBytes(16);
 				const ms = BigInt(Date.now());

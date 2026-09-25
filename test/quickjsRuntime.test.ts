@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
@@ -178,7 +178,10 @@ function findEngine(): string | null {
 	if (explicit && existsSync(explicit)) return explicit;
 	const result = spawnSync("sh", ["-c", "command -v qjs"], { encoding: "utf-8" });
 	const found = result.stdout.trim();
-	return found ? found : null;
+	if (found) return found;
+	// Built from the quickjs-ng sources the native host build fetched (see the README's testing notes).
+	const cached = join(homedir(), ".cache/graak/tools/qjs");
+	return existsSync(cached) ? cached : null;
 }
 
 const engine = findEngine();
@@ -230,7 +233,9 @@ test("modules needing a socket are real with a native layer and explicit without
  */
 function findBackend(): string | null {
 	const bin = process.env.GRAAK_C ?? "";
-	return bin && existsSync(bin) ? bin : null;
+	if (bin && existsSync(bin)) return bin;
+	const cached = join(homedir(), ".cache/graak/native-host", `${process.platform}-${process.arch}`, "graak-c");
+	return existsSync(cached) ? cached : null;
 }
 
 const backend = findBackend();

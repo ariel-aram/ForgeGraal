@@ -9,11 +9,9 @@ import {
 	BinaryInspector,
 	BinaryPackager,
 	NativeAddonMismatchError,
-	NodeRuntime,
 	PathOutsideRootError,
 	ProjectCollector,
 	ProjectError,
-	QuickJsPackager,
 	resolveInside,
 	TargetDevice,
 } from "../dist/index.js";
@@ -317,37 +315,4 @@ test("Native addons built for another platform are rejected", async () => {
 		allowNativeMismatch: true,
 	});
 	assert.ok(allowed.warnings.some((w) => w.includes("addon.node")));
-});
-
-test("SEA executables run standalone", { timeout: 300_000 }, async (t) => {
-	const hostTarget = {
-		"linux-x64": "linux-modern-x64",
-		"linux-arm64": "linux-modern-arm64",
-	}[`${process.platform}-${process.arch}`];
-	const runtime = readFileSync(process.execPath);
-	if (!hostTarget || NodeRuntime.seaFuseState(runtime) !== "ready") {
-		t.skip("host Node.js cannot be used as a SEA runtime");
-		return;
-	}
-	if (QuickJsPackager.supports(hostTarget as TargetDevice)) {
-		t.skip(`${hostTarget} now runs on the Graak native host, not a Node.js SEA — see quickJsPackager.test.ts`);
-		return;
-	}
-
-	const root = createProject();
-	const output = join(root, "out", "bot");
-	const result = await BinaryPackager.compile({
-		entrypoint: join(root, "src/index.js"),
-		target: hostTarget,
-		output,
-		packageManager: "npm",
-		nodeBinary: process.execPath,
-		offline: true,
-	});
-	assert.equal(result.strategy, "sea");
-	assert.equal(NodeRuntime.seaFuseState(readFileSync(output)), "injected");
-
-	const data = JSON.parse(execFileSync(output, { cwd: tmpdir(), encoding: "utf-8" }));
-	assert.equal(data.bA, "b uses a@2.0.0");
-	assert.deepEqual(data.commands, ["ping.js"]);
 });

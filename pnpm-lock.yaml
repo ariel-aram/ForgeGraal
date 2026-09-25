@@ -197,6 +197,9 @@ importers:
       '@types/node':
         specifier: ^22.13.9
         version: 22.20.2
+      nan:
+        specifier: ^2.29.0
+        version: 2.29.0
       tr46:
         specifier: ^5.1.1
         version: 5.1.1
@@ -534,6 +537,9 @@ packages:
 
   ms-utility@3.3.0:
     resolution: {integrity: sha512-PM1brH9z25ICcU17rK8yLwjH5sekCHs1xiftUTKmkoSlBY+F/l7G+zyUMmZ148SkVwOPb0qDGZgawKvELJ+klQ==}
+
+  nan@2.29.0:
+    resolution: {integrity: sha512-GlGk3HIvitbvs+LT3g6XUP1kpirKNvmDFwF/bmo6XNWSb/eYEs/O4bfgIEIXCZ+lIOTS5xNwDvSGMw6FJdAhtA==}
 
   node-domexception@1.0.0:
     resolution: {integrity: sha512-/jKZoMpw0F8GRwl4/eLROPA3cfcXtLApP0QzLmUT/HuPCZWyB7IY9ZrMeKw2O/nFIqPQB3PVM9aYm0F312AXDQ==}
@@ -878,6 +884,8 @@ snapshots:
   magic-bytes.js@1.13.1: {}
 
   ms-utility@3.3.0: {}
+
+  nan@2.29.0: {}
 
   node-domexception@1.0.0: {}
 
