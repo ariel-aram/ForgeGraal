@@ -500,7 +500,7 @@ test("win-legacy-x64 with --strategy sea defaults to native engine and builds a 
 	assert.equal(result.outputPath, file);
 	assert.equal(result.launcherPath, file);
 	assert.ok(statSync(file).isFile(), "output is a single executable file, not a directory");
-	assert.ok(statSync(file).size < 6 * 1024 * 1024, "native SEA binary stays under 6 MB, avoiding +200 MB bloat");
+	assert.ok(statSync(file).size < 7 * 1024 * 1024, "native SEA binary stays under 7 MB, avoiding +200 MB bloat");
 	assert.ok(!existsSync(join(out, "app")), "no loose app folder was generated");
 });
 
@@ -524,7 +524,7 @@ test("win-legacy-x64 with .exe output path produces a single binary rather than 
 	assert.equal(result.outputPath, file);
 	assert.equal(result.launcherPath, file);
 	assert.ok(statSync(file).isFile(), "output must be an actual binary file, not a directory named .exe");
-	assert.ok(statSync(file).size < 6 * 1024 * 1024, "single binary is lightweight under 6 MB");
+	assert.ok(statSync(file).size < 7 * 1024 * 1024, "single binary is lightweight under 7 MB");
 });
 
 test("native single executable build throws when output path is an existing directory", async () => {

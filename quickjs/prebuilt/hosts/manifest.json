@@ -1,45 +1,45 @@
 {
-	"sourceHash": "34eea1830903b504d2e71aa0eac1a08f4bdaa185b6f59a66ab053b907b6a2447",
+	"sourceHash": "91ca88d92f745558a5b624a520541152364f4e01f2d45ea9603b581f3118495c",
 	"hosts": {
 		"linux-x64": {
 			"file": "linux-x64.gz",
-			"sha256": "5e341cb965a566abd306ed6815543e91e09fb633eca7a146eff84c0b579dc7d3",
-			"size": 5738576
+			"sha256": "bc4d17eef44928b938dcd334fcb4aec14ccd18a557fe7b23491a3b7cae5a95b5",
+			"size": 5751904
 		},
 		"linux-x64-glibc": {
 			"file": "linux-x64-glibc.gz",
-			"sha256": "967fb4bd79b6a6b55bfe9390ec9c6655b3fb161f22b5ea5eb4c55d3344e0a1e4",
-			"size": 5869880
+			"sha256": "b281c41dbd03cc3830dd61e4bcdd0c9fcab715fe68c30a1a239a0371f9719c03",
+			"size": 5878984
 		},
 		"linux-x64-musl-dyn": {
 			"file": "linux-x64-musl-dyn.gz",
-			"sha256": "ff01d52ba5bd4b797e4dfd0a106a9847128e081e26ab96383d5c17efd7c6765b",
-			"size": 5781040
+			"sha256": "cf5b692da86886a51db0647c92713c05116eb090b6df22fbbb1c6b5d0735f7a8",
+			"size": 5790136
 		},
 		"linux-x86": {
 			"file": "linux-x86.gz",
-			"sha256": "11ec57ed284454bf22ec09d4ae46a3a812a1b9da60f3aed0bd8db287bc8a9b22",
-			"size": 6070280
+			"sha256": "b910da33a1718047b96ad46a860753813763796705ea59ac9b75789b13d97022",
+			"size": 6083380
 		},
 		"linux-x86-musl-dyn": {
 			"file": "linux-x86-musl-dyn.gz",
-			"sha256": "1fe228762d5b4483c31562ce7ab2b2a8fce2e0b475de7cf2333ad72591def384",
-			"size": 6094464
+			"sha256": "7f19985d739b6bf2ae374e6576194652cbab875e08f6f8ec0b5625005ba1a662",
+			"size": 6107440
 		},
 		"win-x64": {
 			"file": "win-x64.gz",
-			"sha256": "41352fb9b510c199a4651ef64bad6d1fb6b915614e29499f9d4de2821e82b3f4",
-			"size": 5896617
+			"sha256": "7e2f258f45a4b5f7ea44a6479a0a3c0709b3c13191e01a3881d8dad74fc43fbd",
+			"size": 5958530
 		},
 		"win-x86": {
 			"file": "win-x86.gz",
-			"sha256": "ae063fff155c091a51c011c534de40fe06c01e39554578d406c4aba5b2b128ba",
-			"size": 5942818
+			"sha256": "9670ed1fb21a826f7dbb3de375de3dc151cb5b729218b9a1a5dac370d7f3c349",
+			"size": 6011137
 		},
 		"win-xp-x86": {
 			"file": "win-xp-x86.gz",
-			"sha256": "4856b9e68ac6fb89289daf7331d75227b5d080032a8a29eeb5cea5d029316b55",
-			"size": 5945861
+			"sha256": "17caf2dfefa8954f65a97f7ba81631c2fb4efd3881d212f846643031d2b3db67",
+			"size": 6013173
 		}
 	}
 }
