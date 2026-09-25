@@ -13,13 +13,15 @@ import { createAsymmetric } from "./node-crypto2.js";
 import { createArgon2, received } from "./node-argon2.js";
 import { Blake2Hmac, blake2Hkdf, blake2Name, blake2Pbkdf2, newBlake2 } from "./node-blake2.js";
 import { createSubtle } from "./node-subtle.js";
+import { Ocb } from "./node-ocb.js";
+import { keccakKmacDigest } from "./node-keccak.js";
 
-const HASHES = ["md5", "sha1", "sha224", "sha256", "sha384", "sha512", "ripemd160", "sha3-224", "sha3-256", "sha3-384", "sha3-512", "shake128", "shake256", "blake2b512", "blake2s256"];
+const HASHES = ["md5", "sha1", "sha224", "sha256", "sha384", "sha512", "ripemd160", "sha3-224", "sha3-256", "sha3-384", "sha3-512", "shake128", "shake256", "blake2b512", "blake2s256", "keccak-kmac-128", "keccak-kmac-256"];
 const HASH_SIZES = { md5: 16, sha1: 20, sha224: 28, sha256: 32, sha384: 48, sha512: 64, ripemd160: 20, "sha3-224": 28, "sha3-256": 32, "sha3-384": 48, "sha3-512": 64, blake2b512: 64, blake2s256: 32 };
 
-const ALIASES = { rmd160: "ripemd160", "rsa-sha3-256": "sha3-256", "rsa-sha3-384": "sha3-384", "rsa-sha3-512": "sha3-512", "rsa-sha3-224": "sha3-224", "rsa-sha256": "sha256", "rsa-sha1": "sha1", "rsa-sha384": "sha384", "rsa-sha512": "sha512", "rsa-md5": "md5", sha256withrsaencryption: "sha256", sha1withrsaencryption: "sha1", sha512withrsaencryption: "sha512", "sha-1": "sha1", "sha-256": "sha256", "sha-384": "sha384", "sha-512": "sha512", sha2: "sha256" };
+const ALIASES = { "keccak-kmac128": "keccak-kmac-128", "keccak-kmac256": "keccak-kmac-256", rmd160: "ripemd160", "rsa-sha3-256": "sha3-256", "rsa-sha3-384": "sha3-384", "rsa-sha3-512": "sha3-512", "rsa-sha3-224": "sha3-224", "rsa-sha256": "sha256", "rsa-sha1": "sha1", "rsa-sha384": "sha384", "rsa-sha512": "sha512", "rsa-md5": "md5", sha256withrsaencryption: "sha256", sha1withrsaencryption: "sha1", sha512withrsaencryption: "sha512", "sha-1": "sha1", "sha-256": "sha256", "sha-384": "sha384", "sha-512": "sha512", sha2: "sha256" };
 
-function createCrypto({ native, Buffer, stream, toBytes: plainBytes }) {
+function createCrypto({ native, Buffer, stream, toBytes: plainBytes, StringDecoder }) {
 	// The shared helper knows hex and UTF-8 only; `update(data, "base64")` and the rest go through Buffer.
 	const toBytes = (value, encoding) =>
 		typeof value === "string" && encoding && encoding !== "utf8" && encoding !== "utf-8" && encoding !== "buffer" && encoding !== "hex" ? new Uint8Array(Buffer.from(value, encoding)) : plainBytes(value, encoding);
@@ -51,6 +53,19 @@ function createCrypto({ native, Buffer, stream, toBytes: plainBytes }) {
 		}
 		return name;
 	};
+	/* Node's "Received ..." wording for a wrongly typed argument. */
+	const receivedType = (name, expected, value) => {
+		let shown;
+		if (value === undefined || value === null) shown = String(value);
+		else if (typeof value === "function") shown = `function ${value.name}`;
+		else if (typeof value === "object") shown = value.constructor?.name ? `an instance of ${value.constructor.name}` : "[Object: null prototype]";
+		else {
+			let text = String(value);
+			if (typeof value === "string") text = `'${text.length > 28 ? `${text.slice(0, 25)}...` : text}'`;
+			shown = `type ${typeof value} (${text})`;
+		}
+		return Object.assign(new TypeError(`The "${name}" argument must be ${expected}. Received ${shown}`), { code: "ERR_INVALID_ARG_TYPE" });
+	};
 	const invalidArg = (name, expected, value) =>
 		Object.assign(new TypeError(`The "${name}" argument must be ${expected}. Received ${received(value)}`), { code: "ERR_INVALID_ARG_TYPE" });
 
@@ -67,7 +82,7 @@ function createCrypto({ native, Buffer, stream, toBytes: plainBytes }) {
 			if (this._outputLength !== undefined && !Number.isInteger(this._outputLength)) {
 				throw Object.assign(new RangeError(`The value of "options.outputLength" is out of range. It must be an integer. Received ${this._outputLength}`), { code: "ERR_OUT_OF_RANGE" });
 			}
-			if (this._outputLength !== undefined && !this.algorithm.startsWith("shake") && this._outputLength !== HASH_SIZES[this.algorithm]) {
+			if (this._outputLength !== undefined && !this.algorithm.startsWith("shake") && !this.algorithm.startsWith("keccak-kmac") && this._outputLength !== HASH_SIZES[this.algorithm]) {
 				throw Object.assign(new Error("error:030000B2:digital envelope routines::not XOF or invalid length"), { code: "ERR_OSSL_EVP_NOT_XOF_OR_INVALID_LENGTH" });
 			}
 			this._chunks = [];
@@ -90,6 +105,10 @@ function createCrypto({ native, Buffer, stream, toBytes: plainBytes }) {
 			if (this.algorithm.startsWith("shake")) {
 				const bits = this.algorithm === "shake128" ? 128 : 256;
 				return out(native.keccak(bits, concat(this._chunks), this._outputLength ?? bits / 8), encoding);
+			}
+			if (this.algorithm.startsWith("keccak-kmac")) {
+				const strength = this.algorithm.endsWith("128") ? 128 : 256;
+				return out(keccakKmacDigest(strength, concat(this._chunks), this._outputLength ?? strength / 4), encoding);
 			}
 			return out(native.hash(this.algorithm, concat(this._chunks)), encoding);
 		}
@@ -326,6 +345,7 @@ function createCrypto({ native, Buffer, stream, toBytes: plainBytes }) {
 		addCipher(`aes-${bits}-ofb`, `AES-${bits}-OFB`, key, 16, 1, "ofb");
 		addCipher(`aes-${bits}-gcm`, `AES-${bits}-GCM`, key, 12, 1, "gcm", { aead: true });
 		addCipher(`aes-${bits}-ccm`, `AES-${bits}-CCM`, key, 12, 1, "ccm", { aead: true, buffered: true });
+		addCipher(`aes-${bits}-ocb`, `AES-${bits}-ECB`, key, 12, 16, "ocb", { aead: true, ocb: true });
 		addCipher(`id-aes${bits}-wrap`, null, key, 8, 8, "wrap", { wrap: "kw" });
 		addCipher(`id-aes${bits}-wrap-pad`, null, key, 4, 8, "wrap", { wrap: "kwp" });
 	}
@@ -347,10 +367,18 @@ function createCrypto({ native, Buffer, stream, toBytes: plainBytes }) {
 		if (info.mode === "ecb") ivOk = ivBytes.length === 0;
 		else if (info.mode === "gcm") ivOk = ivBytes.length >= 1;
 		else if (info.mode === "ccm") ivOk = ivBytes.length >= 7 && ivBytes.length <= 13;
+		else if (info.mode === "ocb") ivOk = ivBytes.length >= 1 && ivBytes.length <= 15;
 		else ivOk = ivBytes.length === info.ivLength;
 		if (!ivOk) throw Object.assign(new TypeError("Invalid initialization vector"), { code: "ERR_CRYPTO_INVALID_IV" });
 		let tagLength = options?.authTagLength;
-		if (info.aead) {
+		if (info.ocb) {
+			if (tagLength === undefined || tagLength === null) throw Object.assign(new TypeError(`authTagLength required for ${name}`), { code: "ERR_CRYPTO_INVALID_AUTH_TAG" });
+			if (!Number.isInteger(tagLength) || tagLength < 0 || tagLength > 0xffffffff) {
+				const shown = typeof tagLength === "string" ? `'${tagLength}'` : typeof tagLength === "object" ? "{}" : String(tagLength);
+				throw Object.assign(new TypeError(`The property 'options.authTagLength' is invalid. Received ${shown}`), { code: "ERR_INVALID_ARG_VALUE" });
+			}
+			if (tagLength > 16) throw Object.assign(new TypeError(`Invalid authentication tag length: ${tagLength}`), { code: "ERR_CRYPTO_INVALID_AUTH_TAG" });
+		} else if (info.aead) {
 			if (tagLength === undefined) {
 				if (info.mode === "ccm" || name === "chacha20-poly1305") {
 					throw Object.assign(new TypeError(`authTagLength required for ${name}`), { code: "ERR_CRYPTO_INVALID_AUTH_TAG" });
@@ -368,7 +396,7 @@ function createCrypto({ native, Buffer, stream, toBytes: plainBytes }) {
 		return err;
 	};
 
-	class Cipheriv extends stream.Transform {
+	class CipherBase extends stream.Transform {
 		constructor(algorithm, key, iv, options, decrypt) {
 			super(options);
 			this._spec = cipherSpec(algorithm, key, iv, options);
@@ -381,6 +409,7 @@ function createCrypto({ native, Buffer, stream, toBytes: plainBytes }) {
 			this._chunks = [];
 			this._started = false;
 			const { info } = this._spec;
+			this._ocb = info.ocb ? new Ocb(native, this._spec.keyBytes, this._spec.ivBytes, this._spec.tagLength, decrypt) : null;
 			if (info.wrap) {
 				const defaultIv = info.wrap === "kw" ? [0xa6, 0xa6, 0xa6, 0xa6, 0xa6, 0xa6, 0xa6, 0xa6] : [0xa6, 0x59, 0x59, 0xa6];
 				if (!this._spec.ivBytes.every((b, i) => b === defaultIv[i])) {
@@ -400,6 +429,12 @@ function createCrypto({ native, Buffer, stream, toBytes: plainBytes }) {
 			if (this._tag && this._decrypt) native.cipherTag(this._handle, this._tag);
 		}
 		setAAD(aad, options) {
+			if (this._ocb) {
+				if (typeof aad !== "string" && !ArrayBuffer.isView(aad) && !(aad instanceof ArrayBuffer)) throw receivedType("aadbuf", "of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView", aad);
+				if (this._finalized) throw Object.assign(new Error("Invalid state for operation setAAD"), { code: "ERR_CRYPTO_INVALID_STATE" });
+				this._ocb.addAad(bytesOf(aad));
+				return this;
+			}
 			if (this._started && !this._spec.info.buffered) throw Object.assign(new Error("Unsupported state"), { code: "ERR_CRYPTO_INVALID_STATE" });
 			if (!this._spec.info.aead) throw Object.assign(new Error("Unsupported state"), { code: "ERR_CRYPTO_INVALID_STATE" });
 			this._aad = bytesOf(aad);
@@ -415,24 +450,58 @@ function createCrypto({ native, Buffer, stream, toBytes: plainBytes }) {
 			return buf(this._tag);
 		}
 		setAuthTag(tag) {
+			if (this._ocb) {
+				if (typeof tag !== "string" && !ArrayBuffer.isView(tag) && !(tag instanceof ArrayBuffer)) throw receivedType("buffer", "of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView", tag);
+				if (!this._decrypt || this._finalized || this._tag) throw Object.assign(new Error("Invalid state for operation setAuthTag"), { code: "ERR_CRYPTO_INVALID_STATE" });
+				const bytes = bytesOf(tag);
+				if (bytes.length !== this._spec.tagLength) throw Object.assign(new TypeError(`Invalid authentication tag length: ${bytes.length}`), { code: "ERR_CRYPTO_INVALID_AUTH_TAG" });
+				this._tag = bytes;
+				return this;
+			}
 			if (!this._decrypt || !this._spec.info.aead || this._finalized) throw Object.assign(new Error("Unsupported state"), { code: "ERR_CRYPTO_INVALID_STATE" });
 			this._tag = bytesOf(tag);
 			if (this._handle !== null) native.cipherTag(this._handle, this._tag);
 			return this;
 		}
+		/* Text output goes through a decoder, as in Node, so a character or base64 group split between calls is joined. */
+		_emit(bytes, encoding, last) {
+			if (!encoding || encoding === "buffer") return buf(bytes);
+			this._decoder ??= new StringDecoder(encoding);
+			return last ? this._decoder.end(buf(bytes)) : this._decoder.write(buf(bytes));
+		}
 		update(data, inputEncoding, outputEncoding) {
+			if (this._ocb) {
+				if (typeof data !== "string" && !ArrayBuffer.isView(data)) throw receivedType("data", "of type string or an instance of Buffer, TypedArray, or DataView", data);
+				if (this._finalized || this._spec.tagLength === 0) throw new Error("Trying to add data in unsupported state");
+				return this._emit(this._ocb.update(toBytes(data, inputEncoding)), outputEncoding, false);
+			}
 			if (this._finalized) throw Object.assign(new Error("Unsupported state"), { code: "ERR_CRYPTO_INVALID_STATE" });
 			if (typeof data !== "string" && !ArrayBuffer.isView(data)) throw invalidArg("data", "of type string or an instance of Buffer, TypedArray, or DataView", data);
 			const bytes = toBytes(data, inputEncoding);
 			this._started = true;
 			if (this._spec.info.buffered || this._spec.info.wrap) {
 				this._chunks.push(bytes);
-				return out(new Uint8Array(0), outputEncoding);
+				return this._emit(new Uint8Array(0), outputEncoding, false);
 			}
 			this._open();
-			return out(native.cipherUpdate(this._handle, bytes), outputEncoding);
+			return this._emit(native.cipherUpdate(this._handle, bytes), outputEncoding, false);
 		}
 		final(outputEncoding) {
+			if (this._ocb) {
+				if (this._finalized) throw Object.assign(new Error("Invalid state"), { code: "ERR_CRYPTO_INVALID_STATE" });
+				this._finalized = true;
+				if (this._spec.tagLength === 0) throw new Error("Trying to add data in unsupported state");
+				if (this._decrypt && !this._tag) throw authFailure();
+				const { tail, tag } = this._ocb.finish();
+				if (!this._decrypt) {
+					this._tag = tag;
+					return this._emit(tail, outputEncoding, true);
+				}
+				let diff = 0;
+				for (let i = 0; i < tag.length; i++) diff |= tag[i] ^ this._tag[i];
+				if (diff !== 0) throw authFailure();
+				return this._emit(tail, outputEncoding, true);
+			}
 			if (this._finalized) throw Object.assign(new Error("Unsupported state"), { code: "ERR_CRYPTO_INVALID_STATE" });
 			const { name, info, keyBytes, ivBytes, tagLength } = this._spec;
 			if (info.wrap) {
@@ -440,7 +509,7 @@ function createCrypto({ native, Buffer, stream, toBytes: plainBytes }) {
 				const message = concat(this._chunks);
 				const padded = info.wrap === "kwp";
 				try {
-					return out(this._decrypt ? native.kwUnwrap(keyBytes, message, padded) : native.kwWrap(keyBytes, message, padded), outputEncoding);
+					return this._emit(this._decrypt ? native.kwUnwrap(keyBytes, message, padded) : native.kwWrap(keyBytes, message, padded), outputEncoding, true);
 				} catch (err) {
 					throw err;
 				}
@@ -452,10 +521,10 @@ function createCrypto({ native, Buffer, stream, toBytes: plainBytes }) {
 					if (!this._decrypt) {
 						const sealed = native.cipher(true, info.mbed, keyBytes, ivBytes, message, this._aad, tagLength, true);
 						this._tag = sealed.slice(sealed.length - tagLength);
-						return out(sealed.slice(0, sealed.length - tagLength), outputEncoding);
+						return this._emit(sealed.slice(0, sealed.length - tagLength), outputEncoding, true);
 					}
 					if (!this._tag) throw authFailure();
-					return out(native.cipher(false, info.mbed, keyBytes, ivBytes, concat([message, this._tag]), this._aad, tagLength, true), outputEncoding);
+					return this._emit(native.cipher(false, info.mbed, keyBytes, ivBytes, concat([message, this._tag]), this._aad, tagLength, true), outputEncoding, true);
 				} catch (err) {
 					throw wrapCipherError(err);
 				}
@@ -466,9 +535,9 @@ function createCrypto({ native, Buffer, stream, toBytes: plainBytes }) {
 				const result = native.cipherFinal(this._handle);
 				if (info.aead && !this._decrypt) {
 					this._tag = result.tag;
-					return out(result.data, outputEncoding);
+					return this._emit(result.data, outputEncoding, true);
 				}
-				return out(result, outputEncoding);
+				return this._emit(result, outputEncoding, true);
 			} catch (err) {
 				throw wrapCipherError(err);
 			} finally {
@@ -503,7 +572,7 @@ function createCrypto({ native, Buffer, stream, toBytes: plainBytes }) {
 		}
 	}
 	/* What Node reports for each cipher (OpenSSL's names and NIDs). */
-	const CIPHER_INFO = {"aes-128-cbc": {"mode": "cbc", "name": "aes-128-cbc", "nid": 419, "keyLength": 16, "blockSize": 16, "ivLength": 16}, "aes-128-ecb": {"mode": "ecb", "name": "aes-128-ecb", "nid": 418, "keyLength": 16, "blockSize": 16}, "aes-128-ctr": {"mode": "ctr", "name": "aes-128-ctr", "nid": 904, "keyLength": 16, "blockSize": 1, "ivLength": 16}, "aes-128-cfb": {"mode": "cfb", "name": "aes-128-cfb", "nid": 421, "keyLength": 16, "blockSize": 1, "ivLength": 16}, "aes-128-ofb": {"mode": "ofb", "name": "aes-128-ofb", "nid": 420, "keyLength": 16, "blockSize": 1, "ivLength": 16}, "aes-128-gcm": {"mode": "gcm", "name": "id-aes128-gcm", "nid": 895, "keyLength": 16, "blockSize": 1, "ivLength": 12}, "aes-128-ccm": {"mode": "ccm", "name": "id-aes128-ccm", "nid": 896, "keyLength": 16, "blockSize": 1, "ivLength": 12}, "id-aes128-wrap": {"mode": "wrap", "name": "id-aes128-wrap", "nid": 788, "keyLength": 16, "blockSize": 8, "ivLength": 8}, "id-aes128-wrap-pad": {"mode": "wrap", "name": "id-aes128-wrap-pad", "nid": 897, "keyLength": 16, "blockSize": 8, "ivLength": 4}, "aes-192-cbc": {"mode": "cbc", "name": "aes-192-cbc", "nid": 423, "keyLength": 24, "blockSize": 16, "ivLength": 16}, "aes-192-ecb": {"mode": "ecb", "name": "aes-192-ecb", "nid": 422, "keyLength": 24, "blockSize": 16}, "aes-192-ctr": {"mode": "ctr", "name": "aes-192-ctr", "nid": 905, "keyLength": 24, "blockSize": 1, "ivLength": 16}, "aes-192-cfb": {"mode": "cfb", "name": "aes-192-cfb", "nid": 425, "keyLength": 24, "blockSize": 1, "ivLength": 16}, "aes-192-ofb": {"mode": "ofb", "name": "aes-192-ofb", "nid": 424, "keyLength": 24, "blockSize": 1, "ivLength": 16}, "aes-192-gcm": {"mode": "gcm", "name": "id-aes192-gcm", "nid": 898, "keyLength": 24, "blockSize": 1, "ivLength": 12}, "aes-192-ccm": {"mode": "ccm", "name": "id-aes192-ccm", "nid": 899, "keyLength": 24, "blockSize": 1, "ivLength": 12}, "id-aes192-wrap": {"mode": "wrap", "name": "id-aes192-wrap", "nid": 789, "keyLength": 24, "blockSize": 8, "ivLength": 8}, "id-aes192-wrap-pad": {"mode": "wrap", "name": "id-aes192-wrap-pad", "nid": 900, "keyLength": 24, "blockSize": 8, "ivLength": 4}, "aes-256-cbc": {"mode": "cbc", "name": "aes-256-cbc", "nid": 427, "keyLength": 32, "blockSize": 16, "ivLength": 16}, "aes-256-ecb": {"mode": "ecb", "name": "aes-256-ecb", "nid": 426, "keyLength": 32, "blockSize": 16}, "aes-256-ctr": {"mode": "ctr", "name": "aes-256-ctr", "nid": 906, "keyLength": 32, "blockSize": 1, "ivLength": 16}, "aes-256-cfb": {"mode": "cfb", "name": "aes-256-cfb", "nid": 429, "keyLength": 32, "blockSize": 1, "ivLength": 16}, "aes-256-ofb": {"mode": "ofb", "name": "aes-256-ofb", "nid": 428, "keyLength": 32, "blockSize": 1, "ivLength": 16}, "aes-256-gcm": {"mode": "gcm", "name": "id-aes256-gcm", "nid": 901, "keyLength": 32, "blockSize": 1, "ivLength": 12}, "aes-256-ccm": {"mode": "ccm", "name": "id-aes256-ccm", "nid": 902, "keyLength": 32, "blockSize": 1, "ivLength": 12}, "id-aes256-wrap": {"mode": "wrap", "name": "id-aes256-wrap", "nid": 790, "keyLength": 32, "blockSize": 8, "ivLength": 8}, "id-aes256-wrap-pad": {"mode": "wrap", "name": "id-aes256-wrap-pad", "nid": 903, "keyLength": 32, "blockSize": 8, "ivLength": 4}, "chacha20-poly1305": {"mode": "stream", "name": "chacha20-poly1305", "nid": 1018, "keyLength": 32, "ivLength": 12}, "des-ede3-cbc": {"mode": "cbc", "name": "des-ede3-cbc", "nid": 44, "keyLength": 24, "blockSize": 8, "ivLength": 8}, "des-ede3": {"mode": "ecb", "name": "des-ede3", "nid": 33, "keyLength": 24, "blockSize": 8}};
+	const CIPHER_INFO = {"aes-128-cbc": {"mode": "cbc", "name": "aes-128-cbc", "nid": 419, "keyLength": 16, "blockSize": 16, "ivLength": 16}, "aes-128-ecb": {"mode": "ecb", "name": "aes-128-ecb", "nid": 418, "keyLength": 16, "blockSize": 16}, "aes-128-ctr": {"mode": "ctr", "name": "aes-128-ctr", "nid": 904, "keyLength": 16, "blockSize": 1, "ivLength": 16}, "aes-128-cfb": {"mode": "cfb", "name": "aes-128-cfb", "nid": 421, "keyLength": 16, "blockSize": 1, "ivLength": 16}, "aes-128-ofb": {"mode": "ofb", "name": "aes-128-ofb", "nid": 420, "keyLength": 16, "blockSize": 1, "ivLength": 16}, "aes-128-gcm": {"mode": "gcm", "name": "id-aes128-gcm", "nid": 895, "keyLength": 16, "blockSize": 1, "ivLength": 12}, "aes-128-ccm": {"mode": "ccm", "name": "id-aes128-ccm", "nid": 896, "keyLength": 16, "blockSize": 1, "ivLength": 12}, "id-aes128-wrap": {"mode": "wrap", "name": "id-aes128-wrap", "nid": 788, "keyLength": 16, "blockSize": 8, "ivLength": 8}, "id-aes128-wrap-pad": {"mode": "wrap", "name": "id-aes128-wrap-pad", "nid": 897, "keyLength": 16, "blockSize": 8, "ivLength": 4}, "aes-192-cbc": {"mode": "cbc", "name": "aes-192-cbc", "nid": 423, "keyLength": 24, "blockSize": 16, "ivLength": 16}, "aes-192-ecb": {"mode": "ecb", "name": "aes-192-ecb", "nid": 422, "keyLength": 24, "blockSize": 16}, "aes-192-ctr": {"mode": "ctr", "name": "aes-192-ctr", "nid": 905, "keyLength": 24, "blockSize": 1, "ivLength": 16}, "aes-192-cfb": {"mode": "cfb", "name": "aes-192-cfb", "nid": 425, "keyLength": 24, "blockSize": 1, "ivLength": 16}, "aes-192-ofb": {"mode": "ofb", "name": "aes-192-ofb", "nid": 424, "keyLength": 24, "blockSize": 1, "ivLength": 16}, "aes-192-gcm": {"mode": "gcm", "name": "id-aes192-gcm", "nid": 898, "keyLength": 24, "blockSize": 1, "ivLength": 12}, "aes-192-ccm": {"mode": "ccm", "name": "id-aes192-ccm", "nid": 899, "keyLength": 24, "blockSize": 1, "ivLength": 12}, "id-aes192-wrap": {"mode": "wrap", "name": "id-aes192-wrap", "nid": 789, "keyLength": 24, "blockSize": 8, "ivLength": 8}, "id-aes192-wrap-pad": {"mode": "wrap", "name": "id-aes192-wrap-pad", "nid": 900, "keyLength": 24, "blockSize": 8, "ivLength": 4}, "aes-256-cbc": {"mode": "cbc", "name": "aes-256-cbc", "nid": 427, "keyLength": 32, "blockSize": 16, "ivLength": 16}, "aes-256-ecb": {"mode": "ecb", "name": "aes-256-ecb", "nid": 426, "keyLength": 32, "blockSize": 16}, "aes-256-ctr": {"mode": "ctr", "name": "aes-256-ctr", "nid": 906, "keyLength": 32, "blockSize": 1, "ivLength": 16}, "aes-256-cfb": {"mode": "cfb", "name": "aes-256-cfb", "nid": 429, "keyLength": 32, "blockSize": 1, "ivLength": 16}, "aes-256-ofb": {"mode": "ofb", "name": "aes-256-ofb", "nid": 428, "keyLength": 32, "blockSize": 1, "ivLength": 16}, "aes-256-gcm": {"mode": "gcm", "name": "id-aes256-gcm", "nid": 901, "keyLength": 32, "blockSize": 1, "ivLength": 12}, "aes-256-ccm": {"mode": "ccm", "name": "id-aes256-ccm", "nid": 902, "keyLength": 32, "blockSize": 1, "ivLength": 12}, "id-aes256-wrap": {"mode": "wrap", "name": "id-aes256-wrap", "nid": 790, "keyLength": 32, "blockSize": 8, "ivLength": 8}, "id-aes256-wrap-pad": {"mode": "wrap", "name": "id-aes256-wrap-pad", "nid": 903, "keyLength": 32, "blockSize": 8, "ivLength": 4}, "aes-128-ocb": {"mode": "ocb", "name": "aes-128-ocb", "nid": 958, "keyLength": 16, "blockSize": 16, "ivLength": 12}, "aes-192-ocb": {"mode": "ocb", "name": "aes-192-ocb", "nid": 959, "keyLength": 24, "blockSize": 16, "ivLength": 12}, "aes-256-ocb": {"mode": "ocb", "name": "aes-256-ocb", "nid": 960, "keyLength": 32, "blockSize": 16, "ivLength": 12}, "chacha20-poly1305": {"mode": "stream", "name": "chacha20-poly1305", "nid": 1018, "keyLength": 32, "ivLength": 12}, "des-ede3-cbc": {"mode": "cbc", "name": "des-ede3-cbc", "nid": 44, "keyLength": 24, "blockSize": 8, "ivLength": 8}, "des-ede3": {"mode": "ecb", "name": "des-ede3", "nid": 33, "keyLength": 24, "blockSize": 8}};
 	const getCipherInfo = (nameOrNid, options) => {
 		if (typeof nameOrNid !== "string" && typeof nameOrNid !== "number") throw invalidArg("nameOrNid", "of type string or number", nameOrNid);
 		let found;
@@ -516,15 +585,28 @@ function createCrypto({ native, Buffer, stream, toBytes: plainBytes }) {
 		const table = CIPHER_TABLE.get(Object.keys(CIPHER_INFO).find((k) => CIPHER_INFO[k] === found));
 		if (options?.keyLength !== undefined && options.keyLength !== found.keyLength) return undefined;
 		if (options?.ivLength !== undefined) {
-			const fixed = table.mode !== "gcm" && table.mode !== "ccm";
-			if (fixed ? options.ivLength !== (found.ivLength ?? 0) : options.ivLength < 1) return undefined;
+			const fixed = table.mode !== "gcm" && table.mode !== "ccm" && table.mode !== "ocb";
+			if (fixed ? options.ivLength !== (found.ivLength ?? 0) : options.ivLength < 1 || (table.mode === "ocb" && options.ivLength > 15)) return undefined;
 		}
 		const result = { ...found };
-		if (options?.ivLength !== undefined && (table.mode === "gcm" || table.mode === "ccm")) result.ivLength = options.ivLength;
+		if (options?.ivLength !== undefined && (table.mode === "gcm" || table.mode === "ccm" || table.mode === "ocb")) result.ivLength = options.ivLength;
 		return result;
 	};
-	const createCipheriv = (algorithm, key, iv, options) => new Cipheriv(algorithm, key, iv, options, false);
-	const createDecipheriv = (algorithm, key, iv, options) => new Cipheriv(algorithm, key, iv, options, true);
+	/* Node's Cipheriv has no setAuthTag and its Decipheriv no getAuthTag. */
+	class Cipheriv extends CipherBase {
+		constructor(algorithm, key, iv, options) {
+			super(algorithm, key, iv, options, false);
+		}
+	}
+	class Decipheriv extends CipherBase {
+		constructor(algorithm, key, iv, options) {
+			super(algorithm, key, iv, options, true);
+		}
+	}
+	Object.defineProperty(Cipheriv.prototype, "setAuthTag", { value: undefined, writable: true, configurable: true });
+	Object.defineProperty(Decipheriv.prototype, "getAuthTag", { value: undefined, writable: true, configurable: true });
+	const createCipheriv = (algorithm, key, iv, options) => new Cipheriv(algorithm, key, iv, options);
+	const createDecipheriv = (algorithm, key, iv, options) => new Decipheriv(algorithm, key, iv, options);
 
 	/* ---------------------------------------------------------- sign and verify */
 
@@ -601,7 +683,7 @@ function createCrypto({ native, Buffer, stream, toBytes: plainBytes }) {
 		createDecipheriv,
 		createSecretKey: (key, encoding) => new KeyObject("secret", bytesOf(key, encoding)),
 		KeyObject,
-		getHashes: () => [...HASHES],
+		getHashes: () => [...HASHES, "keccak-kmac128", "keccak-kmac256"],
 		getCiphers: () => CIPHER_NAMES().sort(),
 		getCipherInfo,
 		getFips: () => 0,
@@ -610,7 +692,7 @@ function createCrypto({ native, Buffer, stream, toBytes: plainBytes }) {
 		Hash,
 		Hmac,
 		Cipheriv,
-		Decipheriv: Cipheriv,
+		Decipheriv,
 		webcrypto,
 		subtle,
 	};

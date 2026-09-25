@@ -180,6 +180,8 @@ const RUNTIME_FILES = [
 	"node-pkcs.js",
 	"node-x509.js",
 	"node-subtle.js",
+	"node-ocb.js",
+	"node-keccak.js",
 	"url-pattern.js",
 	"node-urlpattern.js",
 	"whatwg-url.js",

@@ -1777,7 +1777,7 @@ if (nativeLayer) {
 		http,
 		https,
 		fetch,
-		crypto: createCrypto({ native: nativeLayer, Buffer, stream: streamModule, toBytes: nm.toBytes }),
+		crypto: createCrypto({ native: nativeLayer, Buffer, stream: streamModule, toBytes: nm.toBytes, StringDecoder }),
 		zlib: nm.zlib,
 	};
 
