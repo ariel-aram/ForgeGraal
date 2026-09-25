@@ -64,6 +64,7 @@ import { createWebAssembly } from "./node-wasm.js";
 import * as web from "./node-web.js";
 import { Segmenter } from "./segmenter.js";
 import { createTestModule } from "./node-test.js";
+import { createWasi } from "./node-wasi.js";
 import { createDns } from "./node-dns.js";
 
 // A single-file build runs from its executable's payload: os and std are wrapped to read the program from it.
@@ -2105,6 +2106,12 @@ const SCHEME_ONLY = new Set(["test", "test/reporters"]);
 {
 	let testModules;
 	const load = () => (testModules ??= createTestModule(builtins, globalObject));
+	let wasiModule;
+	Object.defineProperty(builtins, "wasi", {
+		get: () => (wasiModule ??= createWasi({ fs, path: pathModule, process: processModule, Buffer, os })),
+		enumerable: true,
+		configurable: true,
+	});
 	Object.defineProperty(builtins, "test", { get: () => load().test, enumerable: true, configurable: true });
 	Object.defineProperty(builtins, "test/reporters", { get: () => load().reporters, enumerable: true, configurable: true });
 }

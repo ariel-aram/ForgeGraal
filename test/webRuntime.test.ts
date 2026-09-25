@@ -45,6 +45,7 @@ const DIFFERENTIAL: Array<[string, string[]]> = [
 	["zlib-corpus.cjs", []],
 	["fs-corpus.cjs", []],
 	["wasm-corpus.cjs", []],
+	["wasi-corpus.cjs", []],
 	["child-corpus.cjs", []],
 	["url-fuzz.cjs", []],
 	["urlpattern-corpus.cjs", []],
