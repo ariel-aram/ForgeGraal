@@ -5,27 +5,33 @@
  * `crypto` (sign, verify, publicEncrypt, diffieHellman, ciphers, PBKDF2, HKDF). What is covered: digest (SHA-1, SHA-2,
  * SHA-3, cSHAKE, TurboSHAKE, KangarooTwelve), HMAC, KMAC, AES-CBC, AES-CTR, AES-GCM, AES-KW, RSASSA-PKCS1-v1_5, RSA-PSS, RSA-OAEP, ECDSA and ECDH (P-256, P-384,
  * P-521), Ed25519, Ed448, X25519, X448, PBKDF2 and HKDF, with generateKey, importKey and exportKey (raw, spki, pkcs8, jwk),
- * deriveBits, deriveKey, wrapKey and unwrapKey (Argon2 keys import as raw-secret). KMAC keys import from and export to JWK only, as in
- * Node.js. Not covered: AES-OCB, ChaCha20-Poly1305 and the ML-KEM and ML-DSA families. Argon2 (Argon2d, Argon2i, Argon2id) is
- * derive-only, version 0x13, as in Node.js.
+ * deriveBits, deriveKey, wrapKey and unwrapKey (Argon2 keys import as raw-secret), and ML-KEM-512/768/1024 (encapsulateBits, encapsulateKey,
+ * decapsulateBits, decapsulateKey) and ML-DSA-44/65/87 (sign and verify with a context), keys in raw-public, raw-seed, spki, pkcs8 and jwk.
+ * KMAC keys import from and export to JWK only, as in Node.js. Not covered: AES-OCB and ChaCha20-Poly1305. SLH-DSA is a `crypto` key type only,
+ * as in Node, which has no Web Crypto SLH-DSA. Argon2 (Argon2d, Argon2i, Argon2id) is derive-only, version 0x13, as in Node.js.
  */
 
 import { argon2Derive } from "./node-argon2.js";
 import { cshake, kangarootwelve, kmac, truncateBits, turboshake } from "./node-keccak.js";
 
-const USAGE_ORDER = ["encrypt", "decrypt", "sign", "verify", "deriveKey", "deriveBits", "wrapKey", "unwrapKey"];
+const USAGE_ORDER = ["encrypt", "decrypt", "sign", "verify", "deriveKey", "deriveBits", "wrapKey", "unwrapKey", "encapsulateKey", "encapsulateBits", "decapsulateKey", "decapsulateBits"];
+const ML_KEM = ["ML-KEM-512", "ML-KEM-768", "ML-KEM-1024"];
+const ML_DSA = ["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"];
+/* The arcs of each parameter set's OID (2.16.840.1.101.3.4.<a>.<b>), for the seed-only PKCS#8 Web Crypto exports. */
+const PQC_ARCS = { "ML-KEM-512": [4, 1], "ML-KEM-768": [4, 2], "ML-KEM-1024": [4, 3], "ML-DSA-44": [3, 17], "ML-DSA-65": [3, 18], "ML-DSA-87": [3, 19] };
 const HASHES = { "SHA-1": "sha1", "SHA-256": "sha256", "SHA-384": "sha384", "SHA-512": "sha512", "SHA3-256": "sha3-256", "SHA3-384": "sha3-384", "SHA3-512": "sha3-512" };
 const CURVES = { "P-256": "prime256v1", "P-384": "secp384r1", "P-521": "secp521r1" };
 const KEY_ALGORITHMS = [
 	"RSASSA-PKCS1-v1_5", "RSA-PSS", "RSA-OAEP", "ECDSA", "ECDH", "Ed25519", "Ed448", "X25519", "X448", "HMAC", "AES-CTR", "AES-CBC", "AES-GCM", "AES-KW", "PBKDF2", "HKDF", "KMAC128", "KMAC256", "Argon2d", "Argon2i", "Argon2id",
+	...ML_KEM, ...ML_DSA,
 ];
 const ARGON2 = ["Argon2d", "Argon2i", "Argon2id"];
 const XOF_DIGESTS = ["cSHAKE128", "cSHAKE256", "TurboSHAKE128", "TurboSHAKE256", "KT128", "KT256"];
 const isKmac = (name) => name === "KMAC128" || name === "KMAC256";
 const OPERATIONS = {
 	digest: [...Object.keys(HASHES), ...XOF_DIGESTS],
-	sign: ["RSASSA-PKCS1-v1_5", "RSA-PSS", "ECDSA", "Ed25519", "Ed448", "HMAC", "KMAC128", "KMAC256"],
-	verify: ["RSASSA-PKCS1-v1_5", "RSA-PSS", "ECDSA", "Ed25519", "Ed448", "HMAC", "KMAC128", "KMAC256"],
+	sign: ["RSASSA-PKCS1-v1_5", "RSA-PSS", "ECDSA", "Ed25519", "Ed448", "HMAC", "KMAC128", "KMAC256", ...ML_DSA],
+	verify: ["RSASSA-PKCS1-v1_5", "RSA-PSS", "ECDSA", "Ed25519", "Ed448", "HMAC", "KMAC128", "KMAC256", ...ML_DSA],
 	encrypt: ["RSA-OAEP", "AES-CTR", "AES-CBC", "AES-GCM"],
 	decrypt: ["RSA-OAEP", "AES-CTR", "AES-CBC", "AES-GCM"],
 	deriveBits: ["ECDH", "X25519", "X448", "HKDF", "PBKDF2", ...ARGON2],
@@ -34,6 +40,11 @@ const OPERATIONS = {
 	exportKey: KEY_ALGORITHMS,
 	wrapKey: ["AES-KW", "RSA-OAEP", "AES-CTR", "AES-CBC", "AES-GCM"],
 	unwrapKey: ["AES-KW", "RSA-OAEP", "AES-CTR", "AES-CBC", "AES-GCM"],
+	encapsulateBits: ML_KEM,
+	encapsulateKey: ML_KEM,
+	decapsulateBits: ML_KEM,
+	decapsulateKey: ML_KEM,
+	getPublicKey: [...ML_KEM, ...ML_DSA, "RSASSA-PKCS1-v1_5", "RSA-PSS", "RSA-OAEP", "ECDSA", "ECDH", "Ed25519", "Ed448", "X25519", "X448"],
 };
 OPERATIONS.deriveKey = OPERATIONS.deriveBits;
 
@@ -224,6 +235,14 @@ export function createSubtle({ native, Buffer, toBytes, crypto, hashName }) {
 	};
 	const publicUsages = { "RSASSA-PKCS1-v1_5": ["verify"], "RSA-PSS": ["verify"], "RSA-OAEP": ["encrypt", "wrapKey"], ECDSA: ["verify"], ECDH: [], Ed25519: ["verify"], Ed448: ["verify"], X25519: [], X448: [] };
 	const privateUsages = { "RSASSA-PKCS1-v1_5": ["sign"], "RSA-PSS": ["sign"], "RSA-OAEP": ["decrypt", "unwrapKey"], ECDSA: ["sign"], ECDH: ["deriveKey", "deriveBits"], Ed25519: ["sign"], Ed448: ["sign"], X25519: ["deriveKey", "deriveBits"], X448: ["deriveKey", "deriveBits"] };
+	for (const name of ML_KEM) {
+		publicUsages[name] = ["encapsulateKey", "encapsulateBits"];
+		privateUsages[name] = ["decapsulateKey", "decapsulateBits"];
+	}
+	for (const name of ML_DSA) {
+		publicUsages[name] = ["verify"];
+		privateUsages[name] = ["sign"];
+	}
 
 	/* --------------------------------------------------------------------------- key material */
 
@@ -315,6 +334,22 @@ export function createSubtle({ native, Buffer, toBytes, crypto, hashName }) {
 		const ko = k.keyObject;
 		const name = k.algorithm.name;
 		if (isKmac(name) && ["raw", "spki", "pkcs8"].includes(format)) throw fail("NotSupportedError", `Unable to export ${name} secret key using ${format} format`);
+		if (PQC_ARCS[name]) {
+			const unable = () => fail("NotSupportedError", `Unable to export ${name} ${ko.type} key using ${format} format`);
+			if (format === "raw-public") return ko.type === "public" ? abOf(ko.export({ format: "raw-public" })) : (() => { throw unable(); })();
+			if (format === "raw-seed") return ko.type === "private" ? abOf(ko.export({ format: "raw-seed" })) : (() => { throw unable(); })();
+			if (format === "spki") return ko.type === "public" ? abOf(ko.export({ type: "spki", format: "der" })) : (() => { throw unable(); })();
+			if (format === "pkcs8") {
+				if (ko.type !== "private") throw unable();
+				// Web Crypto exports the seed alone: PrivateKeyInfo with a [0] seed inside the private key octets.
+				const seed = new Uint8Array(ko.export({ format: "raw-seed" }));
+				const inner = Uint8Array.of(0x80, seed.length, ...seed);
+				const algorithm = Uint8Array.of(0x30, 0x0b, 0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, ...PQC_ARCS[name]);
+				const body = Uint8Array.of(2, 1, 0, ...algorithm, 4, inner.length, ...inner);
+				return abOf(Uint8Array.of(0x30, body.length, ...body));
+			}
+			if (format !== "jwk") throw unable();
+		}
 		if (format === "raw" || (format === "raw-secret" && ko.type === "secret")) {
 			if (ko.type === "secret") return abOf(ko.export());
 			if (ko.type === "public" && (name === "ECDSA" || name === "ECDH")) {
@@ -348,7 +383,7 @@ export function createSubtle({ native, Buffer, toBytes, crypto, hashName }) {
 	const importKey = (format, keyData, algorithm, extractable, usages) => {
 		const a = normalize(algorithm, "importKey");
 		const name = a.name;
-		if (!["raw", "raw-secret", "spki", "pkcs8", "jwk"].includes(format)) throw typeError(`Failed to execute 'importKey' on 'SubtleCrypto': 1st argument '${format}' is not a valid enum value of type KeyFormat.`, "ERR_INVALID_ARG_VALUE");
+		if (!["raw", "raw-secret", "raw-public", "raw-seed", "spki", "pkcs8", "jwk"].includes(format)) throw typeError(`Failed to execute 'importKey' on 'SubtleCrypto': 1st argument '${format}' is not a valid enum value of type KeyFormat.`, "ERR_INVALID_ARG_VALUE");
 		if (!Array.isArray(usages)) throw typeError("Failed to execute 'importKey' on 'SubtleCrypto': 5th argument cannot be converted to sequence.");
 		usages.forEach((usage, i) => {
 			if (!USAGE_ORDER.includes(usage)) throw typeError(`Failed to execute 'importKey' on 'SubtleCrypto': 5th argument[${i}] '${usage}' is not a valid enum value of type KeyUsage.`, "ERR_INVALID_ARG_VALUE");
@@ -420,6 +455,9 @@ export function createSubtle({ native, Buffer, toBytes, crypto, hashName }) {
 			return secretKey(bytes, { name, length, hash: { name: hash } }, extractable, usages);
 		}
 		// asymmetric
+		const isPqc = Boolean(PQC_ARCS[name]);
+		if (isPqc && format === "raw") throw fail("NotSupportedError", `Unable to import ${name} using raw format`);
+		if (!isPqc && (format === "raw-public" || format === "raw-seed")) throw fail("NotSupportedError", `Unable to import ${name} key with format ${format}`);
 		const isEd = name === "Ed25519" || name === "Ed448";
 		const isX = name === "X25519" || name === "X448";
 		let keyObject;
@@ -431,6 +469,11 @@ export function createSubtle({ native, Buffer, toBytes, crypto, hashName }) {
 			} else if (format === "pkcs8") {
 				keyObject = crypto.createPrivateKey({ key: Buffer.from(bytesOf(keyData, "keyData")), format: "der", type: "pkcs8" });
 				type = "private";
+			} else if (format === "raw-public" || format === "raw-seed") {
+				const raw = Buffer.from(bytesOf(keyData, "keyData"));
+				const options = { key: raw, format, asymmetricKeyType: name.toLowerCase() };
+				keyObject = format === "raw-seed" ? crypto.createPrivateKey(options) : crypto.createPublicKey(options);
+				type = format === "raw-seed" ? "private" : "public";
 			} else if (format === "raw") {
 				const raw = Buffer.from(bytesOf(keyData, "keyData"));
 				if (name === "ECDSA" || name === "ECDH") {
@@ -442,6 +485,15 @@ export function createSubtle({ native, Buffer, toBytes, crypto, hashName }) {
 					keyObject = crypto.createPublicKey({ key: { kty: "OKP", crv: name, x: raw.toString("base64url") }, format: "jwk" });
 				} else throw fail("NotSupportedError", `Unable to import ${name} key with format raw`);
 				type = "public";
+			} else if (format === "jwk" && isPqc) {
+				if (keyData.kty !== "AKP") throw fail("DataError", 'Invalid JWK "kty" Parameter');
+				if (keyData.alg === undefined || typeof keyData.pub !== "string") throw fail("DataError", "Invalid keyData");
+				if (keyData.alg !== name) throw fail("DataError", 'JWK "alg" Parameter and algorithm name mismatch');
+				if (keyData.use !== undefined && keyData.use !== (name.startsWith("ML-KEM") ? "enc" : "sig")) throw fail("DataError", 'Invalid JWK "use" Parameter');
+				checkJwkCommon(keyData, extractable, usages);
+				const isPrivate = keyData.priv !== undefined;
+				keyObject = isPrivate ? crypto.createPrivateKey({ key: keyData, format: "jwk" }) : crypto.createPublicKey({ key: keyData, format: "jwk" });
+				type = isPrivate ? "private" : "public";
 			} else if (format === "jwk") {
 				checkJwkCommon(keyData, extractable, usages);
 				const jwk = { ...keyData };
@@ -485,6 +537,9 @@ export function createSubtle({ native, Buffer, toBytes, crypto, hashName }) {
 
 	/* ---------------------------------------------------------------------------- operations */
 
+	function operationError() {
+		return fail("OperationError", "The operation failed for an operation-specific reason");
+	}
 	const requireUsage = (key, usage, action) => {
 		if (!key.usages.includes(usage)) throw fail("InvalidAccessError", `Unable to use this key to ${action}`);
 	};
@@ -498,7 +553,18 @@ export function createSubtle({ native, Buffer, toBytes, crypto, hashName }) {
 		if (name === "RSASSA-PKCS1-v1_5") return new Uint8Array(crypto.sign(HASHES[key.algorithm.hash.name], data, key.keyObject));
 		if (name === "RSA-PSS") return new Uint8Array(crypto.sign(HASHES[key.algorithm.hash.name], data, { key: key.keyObject, padding: crypto.constants.RSA_PKCS1_PSS_PADDING, saltLength: a.saltLength }));
 		if (name === "ECDSA") return new Uint8Array(crypto.sign(HASHES[hashOf(a.hash)], data, { key: key.keyObject, dsaEncoding: "ieee-p1363" }));
+		if (ML_DSA.includes(name)) return new Uint8Array(crypto.sign(null, data, { key: key.keyObject, context: contextOf(a) }));
 		return new Uint8Array(crypto.sign(null, data, key.keyObject));
+	};
+	/* The `context` of ML-DSA parameters: a BufferSource of at most 255 bytes. */
+	const contextOf = (a) => {
+		if (a.context === undefined) return new Uint8Array(0);
+		if (!(a.context instanceof ArrayBuffer) && !ArrayBuffer.isView(a.context)) {
+			throw typeError("Failed to normalize algorithm: context in passed algorithm is not instance of ArrayBuffer, Buffer, TypedArray, or DataView.");
+		}
+		const bytes = bytesOf(a.context, "context");
+		if (bytes.length > 255) throw operationError();
+		return bytes;
 	};
 	const sign = (algorithm, key, data) => {
 		const a = normalize(algorithm, "sign");
@@ -526,9 +592,9 @@ export function createSubtle({ native, Buffer, toBytes, crypto, hashName }) {
 		if (name === "RSASSA-PKCS1-v1_5") return crypto.verify(HASHES[k.algorithm.hash.name], message, k.keyObject, sig);
 		if (name === "RSA-PSS") return crypto.verify(HASHES[k.algorithm.hash.name], message, { key: k.keyObject, padding: crypto.constants.RSA_PKCS1_PSS_PADDING, saltLength: a.saltLength }, sig);
 		if (name === "ECDSA") return crypto.verify(HASHES[hashOf(a.hash)], message, { key: k.keyObject, dsaEncoding: "ieee-p1363" }, sig);
+		if (ML_DSA.includes(name)) return crypto.verify(null, message, { key: k.keyObject, context: contextOf(a) }, sig);
 		return crypto.verify(null, message, k.keyObject, sig);
 	};
-	const operationError = () => fail("OperationError", "The operation failed for an operation-specific reason");
 	const cipherRun = (encrypt, a, k, data) => {
 		const name = a.name;
 		const bits = k.algorithm.length;
@@ -746,6 +812,46 @@ export function createSubtle({ native, Buffer, toBytes, crypto, hashName }) {
 		if (bits === 0 || bits % 8) throw fail("OperationError", "Invalid KangarooTwelveParams outputLength");
 		return kangarootwelve(strength, data, bits / 8, custom);
 	};
+	/* ML-KEM: the key must be a CryptoKey of the named parameter set with the right usage. */
+	const kemKey = (method, position, key, a, usage, label) => {
+		const k = key && typeof key === "object" ? slot.get(key) : undefined;
+		if (!k) throw typeError(`Failed to execute '${method}' on 'SubtleCrypto': ${ordinal(position)} argument is not of type CryptoKey.`);
+		if (k.algorithm.name !== a.name) throw fail("InvalidAccessError", "key algorithm mismatch");
+		if (!k.usages.includes(usage)) throw fail("InvalidAccessError", `${label} does not have ${usage} usage`);
+		return k;
+	};
+	const kemCall = (fn) => {
+		try {
+			return fn();
+		} catch (err) {
+			if (err && err.code === "ERR_CRYPTO_OPERATION_FAILED") throw operationError();
+			throw err;
+		}
+	};
+	const encapsulateBits = (algorithm, encapsulationKey) => {
+		const a = normalize(algorithm, "encapsulateBits");
+		const k = kemKey("encapsulateBits", 2, encapsulationKey, a, "encapsulateBits", "encapsulationKey");
+		const { sharedKey, ciphertext } = kemCall(() => crypto.encapsulate(k.keyObject));
+		return { sharedKey: abOf(sharedKey), ciphertext: abOf(ciphertext) };
+	};
+	const encapsulateKey = (algorithm, encapsulationKey, sharedKeyAlgorithm, extractable, usages) => {
+		const a = normalize(algorithm, "encapsulateKey");
+		const k = kemKey("encapsulateKey", 2, encapsulationKey, a, "encapsulateKey", "encapsulationKey");
+		const { sharedKey, ciphertext } = kemCall(() => crypto.encapsulate(k.keyObject));
+		return { ciphertext: abOf(ciphertext), sharedKey: importKey("raw", sharedKey, sharedKeyAlgorithm, extractable, usages) };
+	};
+	const decapsulateBits = (algorithm, decapsulationKey, ciphertext) => {
+		const a = normalize(algorithm, "decapsulateBits");
+		const k = kemKey("decapsulateBits", 2, decapsulationKey, a, "decapsulateBits", "decapsulationKey");
+		return abOf(kemCall(() => crypto.decapsulate(k.keyObject, bytesOf(ciphertext, "ciphertext"))));
+	};
+	const decapsulateKey = (algorithm, decapsulationKey, ciphertext, sharedKeyAlgorithm, extractable, usages) => {
+		const a = normalize(algorithm, "decapsulateKey");
+		const k = kemKey("decapsulateKey", 2, decapsulationKey, a, "decapsulateKey", "decapsulationKey");
+		const sharedKey = kemCall(() => crypto.decapsulate(k.keyObject, bytesOf(ciphertext, "ciphertext")));
+		return importKey("raw", sharedKey, sharedKeyAlgorithm, extractable, usages);
+	};
+
 	const digest = (algorithm, data) => {
 		const a = normalize(algorithm, "digest");
 		if (XOF_DIGESTS.includes(a.name)) return abOf(digestSponge(a, bytesOf(data)));
@@ -760,9 +866,9 @@ export function createSubtle({ native, Buffer, toBytes, crypto, hashName }) {
 
 	/* ------------------------------------------------------------------------ the classes */
 
-	const ARITY = { encrypt: 3, decrypt: 3, sign: 3, verify: 4, digest: 2, generateKey: 3, deriveKey: 5, deriveBits: 2, importKey: 5, exportKey: 2, wrapKey: 4, unwrapKey: 7, getPublicKey: 2 };
+	const ARITY = { encrypt: 3, decrypt: 3, sign: 3, verify: 4, digest: 2, generateKey: 3, deriveKey: 5, deriveBits: 2, importKey: 5, exportKey: 2, wrapKey: 4, unwrapKey: 7, getPublicKey: 2, encapsulateBits: 2, encapsulateKey: 5, decapsulateBits: 3, decapsulateKey: 6 };
 	/* Where in the call each byte argument sits, for Node's "Failed to execute" wording. */
-	const BUFFER_ARGUMENT = { digest: { data: 2 }, sign: { data: 3 }, verify: { signature: 3, data: 4 }, encrypt: { data: 3 }, decrypt: { data: 3 }, importKey: { keyData: 2 }, unwrapKey: { wrappedKey: 2 } };
+	const BUFFER_ARGUMENT = { digest: { data: 2 }, sign: { data: 3 }, verify: { signature: 3, data: 4 }, encrypt: { data: 3 }, decrypt: { data: 3 }, importKey: { keyData: 2 }, unwrapKey: { wrappedKey: 2 }, decapsulateBits: { ciphertext: 3 }, decapsulateKey: { ciphertext: 3 } };
 	const wrapAsync = (method, fn) =>
 		function (...args) {
 			if (!(this instanceof SubtleCrypto)) return Promise.reject(Object.assign(new TypeError('Value of "this" must be of type SubtleCrypto'), { code: "ERR_INVALID_THIS" }));
@@ -803,11 +909,42 @@ export function createSubtle({ native, Buffer, toBytes, crypto, hashName }) {
 		wrapKey,
 		unwrapKey,
 		getPublicKey,
+		encapsulateBits,
+		encapsulateKey,
+		decapsulateBits,
+		decapsulateKey,
 	};
 	for (const [name, fn] of Object.entries(methods)) {
 		Object.defineProperty(SubtleCrypto.prototype, name, { value: wrapAsync(name, fn), writable: true, configurable: true, enumerable: true });
 	}
+	/* SubtleCrypto.supports(operation, algorithm[, lengthOrAdditionalAlgorithm]): whether the host offers that. */
+	Object.defineProperty(SubtleCrypto, "supports", {
+		value: function supports(operation, algorithm, lengthOrAdditionalAlgorithm) {
+			try {
+				if (!OPERATIONS[operation]) return false;
+				const a = normalize(algorithm, operation);
+				if (operation === "encapsulateKey" || operation === "decapsulateKey") {
+					return lengthOrAdditionalAlgorithm !== undefined && supports("importKey", lengthOrAdditionalAlgorithm);
+				}
+				if (operation === "generateKey") {
+					if (a.name.startsWith("AES-")) return Number.isInteger(a.length);
+					if (a.name === "HMAC") return a.hash !== undefined;
+					if (a.name.startsWith("RSA")) return a.modulusLength !== undefined && a.publicExponent !== undefined && a.hash !== undefined;
+					if (a.name === "ECDSA" || a.name === "ECDH") return CURVES[a.namedCurve] !== undefined;
+				}
+				if (operation === "importKey") {
+					if (a.name === "HMAC" || a.name.startsWith("RSA")) return a.hash !== undefined;
+					if (a.name === "ECDSA" || a.name === "ECDH") return CURVES[a.namedCurve] !== undefined;
+				}
+				return true;
+			} catch {
+				return false;
+			}
+		},
+		writable: true,
+		configurable: true,
+	});
 	const subtle = Object.create(SubtleCrypto.prototype);
 
-	return { CryptoKey, SubtleCrypto, subtle };
+	return { CryptoKey, SubtleCrypto, subtle, keyObjectOf: (key) => (key && typeof key === "object" ? slot.get(key)?.keyObject : undefined) };
 }

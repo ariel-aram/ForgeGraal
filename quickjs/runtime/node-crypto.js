@@ -700,17 +700,26 @@ function createCrypto({ native, Buffer, stream, toBytes: plainBytes, StringDecod
 		Sign, Verify, sign, verify, createPrivateKey, createPublicKey, generateKeyPair, generateKeyPairSync, generateKeySync, generateKey,
 		publicEncrypt, privateDecrypt, privateEncrypt, publicDecrypt, ECDH, createECDH, diffieHellman, DiffieHellman, DiffieHellmanGroup,
 		createDiffieHellman, createDiffieHellmanGroup, getDiffieHellman, generatePrime, generatePrimeSync, checkPrime, checkPrimeSync,
-		X509Certificate, getCurves,
+		X509Certificate, getCurves, encapsulate, decapsulate,
 	} = asym;
 	Object.assign(crypto, {
 		Sign, Verify, sign, verify, createSign: (algorithm) => new Sign(algorithm), createVerify: (algorithm) => new Verify(algorithm),
 		createPrivateKey, createPublicKey, generateKeyPair, generateKeyPairSync, generateKeySync, generateKey,
 		publicEncrypt, privateDecrypt, privateEncrypt, publicDecrypt, ECDH, createECDH, diffieHellman, DiffieHellman, DiffieHellmanGroup,
 		createDiffieHellman, createDiffieHellmanGroup, getDiffieHellman, generatePrime, generatePrimeSync, checkPrime, checkPrimeSync,
-		X509Certificate, getCurves,
+		X509Certificate, getCurves, encapsulate, decapsulate,
 	});
 	Object.defineProperty(crypto, "tools", { value: asym.tools });
 	const web = createSubtle({ native, Buffer, toBytes, crypto, hashName });
+	// encapsulate() and decapsulate() take a CryptoKey too; KeyObject.from() unwraps one.
+	asym.setKeyUnwrapper((key) => web.keyObjectOf(key) ?? key);
+	if (!KeyObject.from) {
+		KeyObject.from = (key) => {
+			const keyObject = web.keyObjectOf(key);
+			if (!keyObject) throw invalidArg("key", "an instance of CryptoKey", key);
+			return keyObject;
+		};
+	}
 	class Crypto {
 		get subtle() {
 			if (!(this instanceof Crypto)) throw Object.assign(new TypeError('Value of "this" must be of type Crypto'), { code: "ERR_INVALID_THIS" });

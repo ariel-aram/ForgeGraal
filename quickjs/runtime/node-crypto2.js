@@ -6,8 +6,8 @@
  * mbedTLS does the mathematics (see quickjs/native/fg_crypto.c); this file is the Node-shaped surface and the little
  * DER writer that turns mbedTLS's PKCS#1 / SEC1 output into the PKCS#8 and SPKI forms Node exports.
  *
- * Not provided, and said so when used: Ed25519, Ed448, X25519, X448 and DSA keys (mbedTLS has no signature scheme
- * for them), and encrypting a private key with a passphrase on export.
+ * Ed25519, Ed448, X25519, X448 and DSA keys (mbedTLS has no scheme for them) are parsed and used here, and so are the
+ * post-quantum keys ML-KEM, ML-DSA and SLH-DSA (node-pqc.js), with crypto.encapsulate and crypto.decapsulate.
  */
 
 import { MODP_PRIMES } from "./node-crypto-dh.js";
@@ -42,6 +42,7 @@ const codeError = (Ctor, code, message) => Object.assign(new Ctor(message), { co
 const unavailable = (what, why) => codeError(Error, "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM", `${what} is not available in the Graak native host: ${why}`);
 
 import { createPkcs } from "./node-pkcs.js";
+import { createPqc } from "./node-pqc.js";
 import { certificateBytes, parseCertificate, SIGNATURE_HASH } from "./node-x509.js";
 import {
 	derBits,
@@ -65,20 +66,21 @@ import {
 function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, concat, KeyObject }) {
 	const buf = (bytes) => Buffer.from(bytes);
 	const pkcs = createPkcs({ native, Buffer });
+	const pqc = createPqc({ native });
 	const pem = (label, der) => toPem(label, der, Buffer);
 	const b64u = (bytes) => buf(bytes).toString("base64url");
 	const fromB64u = (text) => new Uint8Array(Buffer.from(String(text), "base64url"));
 	const invalidArg = (name, expected, value) =>
-		codeError(TypeError, "ERR_INVALID_ARG_TYPE", `The "${name}" ${name.includes(".") ? "property" : "argument"} must be ${expected}. Received ${value === null ? "null" : value === undefined ? "undefined" : typeof value}`);
+		codeError(TypeError, "ERR_INVALID_ARG_TYPE", `The "${name}" ${name.includes(".") ? "property" : "argument"} must be ${expected}. Received ${received(value)}`);
 	const noneOr = (value, encoding) => (encoding && encoding !== "buffer" ? buf(value).toString(encoding) : buf(value));
 
 	/* ------------------------------------------------------------------------------- key objects */
 
 	/* An asymmetric key object holds: priv (PKCS#1 or SEC1 DER, private keys only), spki (DER) and info (from the host). */
 	const makeKey = (info, asPublic) => {
-		if (asPublic && info.private && (info.okp || info.dsa)) {
+		if (asPublic && info.private && (info.okp || info.dsa || info.pqc)) {
 			// The public half of a key this file parses itself carries none of the private material.
-			info = { ...info, private: false, pkcs: undefined, okp: info.okp ? { pub: info.okp.pub } : undefined, dsa: info.dsa ? { p: info.dsa.p, q: info.dsa.q, g: info.dsa.g, y: info.dsa.y } : undefined };
+			info = { ...info, private: false, pkcs: undefined, okp: info.okp ? { pub: info.okp.pub } : undefined, pqc: info.pqc ? { type: info.pqc.type, pub: info.pqc.pub } : undefined, dsa: info.dsa ? { p: info.dsa.p, q: info.dsa.q, g: info.dsa.g, y: info.dsa.y } : undefined };
 		}
 		const key = new KeyObject(info.private && !asPublic ? "private" : "public", null, {
 			priv: info.private && !asPublic ? info.pkcs : null,
@@ -179,6 +181,15 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 			}
 			return jwk;
 		}
+		if (info.pqc) {
+			const { type, seed, expanded, pub } = info.pqc;
+			const jwk = {};
+			if (priv) {
+				if (type.kind !== "slh" && !seed) throw codeError(Error, "ERR_CRYPTO_OPERATION_FAILED", "key does not have an available seed");
+				jwk.priv = b64u(type.kind === "slh" ? expanded : seed);
+			}
+			return { ...jwk, kty: "AKP", alg: type.jwk, pub: b64u(pub) };
+		}
 		if (info.okp) {
 			const jwk = { crv: OKP_JWK[info.type], x: b64u(info.okp.pub), kty: "OKP" };
 			if (info.okp.seed) jwk.d = b64u(info.okp.seed);
@@ -215,6 +226,24 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 				return { data: derSeq(derInt(Uint8Array.of(0)), derInt(n), derInt(e), ...parts), isPrivate: true };
 			}
 			return { data: rsaSpki(n, e), isPrivate: false };
+		}
+		if (jwk.kty === "AKP") {
+			const type = typeof jwk.alg === "string" ? pqc.byJwk[jwk.alg] : undefined;
+			if (!type) throw codeError(TypeError, "ERR_CRYPTO_INVALID_JWK", 'Unsupported JWK AKP "alg"');
+			const bad = () => codeError(TypeError, "ERR_CRYPTO_INVALID_JWK", "Invalid JWK AKP key");
+			if (wantPrivate) {
+				if (jwk.priv === undefined) throw codeError(TypeError, "ERR_CRYPTO_INVALID_JWK", "JWK does not contain private key material");
+				if (typeof jwk.priv !== "string") throw bad();
+				const priv = fromB64u(jwk.priv);
+				if (priv.length !== (type.kind === "slh" ? type.expandedLen : type.seedLen)) throw bad();
+				// A seed goes in as the [0] form; SLH-DSA has the expanded key only.
+				const inner = type.kind === "slh" ? priv : tlv(0x80, priv);
+				return { data: derSeq(derInt(Uint8Array.of(0)), derSeq(derOid(type.oid)), derOctets(inner)), isPrivate: true };
+			}
+			if (typeof jwk.pub !== "string") throw bad();
+			const pub = fromB64u(jwk.pub);
+			if (!pqc.publicOk(type, pub)) throw bad();
+			return { data: pqcSpki(type, pub), isPrivate: false };
 		}
 		if (jwk.kty === "OKP") {
 			const type = Object.keys(OKP_JWK).find((k) => OKP_JWK[k] === jwk.crv);
@@ -256,6 +285,82 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 		};
 		return { private: Boolean(dsa.x), type: "dsa", bits: bitsOf(dsa.p), divisorLength: bitsOf(dsa.q), pkcs: pkcs8Der, spki: dsaSpki(dsa), dsa };
 	};
+	/* ---- ML-KEM, ML-DSA and SLH-DSA keys (node-pqc.js) are parsed and used here, like the OKP and DSA ones */
+	const invalidKey = () => Object.assign(codeError(Error, "ERR_OSSL_INVALID_KEY", "error:1C80009E:Provider routines::invalid key"), { pqc: true });
+	const undecodable = () => Object.assign(codeError(Error, "ERR_OSSL_UNSUPPORTED", "error:1E08010C:DECODER routines::unsupported"), { pqc: true });
+	const pqcSpki = (type, pub) => derSeq(derSeq(derOid(type.oid)), derBits(pub));
+	/* Node 24's PKCS#8 form: the seed and the expanded key together (SLH-DSA has the expanded key alone). */
+	const pqcPkcs8 = (type, key) => {
+		const inner = type.kind === "slh" ? key.expanded : key.seed ? derSeq(derOctets(key.seed), derOctets(key.expanded)) : derOctets(key.expanded);
+		return derSeq(derInt(Uint8Array.of(0)), derSeq(derOid(type.oid)), derOctets(inner));
+	};
+	const pqcInfo = (type, key, isPrivate) => ({
+		private: isPrivate,
+		type: type.name,
+		bits: 0,
+		pkcs: isPrivate ? pqcPkcs8(type, key) : undefined,
+		spki: pqcSpki(type, key.pub),
+		pqc: { type, seed: key.seed, expanded: isPrivate ? key.expanded : undefined, pub: key.pub },
+	});
+	/* The private key inside a PrivateKeyInfo: a seed ([0]), an expanded key (OCTET STRING) or both (SEQUENCE). */
+	const pqcFromPkcs8 = (type, der, element) => {
+		const body = der.slice(element.start, element.end);
+		if (type.kind === "slh") {
+			const key = body.length === type.expandedLen ? pqc.fromExpanded(type, body) : null;
+			if (!key) throw invalidKey();
+			return pqcInfo(type, key, true);
+		}
+		const first = readTlv(body, 0);
+		if (first.next !== body.length) throw undecodable();
+		if (body[0] === 0x80) {
+			const seed = body.slice(first.start, first.end);
+			if (seed.length !== type.seedLen) throw undecodable();
+			return pqcInfo(type, pqc.fromSeed(type, seed), true);
+		}
+		if (body[0] === 0x04) {
+			const key = pqc.fromExpanded(type, body.slice(first.start, first.end));
+			if (!key) throw invalidKey();
+			return pqcInfo(type, key, true);
+		}
+		if (body[0] === 0x30) {
+			const [seedEl, expandedEl] = readChildren(body, first);
+			if (!seedEl || !expandedEl || seedEl.tag !== 4 || expandedEl.tag !== 4) throw undecodable();
+			const seed = body.slice(seedEl.start, seedEl.end);
+			if (seed.length !== type.seedLen) throw undecodable();
+			const key = pqc.fromSeed(type, seed);
+			if (!buf(key.expanded).equals(buf(body.subarray(expandedEl.start, expandedEl.end)))) throw invalidKey();
+			return pqcInfo(type, key, true);
+		}
+		throw undecodable();
+	};
+	const pqcFromSpki = (type, pub) => {
+		if (!pqc.publicOk(type, pub)) throw invalidKey();
+		return pqcInfo(type, { pub }, false);
+	};
+	/* createPublicKey and createPrivateKey with format raw-public, raw-seed or raw-private. */
+	const createRawKey = (options, wantPrivate) => {
+		const typeName = options.asymmetricKeyType;
+		if (typeof typeName !== "string") throw invalidArg("key.asymmetricKeyType", "of type string", typeName);
+		const type = pqc.types[typeName];
+		if (!type) {
+			if (["ec", "ed25519", "ed448", "x25519", "x448", "rsa", "rsa-pss", "dsa", "dh"].includes(typeName)) {
+				throw unavailable(`raw key import for '${typeName}' keys`, "only ML-KEM, ML-DSA and SLH-DSA keys have raw forms here");
+			}
+			throw codeError(TypeError, "ERR_INVALID_ARG_VALUE", `Invalid asymmetricKeyType: ${typeName}`);
+		}
+		const bytes = toBytes(options.key, options.encoding);
+		if (options.format === "raw-public") {
+			if (!pqc.publicOk(type, bytes)) throw codeError(TypeError, "ERR_INVALID_ARG_VALUE", "Invalid key data");
+			return makeKey(pqcInfo(type, { pub: Uint8Array.from(bytes) }, false), true);
+		}
+		if (options.format === "raw-seed" ? type.kind === "slh" : type.kind !== "slh") {
+			throw codeError(Error, "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS", "The selected key encoding is incompatible with the key type");
+		}
+		const key = options.format === "raw-seed" ? (bytes.length === type.seedLen ? pqc.fromSeed(type, bytes) : null) : bytes.length === type.expandedLen ? pqc.fromExpanded(type, bytes) : null;
+		if (!key) throw codeError(TypeError, "ERR_INVALID_ARG_VALUE", "Invalid key data");
+		return makeKey(pqcInfo(type, key, true), !wantPrivate);
+	};
+
 	/* The DER (and its PEM label) inside the bytes or text a program passes as a key. */
 	const derOfKey = (data) => {
 		const text = typeof data === "string" ? data : buf(data).toString("latin1");
@@ -287,6 +392,7 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 					if (seed.length !== OKP_SIZE[type]) return null;
 					return okpInfo(type, seed, okpPublic(type, seed));
 				}
+				if (pqc.byOid[alg.oid]) return pqcFromPkcs8(pqc.byOid[alg.oid], der, kids[2]);
 				if (alg.oid === OID_DSA) {
 					const [p, q, g] = readChildren(der, alg.params).map((c) => der.slice(...[c.start, c.end]));
 					const strip = (b) => {
@@ -310,6 +416,7 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 					if (pub.length !== OKP_SIZE[type]) return null;
 					return okpInfo(type, undefined, pub, der.slice(top.pos, top.next));
 				}
+				if (pqc.byOid[alg.oid]) return pqcFromSpki(pqc.byOid[alg.oid], der.slice(kids[1].start + 1, kids[1].end));
 				if (alg.oid === OID_DSA) {
 					const [p, q, g] = readChildren(der, alg.params).map((c) => unsignedBytes(der, c));
 					const yElement = readTlv(der, kids[1].start + 1);
@@ -322,7 +429,8 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 				const [, p, q, g, y, x] = kids.map((k) => unsignedBytes(der, k));
 				if (unsignedBytes(der, kids[0]).length === 1 && unsignedBytes(der, kids[0])[0] === 0) return dsaInfo({ p, q, g, y, x });
 			}
-		} catch {
+		} catch (err) {
+			if (err?.pqc) throw err;
 			return null;
 		}
 		return null;
@@ -494,6 +602,7 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 	};
 
 	const createKey = (key, wantPrivate) => {
+		if (key && typeof key === "object" && !(key instanceof KeyObject) && typeof key.format === "string" && key.format.startsWith("raw-")) return createRawKey(key, wantPrivate);
 		const parsed = parseInput(key, { wantPrivate });
 		if (parsed.keyObject) {
 			if (wantPrivate) return parsed.keyObject;
@@ -513,12 +622,30 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 	const rsaPkcs1Public = (info) => derSeq(derInt(info.modulus), derInt(info.exponent));
 	const pkcs8 = (asym) => {
 		const { info, priv } = asym;
-		if (info.okp || info.dsa) return priv;
+		if (info.okp || info.dsa || info.pqc) return priv;
 		if (info.type === "rsa") return derSeq(derInt(Uint8Array.of(0)), derSeq(derOid(OID_RSA), derNull()), derOctets(priv));
 		// The curve is named in the algorithm identifier, so the ECPrivateKey inside leaves out its own copy.
 		const sec1 = readTlv(priv, 0);
 		const parts = readChildren(priv, sec1).filter((c) => c.tag !== 0xa0).map((c) => priv.subarray(c.pos, c.next));
 		return derSeq(derInt(Uint8Array.of(0)), derSeq(derOid(OID_EC), derOid(CURVE_OIDS[canonicalCurve(info.curve)])), derOctets(derSeq(...parts)));
+	};
+	const exportRaw = (key, format) => {
+		const p = key._asym.info.pqc;
+		const wrongFormat = () => codeError(TypeError, "ERR_INVALID_ARG_VALUE", `The property 'options.format' is invalid. Received '${format}'`);
+		if (!p) throw wrongFormat();
+		if (format === "raw-public") {
+			if (key.type !== "public") throw wrongFormat();
+			return buf(p.pub);
+		}
+		if (key.type !== "private") throw wrongFormat();
+		if (format === "raw-seed" ? p.type.kind === "slh" : p.type.kind !== "slh") {
+			throw codeError(Error, "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS", "The selected key encoding is incompatible with the key type");
+		}
+		if (format === "raw-seed") {
+			if (!p.seed) throw codeError(Error, "ERR_CRYPTO_OPERATION_FAILED", "Failed to get raw seed");
+			return buf(p.seed);
+		}
+		return buf(p.expanded);
 	};
 	const exportKey = (key, options = {}) => {
 		if (key.type === "secret") {
@@ -528,6 +655,7 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 		const asym = key._asym;
 		const format = options.format ?? "pem";
 		if (format === "jwk") return exportJwk(key);
+		if (format === "raw-public" || format === "raw-seed" || format === "raw-private") return exportRaw(key, format);
 		if (format !== "pem" && format !== "der") throw codeError(TypeError, "ERR_INVALID_ARG_VALUE", `The property 'options.format' is invalid. Received '${format}'`);
 		const type = options.type;
 		const protect = options.cipher !== undefined || options.passphrase !== undefined;
@@ -589,7 +717,7 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 				const info = this._asym?.info;
 				if (!info) return undefined;
 				if (info.type === "rsa") return { modulusLength: info.bits, publicExponent: BigInt(`0x${buf(info.exponent).toString("hex")}`) };
-				if (info.okp) return {};
+				if (info.okp || info.pqc) return {};
 				if (info.dsa) return { modulusLength: info.bits, divisorLength: info.divisorLength };
 				return { namedCurve: info.curve === "secp256r1" ? "prime256v1" : info.curve };
 			},
@@ -607,9 +735,15 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 	/* ---------------------------------------------------------------------------- key generation */
 
 	const generate = (type, options = {}) => {
+		options ??= {};
 		const kind = String(type).toLowerCase();
 		if (UNSUPPORTED_KEY_TYPES.includes(kind)) throw unavailable(`generateKeyPair('${type}')`, "Diffie-Hellman key pairs are not implemented; use createDiffieHellman");
 		let generated;
+		if (Object.hasOwn(pqc.types, type)) {
+			const info = pqcInfo(pqc.types[type], pqc.generate(pqc.types[type]), true);
+			const encodePqc = (key, encoding) => (encoding ? exportKey(key, encoding) : key);
+			return { publicKey: encodePqc(makeKey(info, true), options.publicKeyEncoding), privateKey: encodePqc(makeKey(info, false), options.privateKeyEncoding) };
+		}
 		if (OKP_BY_TYPE[kind]) {
 			const seed = new Uint8Array(native.randomBytes(OKP_SIZE[kind]));
 			const info = okpInfo(kind, seed, okpPublic(kind, seed));
@@ -648,6 +782,10 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 	};
 	const generateKeyPairSync = (type, options) => generate(type, options);
 	const generateKeyPair = (type, options, callback) => {
+		if (typeof options === "function") {
+			callback = options;
+			options = undefined;
+		}
 		if (typeof callback !== "function") throw invalidArg("callback", "of type function", callback);
 		let result;
 		let failure = null;
@@ -686,6 +824,32 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 		return derSeq(derInt(raw.subarray(0, half)), derInt(raw.subarray(half)));
 	};
 
+	/* How Node words what a bad argument was: `type string ('x')`, `an instance of ArrayBuffer`, `undefined`. */
+	const received = (value) => {
+		if (value === null || value === undefined) return String(value);
+		if (typeof value === "function") return `function ${value.name}`;
+		if (typeof value === "object") return value.constructor?.name ? `an instance of ${value.constructor.name}` : "an object";
+		let shown = typeof value === "string" ? value : typeof value === "bigint" ? `${value}n` : String(value);
+		if (typeof value === "string") {
+			if (shown.length > 25) shown = `${shown.slice(0, 25)}...`;
+			shown = shown.includes("'") ? (shown.includes('"') ? `\`${shown}\`` : `"${shown}"`) : `'${shown}'`;
+		}
+		return `type ${typeof value} (${shown})`;
+	};
+	/* The `context` option of sign and verify: at most 255 bytes of a Buffer, TypedArray or DataView. */
+	const contextOf = (options) => {
+		const context = options?.context;
+		if (context === undefined) return undefined;
+		if (!ArrayBuffer.isView(context)) {
+			throw codeError(TypeError, "ERR_INVALID_ARG_TYPE", `The "options.context" property must be an instance of Buffer, TypedArray, or DataView. Received ${received(context)}`);
+		}
+		if (context.byteLength > 255) throw codeError(RangeError, "ERR_OUT_OF_RANGE", "context string must be at most 255 bytes");
+		return new Uint8Array(context.buffer, context.byteOffset, context.byteLength);
+	};
+	const noContext = () => codeError(Error, "ERR_CRYPTO_OPERATION_FAILED", "Context parameter is unsupported");
+	const notForKeyType = () => codeError(Error, "ERR_OSSL_EVP_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE", "error:03000096:digital envelope routines::operation not supported for this keytype");
+	const invalidDigest = () => codeError(Error, "ERR_OSSL_INVALID_DIGEST", "error:1C80007A:Provider routines::invalid digest");
+
 	const signOptions = (key) => {
 		const parsed = parseInput(key, { wantPrivate: true });
 		const options = parsed.options ?? {};
@@ -695,7 +859,7 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 	const specialOf = (parsed, wantPrivate) => {
 		if (parsed.keyObject) {
 			const info = parsed.keyObject._asym.info;
-			return info.okp || info.dsa ? info : null;
+			return info.okp || info.dsa || info.pqc ? info : null;
 		}
 		if (parsed.jwk) {
 			const imported = importJwk(parsed.jwk, wantPrivate);
@@ -708,9 +872,16 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 	};
 	const doSign = (algorithm, data, key, oneShot) => {
 		const { parsed, padding, saltLength, dsaEncoding } = signOptions(key);
+		const context = contextOf(parsed.options);
 		const special = specialOf(parsed, true);
 		if (special) {
 			if (!special.private) throw codeError(Error, "ERR_OSSL_UNSUPPORTED", "error:1E08010C:DECODER routines::unsupported");
+			if (special.pqc) {
+				if (!oneShot) throw codeError(Error, "ERR_CRYPTO_UNSUPPORTED_OPERATION", "Unsupported crypto operation");
+				if (special.pqc.type.kind === "kem") throw context ? noContext() : notForKeyType();
+				if (algorithm !== null && algorithm !== undefined) throw invalidDigest();
+				return pqc.sign(special.pqc.type, special.pqc.expanded, data, context ?? new Uint8Array(0));
+			}
 			if (special.okp) {
 				if (!special.type.startsWith("ed")) throw codeError(Error, "ERR_OSSL_EVP_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE", "error:03000096:digital envelope routines::operation not supported for this keytype");
 				if (algorithm !== null && algorithm !== undefined) throw codeError(Error, "ERR_OSSL_INVALID_DIGEST", "error:1C80007A:Provider routines::invalid digest");
@@ -718,6 +889,7 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 			}
 			return dsaSign(special.dsa, digestOf(algorithm, oneShot), data, dsaEncoding);
 		}
+		if (context) throw noContext();
 		const material = nativeKey(parsed, true);
 		let signature = native.pkSignEx(digestOf(algorithm, oneShot), material.data, material.passphrase, data, padding, saltLength === -1 ? -1 : saltLength);
 		const info = material.info ?? (parsed.keyObject ? parsed.keyObject._asym.info : null);
@@ -730,8 +902,15 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 	const doVerify = (algorithm, data, key, signature, oneShot) => {
 		const parsed = parseInput(key, { wantPrivate: false });
 		const options = parsed.options ?? {};
+		const context = contextOf(parsed.options);
 		const special = specialOf(parsed, false);
 		if (special) {
+			if (special.pqc) {
+				if (!oneShot) throw codeError(Error, "ERR_CRYPTO_UNSUPPORTED_OPERATION", "Unsupported crypto operation");
+				if (special.pqc.type.kind === "kem") throw context ? noContext() : notForKeyType();
+				if (algorithm !== null && algorithm !== undefined) throw invalidDigest();
+				return pqc.verify(special.pqc.type, special.pqc.pub, data, toBytes(signature), context ?? new Uint8Array(0));
+			}
 			if (special.okp) {
 				if (!special.type.startsWith("ed")) throw codeError(Error, "ERR_OSSL_EVP_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE", "error:03000096:digital envelope routines::operation not supported for this keytype");
 				if (algorithm !== null && algorithm !== undefined) throw codeError(Error, "ERR_OSSL_INVALID_DIGEST", "error:1C80007A:Provider routines::invalid digest");
@@ -739,6 +918,7 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 			}
 			return dsaVerify(special.dsa, digestOf(algorithm, oneShot), data, toBytes(signature), options.dsaEncoding ?? "der");
 		}
+		if (context) throw noContext();
 		const material = nativeKey(parsed, false);
 		let bytes = toBytes(signature);
 		if ((options.dsaEncoding ?? "der") === "ieee-p1363") {
@@ -814,10 +994,41 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 		return undefined;
 	};
 
+	/* ------------------------------------------------------------------------- ML-KEM key encapsulation */
+
+	let unwrapCryptoKey = (key) => key;
+	const kemKey = (key, wantPrivate, failure) => {
+		const parsed = parseInput(unwrapCryptoKey(key), { wantPrivate });
+		const info = specialOf(parsed, wantPrivate);
+		if (!info?.pqc || info.pqc.type.kind !== "kem") throw codeError(Error, "ERR_CRYPTO_OPERATION_FAILED", failure);
+		return info.pqc;
+	};
+	const encapsulate = (key, callback) => {
+		const compute = () => {
+			const kem = kemKey(key, false, "Failed to perform encapsulation");
+			const { sharedKey, ciphertext } = pqc.encapsulate(kem.type, kem.pub);
+			return { sharedKey: buf(sharedKey), ciphertext: buf(ciphertext) };
+		};
+		return callback === undefined ? compute() : later(compute, callback);
+	};
+	const decapsulate = (key, ciphertext, callback) => {
+		const compute = () => {
+			const kem = kemKey(key, true, "Failed to perform decapsulation");
+			if (typeof ciphertext !== "string" && !ArrayBuffer.isView(ciphertext) && !(ciphertext instanceof ArrayBuffer)) {
+				throw codeError(TypeError, "ERR_INVALID_ARG_TYPE", `The "ciphertext" argument must be of type string or an instance of ArrayBuffer, Buffer, TypedArray, or DataView. Received ${received(ciphertext)}`);
+			}
+			const sharedKey = pqc.decapsulate(kem.type, kem.expanded, toBytes(ciphertext));
+			if (!sharedKey) throw codeError(Error, "ERR_CRYPTO_OPERATION_FAILED", "Failed to perform decapsulation");
+			return buf(sharedKey);
+		};
+		return callback === undefined ? compute() : later(compute, callback);
+	};
+
 	/* ---------------------------------------------------------------------------- RSA encryption */
 
 	const rsaOp = (op, key, data, defaultPadding) => {
 		const parsed = parseInput(key, { wantPrivate: op === 1 || op === 2 });
+		if (specialOf(parsed, op === 1 || op === 2)?.pqc) throw notForKeyType();
 		const options = parsed.options ?? {};
 		const padding = options.padding ?? defaultPadding;
 		if (padding !== 1 && padding !== 4) {
@@ -912,6 +1123,7 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 			if (secret.every((byte) => byte === 0)) throw codeError(Error, "ERR_CRYPTO_OPERATION_FAILED", "Failed to compute ECDH key");
 			return buf(secret);
 		}
+		if (a.pqc || b.pqc) throw codeError(Error, "ERR_CRYPTO_INCOMPATIBLE_KEY", `Incompatible key types for Diffie-Hellman: ${a.type} and ${b.type}`);
 		if (a.type !== "ec" || b.type !== "ec") throw unavailable("crypto.diffieHellman for this key type", "only EC and X25519/X448 keys are supported");
 		if (a.curve !== b.curve) throw codeError(Error, "ERR_CRYPTO_INCOMPATIBLE_KEY", "Incompatible key types for Diffie-Hellman: different curves");
 		return buf(native.ecdhCompute(a.curve, ecPrivateScalar(privateKey._asym.priv), ecPointOfSpki(publicKey._asym.spki)));
@@ -1321,6 +1533,11 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 		createPublicKey: (key) => createKey(key, false),
 		generateKeyPair,
 		generateKeyPairSync,
+		encapsulate,
+		decapsulate,
+		setKeyUnwrapper: (fn) => {
+			unwrapCryptoKey = fn;
+		},
 		generateKeySync,
 		generateKey: (type, options, callback) => later(() => generateKeySync(type, options), callback),
 		Sign,

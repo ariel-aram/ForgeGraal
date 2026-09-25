@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
+import nodeCrypto from "node:crypto";
 import { copyFileSync, cpSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
@@ -76,6 +77,7 @@ const DIFFERENTIAL: Array<[string, string[]]> = [
 	["crypto3-corpus.cjs", []],
 	["webcrypto-corpus.cjs", []],
 	["ocb-kmac-corpus.cjs", []],
+	["pqc-corpus.cjs", []],
 	["repl-corpus.cjs", []],
 	["inspector-corpus.cjs", []],
 ];
@@ -125,6 +127,79 @@ for (const [fixture, extra] of DIFFERENTIAL) {
 		assert.doesNotMatch(onHost.stdout, /FAILED/);
 	});
 }
+
+test("post-quantum keys, ciphertexts and signatures made on the host are accepted by Node.js", {
+	timeout: 300_000,
+}, async () => {
+	const root = project(["pqc-interop.cjs"]);
+	const launcher = await packaged(root, "pqc-interop.cjs");
+	const onHost = spawnSync(launcher, [], {
+		encoding: "utf-8",
+		timeout: 240_000,
+		env: PINNED_ENV,
+		maxBuffer: 64 * 1024 * 1024,
+	});
+	assert.equal(onHost.status, 0, `host failed:\n${onHost.stdout}${onHost.stderr}`);
+	const made = JSON.parse(onHost.stdout);
+	const message = Buffer.from("a message for Node.js to verify");
+	assert.equal(made.kem.length, 3);
+	for (const kem of made.kem) {
+		const key = nodeCrypto.createPrivateKey(kem.privateKey);
+		assert.equal(key.asymmetricKeyType, kem.name);
+		assert.equal(
+			nodeCrypto.decapsulate(key, Buffer.from(kem.ciphertext, "base64")).toString("base64"),
+			kem.sharedKey,
+			`${kem.name} ciphertext`
+		);
+		const fromSeed = nodeCrypto.createPrivateKey({
+			key: Buffer.from(kem.seed, "base64"),
+			format: "raw-seed",
+			asymmetricKeyType: kem.name,
+		});
+		assert.equal(fromSeed.equals(key), true, `${kem.name} seed`);
+		assert.equal(
+			nodeCrypto.createPublicKey(key).export({ format: "raw-public" }).toString("base64"),
+			kem.publicRaw,
+			`${kem.name} public key`
+		);
+	}
+	assert.equal(made.sig.length, 10);
+	for (const sig of made.sig) {
+		const publicKey = nodeCrypto.createPublicKey(sig.publicKey);
+		assert.equal(publicKey.asymmetricKeyType, sig.name);
+		assert.equal(
+			nodeCrypto.verify(null, message, publicKey, Buffer.from(sig.signature, "base64")),
+			true,
+			`${sig.name} signature`
+		);
+		assert.equal(
+			nodeCrypto.verify(
+				null,
+				message,
+				{ key: publicKey, context: Buffer.from("interop") },
+				Buffer.from(sig.contextSignature, "base64")
+			),
+			true,
+			`${sig.name} signature with a context`
+		);
+		assert.equal(
+			nodeCrypto.verify(null, message, publicKey, Buffer.from(sig.contextSignature, "base64")),
+			false,
+			`${sig.name} context signature without the context`
+		);
+		assert.equal(
+			nodeCrypto.createPublicKey({ key: sig.jwk, format: "jwk" }).equals(publicKey),
+			true,
+			`${sig.name} jwk`
+		);
+		const privateKey = nodeCrypto.createPrivateKey(sig.privateKey);
+		assert.equal(
+			nodeCrypto.verify(null, message, publicKey, nodeCrypto.sign(null, message, privateKey)),
+			true,
+			`${sig.name} key signs in Node.js`
+		);
+	}
+});
 
 /** Starts a packaged static site and resolves the port it reports. */
 function serve(launcher: string, args: string[]): Promise<{ child: ChildProcess; port: number }> {

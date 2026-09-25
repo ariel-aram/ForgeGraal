@@ -178,6 +178,7 @@ const RUNTIME_FILES = [
 	"node-crypto2.js",
 	"node-asn1.js",
 	"node-pkcs.js",
+	"node-pqc.js",
 	"node-x509.js",
 	"node-subtle.js",
 	"node-ocb.js",
