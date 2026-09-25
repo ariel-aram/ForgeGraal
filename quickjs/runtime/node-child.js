@@ -140,7 +140,11 @@ export function createChildProcess({ native, EventEmitter, stream, Buffer, proce
 				return;
 			}
 			// Messages Node's own machinery exchanges (handle passing) carry a NODE_ command and are not the program's.
-			if (message && typeof message === "object" && typeof message.cmd === "string" && message.cmd.startsWith("NODE_")) return;
+			if (message && typeof message === "object" && typeof message.cmd === "string" && message.cmd.startsWith("NODE_")) {
+				// node:cluster's own traffic; with nobody listening it is dropped, as before.
+				if (this.target.listenerCount("internalMessage") > 0) this.target.emit("internalMessage", message);
+				return;
+			}
 			this.target.emit("message", message);
 		}
 
@@ -494,15 +498,17 @@ export function createChildProcess({ native, EventEmitter, stream, Buffer, proce
 			if (status < 0) this.signalCode = SIGNAL_NAMES[-status] ?? `SIG${-status}`;
 			else this.exitCode = status;
 			if (this._timeout) globalThis.clearTimeout(this._timeout);
-			this.emit("exit", this.exitCode, this.signalCode);
-			// Output nobody is reading is discarded so that 'close' can happen, as in Node.
-			for (const readable of [this.stdout, this.stderr]) {
-				if (readable && readable.readable && readable.listenerCount("readable") === 0) readable.resume();
-			}
+			// A child that died with its channel open ends the channel first, as Node's pipe EOF comes before the exit.
 			if (this._channel?.connected) {
 				// The child took its end of the channel with it.
 				this._channel.readAvailable();
 				this._channel.close(true);
+			}
+			if (this._channel) process.nextTick(() => this.emit("exit", this.exitCode, this.signalCode));
+			else this.emit("exit", this.exitCode, this.signalCode);
+			// Output nobody is reading is discarded so that 'close' can happen, as in Node.
+			for (const readable of [this.stdout, this.stderr]) {
+				if (readable && readable.readable && readable.listenerCount("readable") === 0) readable.resume();
 			}
 			this._maybeClose();
 		}
@@ -623,7 +629,7 @@ export function createChildProcess({ native, EventEmitter, stream, Buffer, proce
 		for (const key of CHANNEL_ENV) if (key !== "GRAAK_FORK_ENTRY") delete env[key];
 		if (id < 0) return;
 		let channel = null;
-		channel = new Channel(id, process, () => process.listenerCount("message") + process.listenerCount("disconnect") > 0);
+		channel = new Channel(id, process, () => process.listenerCount("message") + process.listenerCount("disconnect") > 0 || process._graakChannelWanted === true);
 		process.connected = true;
 		process.channel = {
 			ref() {

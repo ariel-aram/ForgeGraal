@@ -210,7 +210,11 @@ served from a packaged `linux-modern-x64` build; **`ws`** as a WebSocket server 
 binary frames; **discord.js 14** with **ForgeScript**, whose REST client makes a real request to Discord; and native
 addons such as **@napi-rs/canvas**, **sharp** and **better-sqlite3**.
 
-Not provided, and said so when used: `cluster`, `inspector`, `repl`, `wasi`, `v8.Serializer`, the post-quantum key types (ML-KEM, ML-DSA, SLH-DSA), AES-OCB, cSHAKE/KMAC and Argon2/BLAKE2 in `crypto`. An
+Not provided, and said so when used: `inspector`, `repl`, `wasi`, `v8.Serializer`, the post-quantum key types (ML-KEM, ML-DSA, SLH-DSA), AES-OCB, cSHAKE/KMAC and Argon2/BLAKE2 in `crypto`. `cluster` runs on `fork()`: workers, their events and messages, and several workers listening on one port.
+The host cannot pass a socket descriptor, so the primary owns the listening socket and proxies each connection to a worker
+in round-robin order (workers bind a private 127.0.0.1 port); a proxied connection reports `127.0.0.1` as its peer address,
+sending a handle to a worker (`worker.send(msg, handle)`) throws `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`, and `listen` on a unix
+path or with `exclusive: true` binds in the worker alone. An
 exception nothing catches is handled as Node handles it: `process.on("uncaughtException")` gets it, otherwise it is
 printed and the process exits with status 1. A server binds IPv4 unless told otherwise (`listen(port)` is `0.0.0.0`).
 

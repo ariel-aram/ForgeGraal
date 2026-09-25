@@ -46,6 +46,7 @@ import {
 	setPromiseStateReader,
 } from "./node-inspect.js";
 import { createChildProcess as createStreamingChild } from "./node-child.js";
+import { createCluster } from "./node-cluster.js";
 import * as misc from "./node-misc.js";
 import * as v8Serdes from "./node-v8.js";
 import { createConsumers, createStreamModule } from "./node-stream.js";
@@ -2106,6 +2107,24 @@ const SCHEME_ONLY = new Set(["test", "test/reporters"]);
 	const load = () => (testModules ??= createTestModule(builtins, globalObject));
 	Object.defineProperty(builtins, "test", { get: () => load().test, enumerable: true, configurable: true });
 	Object.defineProperty(builtins, "test/reporters", { get: () => load().reporters, enumerable: true, configurable: true });
+}
+
+// node:cluster is built on first use, or at start in a forked cluster worker so that the primary hears it come online.
+if (streamingChild) {
+	let clusterModule;
+	Object.defineProperty(builtins, "cluster", {
+		get: () =>
+			(clusterModule ??= createCluster({
+				EventEmitter,
+				childProcess: childProcessModule,
+				net: nativeModules?.net,
+				tls: nativeModules?.tls,
+				process: processModule,
+			})),
+		enumerable: true,
+		configurable: true,
+	});
+	if (processModule.env.NODE_UNIQUE_ID !== undefined && processModule.connected) void builtins.cluster;
 }
 
 /* -------------------------------------------------------- CommonJS require */

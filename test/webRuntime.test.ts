@@ -49,6 +49,7 @@ const DIFFERENTIAL: Array<[string, string[]]> = [
 	["url-fuzz.cjs", []],
 	["urlpattern-corpus.cjs", []],
 	["fork-corpus.cjs", []],
+	["cluster-corpus.cjs", []],
 	["crypto-corpus.cjs", CERTS],
 	["dgram-corpus.cjs", []],
 	["unix-corpus.cjs", []],
