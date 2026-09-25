@@ -5,24 +5,27 @@
  * `crypto` (sign, verify, publicEncrypt, diffieHellman, ciphers, PBKDF2, HKDF). What is covered: digest (SHA-1, SHA-2,
  * SHA-3), HMAC, AES-CBC, AES-CTR, AES-GCM, AES-KW, RSASSA-PKCS1-v1_5, RSA-PSS, RSA-OAEP, ECDSA and ECDH (P-256, P-384,
  * P-521), Ed25519, Ed448, X25519, X448, PBKDF2 and HKDF, with generateKey, importKey and exportKey (raw, spki, pkcs8, jwk),
- * deriveBits, deriveKey, wrapKey and unwrapKey. Not covered: AES-OCB, ChaCha20-Poly1305, cSHAKE, TurboSHAKE, KMAC,
- * Argon2 and the ML-KEM and ML-DSA families.
+ * deriveBits, deriveKey, wrapKey and unwrapKey (Argon2 keys import as raw-secret). Not covered: AES-OCB, ChaCha20-Poly1305, cSHAKE, TurboSHAKE, KMAC,
+ * and the ML-KEM and ML-DSA families. Argon2 (Argon2d, Argon2i, Argon2id) is derive-only, version 0x13, as in Node.js.
  */
+
+import { argon2Derive } from "./node-argon2.js";
 
 const USAGE_ORDER = ["encrypt", "decrypt", "sign", "verify", "deriveKey", "deriveBits", "wrapKey", "unwrapKey"];
 const HASHES = { "SHA-1": "sha1", "SHA-256": "sha256", "SHA-384": "sha384", "SHA-512": "sha512", "SHA3-256": "sha3-256", "SHA3-384": "sha3-384", "SHA3-512": "sha3-512" };
 const CURVES = { "P-256": "prime256v1", "P-384": "secp384r1", "P-521": "secp521r1" };
 const KEY_ALGORITHMS = [
-	"RSASSA-PKCS1-v1_5", "RSA-PSS", "RSA-OAEP", "ECDSA", "ECDH", "Ed25519", "Ed448", "X25519", "X448", "HMAC", "AES-CTR", "AES-CBC", "AES-GCM", "AES-KW", "PBKDF2", "HKDF",
+	"RSASSA-PKCS1-v1_5", "RSA-PSS", "RSA-OAEP", "ECDSA", "ECDH", "Ed25519", "Ed448", "X25519", "X448", "HMAC", "AES-CTR", "AES-CBC", "AES-GCM", "AES-KW", "PBKDF2", "HKDF", "Argon2d", "Argon2i", "Argon2id",
 ];
+const ARGON2 = ["Argon2d", "Argon2i", "Argon2id"];
 const OPERATIONS = {
 	digest: Object.keys(HASHES),
 	sign: ["RSASSA-PKCS1-v1_5", "RSA-PSS", "ECDSA", "Ed25519", "Ed448", "HMAC"],
 	verify: ["RSASSA-PKCS1-v1_5", "RSA-PSS", "ECDSA", "Ed25519", "Ed448", "HMAC"],
 	encrypt: ["RSA-OAEP", "AES-CTR", "AES-CBC", "AES-GCM"],
 	decrypt: ["RSA-OAEP", "AES-CTR", "AES-CBC", "AES-GCM"],
-	deriveBits: ["ECDH", "X25519", "X448", "HKDF", "PBKDF2"],
-	generateKey: KEY_ALGORITHMS.filter((n) => n !== "PBKDF2" && n !== "HKDF"),
+	deriveBits: ["ECDH", "X25519", "X448", "HKDF", "PBKDF2", ...ARGON2],
+	generateKey: KEY_ALGORITHMS.filter((n) => n !== "PBKDF2" && n !== "HKDF" && !ARGON2.includes(n)),
 	importKey: KEY_ALGORITHMS,
 	exportKey: KEY_ALGORITHMS,
 	wrapKey: ["AES-KW", "RSA-OAEP", "AES-CTR", "AES-CBC", "AES-GCM"],
@@ -94,6 +97,39 @@ export function createSubtle({ native, Buffer, toBytes, crypto, hashName }) {
 
 	/* ------------------------------------------------------------------- algorithm normalisation */
 
+	/* Argon2Params as Node reads the dictionary: members in lexicographic order, each converted as WebIDL does. */
+	const argonParams = (a) => {
+		const bytesMember = (name, mandatory) => {
+			const value = a[name];
+			if (value === undefined) {
+				if (mandatory) required(a, "Argon2Params", [name]);
+				return undefined;
+			}
+			if (value instanceof ArrayBuffer) return new Uint8Array(value);
+			if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+			throw typeError(`Failed to normalize algorithm: ${name} in passed algorithm is not instance of ArrayBuffer, Buffer, TypedArray, or DataView.`);
+		};
+		const numberMember = (name, mandatory, max) => {
+			const value = a[name];
+			if (value === undefined) {
+				if (mandatory) required(a, "Argon2Params", [name]);
+				return undefined;
+			}
+			const n = Number(value);
+			if (!Number.isFinite(n)) throw typeError(`Failed to normalize algorithm: ${name} in passed algorithm is not a finite number.`);
+			const whole = Math.trunc(n);
+			if (whole < 0 || whole > max) throw Object.assign(new TypeError(`Failed to normalize algorithm: ${name} in passed algorithm is outside the expected range of 0 to ${max}.`), { code: "ERR_OUT_OF_RANGE" });
+			return whole + 0;
+		};
+		const associatedData = bytesMember("associatedData", false);
+		const memory = numberMember("memory", true, 4294967295);
+		const nonce = bytesMember("nonce", true);
+		const parallelism = numberMember("parallelism", true, 4294967295);
+		const passes = numberMember("passes", true, 4294967295);
+		const secretValue = bytesMember("secretValue", false);
+		const version = numberMember("version", false, 255);
+		return { ...a, associatedData, memory, nonce, parallelism, passes, secretValue, version };
+	};
 	const canonical = (name, operation) => {
 		const upper = String(name).toUpperCase();
 		const found = OPERATIONS[operation].find((n) => n.toUpperCase() === upper);
@@ -101,10 +137,14 @@ export function createSubtle({ native, Buffer, toBytes, crypto, hashName }) {
 		return found;
 	};
 	const normalize = (algorithm, operation) => {
-		if (typeof algorithm === "string" || typeof algorithm === "number" || typeof algorithm === "boolean") return { name: canonical(algorithm, operation) };
+		if (typeof algorithm === "string" || typeof algorithm === "number" || typeof algorithm === "boolean") {
+			const named = { name: canonical(algorithm, operation) };
+			return ARGON2.includes(named.name) && (operation === "deriveBits" || operation === "deriveKey") ? argonParams(named) : named;
+		}
 		if (algorithm === null || typeof algorithm !== "object") throw typeError('The "algorithm" argument must be of type string or an instance of Object.');
 		if (algorithm.name === undefined) throw typeError("Failed to normalize algorithm: passed algorithm cannot be converted to 'Algorithm' because 'name' is required in 'Algorithm'.", "ERR_MISSING_OPTION");
-		return { ...algorithm, name: canonical(algorithm.name, operation) };
+		const normalized = { ...algorithm, name: canonical(algorithm.name, operation) };
+		return ARGON2.includes(normalized.name) && (operation === "deriveBits" || operation === "deriveKey") ? argonParams(normalized) : normalized;
 	};
 	const hashOf = (hash) => {
 		const given = typeof hash === "string" ? { name: hash } : hash;
@@ -133,6 +173,9 @@ export function createSubtle({ native, Buffer, toBytes, crypto, hashName }) {
 		HMAC: ["sign", "verify"],
 		PBKDF2: ["deriveKey", "deriveBits"],
 		HKDF: ["deriveKey", "deriveBits"],
+		Argon2d: ["deriveKey", "deriveBits"],
+		Argon2i: ["deriveKey", "deriveBits"],
+		Argon2id: ["deriveKey", "deriveBits"],
 	};
 	const publicUsages = { "RSASSA-PKCS1-v1_5": ["verify"], "RSA-PSS": ["verify"], "RSA-OAEP": ["encrypt", "wrapKey"], ECDSA: ["verify"], ECDH: [], Ed25519: ["verify"], Ed448: ["verify"], X25519: [], X448: [] };
 	const privateUsages = { "RSASSA-PKCS1-v1_5": ["sign"], "RSA-PSS": ["sign"], "RSA-OAEP": ["decrypt", "unwrapKey"], ECDSA: ["sign"], ECDH: ["deriveKey", "deriveBits"], Ed25519: ["sign"], Ed448: ["sign"], X25519: ["deriveKey", "deriveBits"], X448: ["deriveKey", "deriveBits"] };
@@ -214,10 +257,11 @@ export function createSubtle({ native, Buffer, toBytes, crypto, hashName }) {
 
 	const exportKey = (format, key) => {
 		const k = internal(key, "key");
+		if (ARGON2.includes(k.algorithm.name)) throw fail("NotSupportedError", `${k.algorithm.name} key export is not supported`);
 		if (!k.extractable) throw fail("InvalidAccessError", "key is not extractable");
 		const ko = k.keyObject;
 		const name = k.algorithm.name;
-		if (format === "raw") {
+		if (format === "raw" || (format === "raw-secret" && ko.type === "secret")) {
 			if (ko.type === "secret") return abOf(ko.export());
 			if (ko.type === "public" && (name === "ECDSA" || name === "ECDH")) {
 				const jwk = ko.export({ format: "jwk" });
@@ -250,8 +294,11 @@ export function createSubtle({ native, Buffer, toBytes, crypto, hashName }) {
 	const importKey = (format, keyData, algorithm, extractable, usages) => {
 		const a = normalize(algorithm, "importKey");
 		const name = a.name;
-		if (!["raw", "spki", "pkcs8", "jwk"].includes(format)) throw typeError(`Failed to execute 'importKey' on 'SubtleCrypto': 1st argument '${format}' is not a valid enum value of type KeyFormat.`, "ERR_INVALID_ARG_VALUE");
+		if (!["raw", "raw-secret", "spki", "pkcs8", "jwk"].includes(format)) throw typeError(`Failed to execute 'importKey' on 'SubtleCrypto': 1st argument '${format}' is not a valid enum value of type KeyFormat.`, "ERR_INVALID_ARG_VALUE");
 		if (!Array.isArray(usages)) throw typeError("Failed to execute 'importKey' on 'SubtleCrypto': 5th argument cannot be converted to sequence.");
+		usages.forEach((usage, i) => {
+			if (!USAGE_ORDER.includes(usage)) throw typeError(`Failed to execute 'importKey' on 'SubtleCrypto': 5th argument[${i}] '${usage}' is not a valid enum value of type KeyUsage.`, "ERR_INVALID_ARG_VALUE");
+		});
 		if (format === "jwk") {
 			if (keyData === null || typeof keyData !== "object" || Array.isArray(keyData)) throw typeError("Failed to execute 'importKey' on 'SubtleCrypto': 2nd argument is not of type JsonWebKey.");
 		} else if (!(keyData instanceof ArrayBuffer) && !ArrayBuffer.isView(keyData)) {
@@ -261,9 +308,19 @@ export function createSubtle({ native, Buffer, toBytes, crypto, hashName }) {
 		if (name.startsWith("RSA")) required(a, "RsaHashedImportParams", ["hash"]);
 		if (name === "ECDSA" || name === "ECDH") required(a, "EcKeyImportParams", ["namedCurve"]);
 		if (secretUsages[name]) {
+			if (ARGON2.includes(name)) {
+				if (format !== "raw-secret") throw fail("NotSupportedError", `Unable to import ${name} using ${format} format`);
+				for (const usage of usages) {
+					if (!USAGE_ORDER.includes(usage)) throw typeError(`Invalid key usage: ${usage}`, "ERR_INVALID_ARG_VALUE");
+					if (!secretUsages[name].includes(usage)) throw fail("SyntaxError", `Unsupported key usage for a ${name} key`);
+				}
+				if (extractable) throw fail("SyntaxError", `${name} keys are not extractable`);
+				if (!usages.length) throw fail("SyntaxError", "Usages cannot be empty when importing a secret key.");
+				return secretKey(Buffer.from(bytesOf(keyData, "keyData")), { name }, false, usages);
+			}
 			checkUsages(name, usages, secretUsages[name]);
 			let bytes;
-			if (format === "raw") bytes = Buffer.from(bytesOf(keyData, "keyData"));
+			if (format === "raw" || format === "raw-secret") bytes = Buffer.from(bytesOf(keyData, "keyData"));
 			else if (format === "jwk") {
 				if (keyData.kty !== "oct") throw fail("DataError", "Invalid JWK key type");
 				if (typeof keyData.k !== "string") throw fail("DataError", "Invalid keyData");
@@ -460,6 +517,28 @@ export function createSubtle({ native, Buffer, toBytes, crypto, hashName }) {
 
 	const deriveBitsBytes = (a, base, length) => {
 		const name = a.name;
+		if (ARGON2.includes(name)) {
+			if (a.nonce.length < 8) throw fail("OperationError", "nonce must be at least 8 bytes");
+			if (a.parallelism < 1 || a.parallelism > 16777215) throw fail("OperationError", "parallelism must be > 0 and <= 16777215");
+			if (a.memory < 8 * a.parallelism) throw fail("OperationError", "memory must be at least 8 times the degree of parallelism");
+			if (a.passes < 1) throw fail("OperationError", "passes must be > 0");
+			const version = a.version ?? 0x13;
+			if (version !== 0x13) throw fail("OperationError", `${version} is not a valid Argon2 version`);
+			if (length === null || length === undefined) throw fail("OperationError", "length cannot be null");
+			if (length % 8 !== 0) throw fail("OperationError", "length must be a multiple of 8");
+			if (length < 32) throw fail("OperationError", "length must be >= 32");
+			return argon2Derive(name.toLowerCase(), {
+				message: base.keyObject.export(),
+				nonce: a.nonce,
+				secret: a.secretValue ?? new Uint8Array(0),
+				associatedData: a.associatedData ?? new Uint8Array(0),
+				parallelism: a.parallelism,
+				tagLength: length / 8,
+				memory: a.memory,
+				passes: a.passes,
+				version,
+			});
+		}
 		if (name === "PBKDF2" || name === "HKDF") {
 			if (name === "PBKDF2") required(a, "Pbkdf2Params", ["salt", "iterations", "hash"]);
 			else required(a, "HkdfParams", ["hash", "salt", "info"]);
@@ -498,8 +577,13 @@ export function createSubtle({ native, Buffer, toBytes, crypto, hashName }) {
 	const deriveBits = (algorithm, baseKey, length) => {
 		const a = normalize(algorithm, "deriveBits");
 		const k = internal(baseKey, "baseKey");
-		sameAlgorithm(a, k);
 		if (!k.usages.includes("deriveBits")) throw fail("InvalidAccessError", "baseKey does not have deriveBits usage");
+		sameAlgorithm(a, k);
+		if (length !== undefined && length !== null) {
+			const n = Math.trunc(Number(length));
+			if (!(n >= 0 && n <= 4294967295)) throw typeError("Failed to execute 'deriveBits' on 'SubtleCrypto': 3rd argument is outside the expected range of 0 to 4294967295.", "ERR_OUT_OF_RANGE");
+			length = n;
+		}
 		return abOf(deriveBitsBytes(a, k, length ?? null));
 	};
 	const keyLengthOf = (derived) => {
@@ -509,14 +593,14 @@ export function createSubtle({ native, Buffer, toBytes, crypto, hashName }) {
 			return d.length;
 		}
 		if (d.name === "HMAC") return d.length ?? blockBits(hashOf(d.hash));
-		if (d.name === "HKDF" || d.name === "PBKDF2") return null;
+		if (d.name === "HKDF" || d.name === "PBKDF2" || ARGON2.includes(d.name)) return null;
 		throw fail("NotSupportedError", "Unrecognized algorithm name");
 	};
 	const deriveKey = (algorithm, baseKey, derivedKeyType, extractable, usages) => {
 		const a = normalize(algorithm, "deriveKey");
 		const k = internal(baseKey, "baseKey");
-		sameAlgorithm(a, k);
 		if (!k.usages.includes("deriveKey")) throw fail("InvalidAccessError", "baseKey does not have deriveKey usage");
+		sameAlgorithm(a, k);
 		const length = keyLengthOf(derivedKeyType);
 		const bits = deriveBitsBytes(a, k, length);
 		return importKey("raw", bits, derivedKeyType, extractable, usages);

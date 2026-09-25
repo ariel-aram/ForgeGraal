@@ -10,14 +10,19 @@
  */
 
 import { createAsymmetric } from "./node-crypto2.js";
+import { createArgon2, received } from "./node-argon2.js";
+import { Blake2Hmac, blake2Hkdf, blake2Name, blake2Pbkdf2, newBlake2 } from "./node-blake2.js";
 import { createSubtle } from "./node-subtle.js";
 
-const HASHES = ["md5", "sha1", "sha224", "sha256", "sha384", "sha512", "ripemd160", "sha3-224", "sha3-256", "sha3-384", "sha3-512", "shake128", "shake256"];
-const HASH_SIZES = { md5: 16, sha1: 20, sha224: 28, sha256: 32, sha384: 48, sha512: 64, ripemd160: 20, "sha3-224": 28, "sha3-256": 32, "sha3-384": 48, "sha3-512": 64 };
+const HASHES = ["md5", "sha1", "sha224", "sha256", "sha384", "sha512", "ripemd160", "sha3-224", "sha3-256", "sha3-384", "sha3-512", "shake128", "shake256", "blake2b512", "blake2s256"];
+const HASH_SIZES = { md5: 16, sha1: 20, sha224: 28, sha256: 32, sha384: 48, sha512: 64, ripemd160: 20, "sha3-224": 28, "sha3-256": 32, "sha3-384": 48, "sha3-512": 64, blake2b512: 64, blake2s256: 32 };
 
 const ALIASES = { rmd160: "ripemd160", "rsa-sha3-256": "sha3-256", "rsa-sha3-384": "sha3-384", "rsa-sha3-512": "sha3-512", "rsa-sha3-224": "sha3-224", "rsa-sha256": "sha256", "rsa-sha1": "sha1", "rsa-sha384": "sha384", "rsa-sha512": "sha512", "rsa-md5": "md5", sha256withrsaencryption: "sha256", sha1withrsaencryption: "sha1", sha512withrsaencryption: "sha512", "sha-1": "sha1", "sha-256": "sha256", "sha-384": "sha384", "sha-512": "sha512", sha2: "sha256" };
 
-function createCrypto({ native, Buffer, stream, toBytes }) {
+function createCrypto({ native, Buffer, stream, toBytes: plainBytes }) {
+	// The shared helper knows hex and UTF-8 only; `update(data, "base64")` and the rest go through Buffer.
+	const toBytes = (value, encoding) =>
+		typeof value === "string" && encoding && encoding !== "utf8" && encoding !== "utf-8" && encoding !== "buffer" && encoding !== "hex" ? new Uint8Array(Buffer.from(value, encoding)) : plainBytes(value, encoding);
 	const buf = (bytes) => Buffer.from(bytes);
 	const bytesOf = (value, encoding) => {
 		if (value && typeof value === "object" && value._keyData) return value._keyData;
@@ -40,14 +45,14 @@ function createCrypto({ native, Buffer, stream, toBytes }) {
 	};
 	const hashName = (algorithm) => {
 		const key = String(algorithm).toLowerCase();
-		const name = ALIASES[key] ?? key;
+		const name = blake2Name(key) ?? ALIASES[key] ?? key;
 		if (!HASHES.includes(name)) {
 			throw new Error("Digest method not supported");
 		}
 		return name;
 	};
 	const invalidArg = (name, expected, value) =>
-		Object.assign(new TypeError(`The "${name}" argument must be ${expected}. Received ${value === null ? "null" : typeof value}`), { code: "ERR_INVALID_ARG_TYPE" });
+		Object.assign(new TypeError(`The "${name}" argument must be ${expected}. Received ${received(value)}`), { code: "ERR_INVALID_ARG_TYPE" });
 
 	/* ---------------------------------------------------------------- hash and hmac */
 
@@ -56,11 +61,17 @@ function createCrypto({ native, Buffer, stream, toBytes }) {
 			super(options);
 			this.algorithm = hashName(algorithm);
 			this._outputLength = options?.outputLength;
-			if (this._outputLength !== undefined && !Number.isInteger(this._outputLength)) throw invalidArg("options.outputLength", "of type number", this._outputLength);
+			if (this._outputLength !== undefined && typeof this._outputLength !== "number") {
+				throw Object.assign(new TypeError(`The "options.outputLength" property must be of type number. Received ${received(this._outputLength)}`), { code: "ERR_INVALID_ARG_TYPE" });
+			}
+			if (this._outputLength !== undefined && !Number.isInteger(this._outputLength)) {
+				throw Object.assign(new RangeError(`The value of "options.outputLength" is out of range. It must be an integer. Received ${this._outputLength}`), { code: "ERR_OUT_OF_RANGE" });
+			}
 			if (this._outputLength !== undefined && !this.algorithm.startsWith("shake") && this._outputLength !== HASH_SIZES[this.algorithm]) {
 				throw Object.assign(new Error("error:030000B2:digital envelope routines::not XOF or invalid length"), { code: "ERR_OSSL_EVP_NOT_XOF_OR_INVALID_LENGTH" });
 			}
 			this._chunks = [];
+			this._blake2 = blake2Name(this.algorithm) ? newBlake2(this.algorithm) : null;
 			this._done = false;
 		}
 		update(data, encoding) {
@@ -68,12 +79,14 @@ function createCrypto({ native, Buffer, stream, toBytes }) {
 			if (typeof data !== "string" && !ArrayBuffer.isView(data) && !(data instanceof ArrayBuffer)) {
 				throw invalidArg("data", "of type string or an instance of Buffer, TypedArray, or DataView", data);
 			}
-			this._chunks.push(toBytes(data, encoding));
+			if (this._blake2) this._blake2.update(toBytes(data, encoding));
+			else this._chunks.push(toBytes(data, encoding));
 			return this;
 		}
 		digest(encoding) {
 			if (this._done) throw Object.assign(new Error("Digest already called"), { code: "ERR_CRYPTO_HASH_FINALIZED" });
 			this._done = true;
+			if (this._blake2) return out(this._blake2.digest(), encoding);
 			if (this.algorithm.startsWith("shake")) {
 				const bits = this.algorithm === "shake128" ? 128 : 256;
 				return out(native.keccak(bits, concat(this._chunks), this._outputLength ?? bits / 8), encoding);
@@ -81,8 +94,10 @@ function createCrypto({ native, Buffer, stream, toBytes }) {
 			return out(native.hash(this.algorithm, concat(this._chunks)), encoding);
 		}
 		copy(options) {
+			if (this._done) throw Object.assign(new Error("Digest already called"), { code: "ERR_CRYPTO_HASH_FINALIZED" });
 			const clone = new Hash(this.algorithm, options);
 			clone._chunks = [...this._chunks];
+			if (this._blake2) clone._blake2 = this._blake2.copy();
 			return clone;
 		}
 		_transform(chunk, encoding, callback) {
@@ -101,15 +116,18 @@ function createCrypto({ native, Buffer, stream, toBytes }) {
 			this.algorithm = hashName(algorithm);
 			this._key = bytesOf(key);
 			this._chunks = [];
+			this._blake2 = blake2Name(this.algorithm) ? new Blake2Hmac(this.algorithm, this._key) : null;
 			this._done = false;
 		}
 		update(data, encoding) {
 			if (this._done) throw Object.assign(new Error("Digest already called"), { code: "ERR_CRYPTO_HASH_FINALIZED" });
-			this._chunks.push(toBytes(data, encoding));
+			if (this._blake2) this._blake2.update(toBytes(data, encoding));
+			else this._chunks.push(toBytes(data, encoding));
 			return this;
 		}
 		digest(encoding) {
 			this._done = true;
+			if (this._blake2) return out(this._blake2.digest(), encoding);
 			return out(native.hmac(this.algorithm, this._key, concat(this._chunks)), encoding);
 		}
 		_transform(chunk, encoding, callback) {
@@ -192,7 +210,9 @@ function createCrypto({ native, Buffer, stream, toBytes }) {
 
 	const pbkdf2Sync = (password, salt, iterations, keylen, digest) => {
 		if (!Number.isInteger(iterations) || iterations < 1) throw Object.assign(new RangeError('The value of "iterations" is out of range.'), { code: "ERR_OUT_OF_RANGE" });
-		return buf(native.pbkdf2(digestOf(digest), bytesOf(password), bytesOf(salt), iterations, keylen));
+		const name = digestOf(digest);
+		if (blake2Name(name)) return buf(blake2Pbkdf2(name, bytesOf(password), bytesOf(salt), iterations, keylen));
+		return buf(native.pbkdf2(name, bytesOf(password), bytesOf(salt), iterations, keylen));
 	};
 	const pbkdf2 = (password, salt, iterations, keylen, digest, callback) => {
 		let result;
@@ -206,7 +226,8 @@ function createCrypto({ native, Buffer, stream, toBytes }) {
 	};
 
 	const hkdfSync = (digest, ikm, salt, info, keylen) => {
-		const derived = native.hkdf(digestOf(digest), bytesOf(ikm), bytesOf(salt), bytesOf(info), keylen);
+		const name = digestOf(digest);
+		const derived = blake2Name(name) ? blake2Hkdf(name, bytesOf(ikm), bytesOf(salt), bytesOf(info), keylen) : native.hkdf(name, bytesOf(ikm), bytesOf(salt), bytesOf(info), keylen);
 		return derived.buffer.slice(derived.byteOffset, derived.byteOffset + derived.byteLength);
 	};
 	const hkdf = (digest, ikm, salt, info, keylen, callback) => {
@@ -529,7 +550,10 @@ function createCrypto({ native, Buffer, stream, toBytes }) {
 	/* ------------------------------------------------------------------- the module */
 
 	const asym = createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, concat, KeyObject });
+	const { argon2, argon2Sync } = createArgon2({ Buffer });
 	const crypto = {
+		argon2,
+		argon2Sync,
 		createHash: (algorithm, options) => new Hash(algorithm, options),
 		createHmac: (algorithm, key, options) => new Hmac(algorithm, key, options),
 		hash: (algorithm, data, outputEncoding = "hex") => new Hash(algorithm).update(data).digest(outputEncoding),

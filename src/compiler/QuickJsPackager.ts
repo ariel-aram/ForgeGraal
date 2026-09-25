@@ -185,6 +185,8 @@ const RUNTIME_FILES = [
 	"whatwg-url.js",
 	"idna-data.js",
 	"node-crypto-dh.js",
+	"node-blake2.js",
+	"node-argon2.js",
 	"node-http2.js",
 	"node-http2-data.js",
 	"node-dns.js",

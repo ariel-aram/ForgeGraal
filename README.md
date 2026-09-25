@@ -215,7 +215,7 @@ served from a packaged `linux-modern-x64` build; **`ws`** as a WebSocket server 
 binary frames; **discord.js 14** with **ForgeScript**, whose REST client makes a real request to Discord; and native
 addons such as **@napi-rs/canvas**, **sharp** and **better-sqlite3**.
 
-Not provided, and said so when used: the post-quantum key types (ML-KEM, ML-DSA, SLH-DSA), AES-OCB, cSHAKE/KMAC and Argon2/BLAKE2 in `crypto`. `cluster` runs on `fork()`: workers, their events and messages, and several workers listening on one port.
+Not provided, and said so when used: the post-quantum key types (ML-KEM, ML-DSA, SLH-DSA), AES-OCB, cSHAKE/KMAC and `SubtleCrypto.supports` in `crypto`. BLAKE2b512 and BLAKE2s256 (hash, HMAC, PBKDF2, HKDF) and Argon2 (`crypto.argon2`, `argon2Sync`, and Web Crypto Argon2d/i/id) are pure JavaScript on the host, so they run at interpreter speed: about 0.4 ms per Argon2 memory block and 1 to 2 MB/s of BLAKE2 input; `createSign`/`createVerify` with a BLAKE2 digest are not provided. `cluster` runs on `fork()`: workers, their events and messages, and several workers listening on one port.
 The host cannot pass a socket descriptor, so the primary owns the listening socket and proxies each connection to a worker
 in round-robin order (workers bind a private 127.0.0.1 port); a proxied connection reports `127.0.0.1` as its peer address,
 sending a handle to a worker (`worker.send(msg, handle)`) throws `ERR_FEATURE_UNAVAILABLE_ON_PLATFORM`, and `listen` on a unix
