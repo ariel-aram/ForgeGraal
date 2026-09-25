@@ -631,26 +631,9 @@ function createUnavailable(EventEmitter) {
 			createSocket: notAvailable("dgram.createSocket()", "the host has TCP sockets only, not UDP"),
 			Socket: class Socket {},
 		},
-		inspector: {
-			open() {},
-			close() {},
-			url: () => undefined,
-			waitForDebugger: notAvailable("inspector.waitForDebugger()", "there is no debugger protocol"),
-			Session: class Session extends EventEmitter {
-				connect() {
-					throw unavailable("inspector.Session", "there is no debugger protocol");
-				}
-			},
-			console: globalThis.console,
-		},
 		trace_events: {
 			createTracing: () => ({ enable() {}, disable() {}, enabled: false, categories: "" }),
 			getEnabledCategories: () => undefined,
-		},
-		repl: {
-			start: notAvailable("repl.start()", "there is no interactive terminal session"),
-			REPLServer: class REPLServer extends EventEmitter {},
-			builtinModules: [],
 		},
 		wasi: {
 			WASI: class WASI {

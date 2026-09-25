@@ -74,6 +74,8 @@ const DIFFERENTIAL: Array<[string, string[]]> = [
 	["cipher-corpus.cjs", []],
 	["crypto3-corpus.cjs", []],
 	["webcrypto-corpus.cjs", []],
+	["repl-corpus.cjs", []],
+	["inspector-corpus.cjs", []],
 ];
 
 // The Intl corpora print dates in the machine's zone and use its default locale: pin both, for Node.js and the host alike.

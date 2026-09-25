@@ -1150,27 +1150,12 @@ function installExtras(deps) {
 		if (c) for (const [k, v] of Object.entries(errno)) if (!(k in c)) c[k] = v;
 	}
 
-	// ---- async_hooks, repl, diagnostics_channel: small members -----------------------------------------------------------
+	// ---- async_hooks: small members -----------------------------------------------------------
 	{
 		const ah = builtins.async_hooks;
 		if (ah) {
 			ah.executionAsyncResource ??= () => ({});
 			ah.asyncWrapProviders ??= {};
-		}
-		const repl = builtins.repl;
-		if (repl && !repl.__graakUnavailable) {
-			repl.REPL_MODE_SLOPPY ??= Symbol("repl-sloppy");
-			repl.REPL_MODE_STRICT ??= Symbol("repl-strict");
-			repl.writer ??= (value) => util.inspect(value);
-			repl.Recoverable ??= class Recoverable extends SyntaxError {};
-			repl.isValidSyntax ??= (code) => {
-				try {
-					new Function(code);
-					return true;
-				} catch {
-					return false;
-				}
-			};
 		}
 	}
 

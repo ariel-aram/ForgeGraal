@@ -65,6 +65,8 @@ import * as web from "./node-web.js";
 import { Segmenter } from "./segmenter.js";
 import { createTestModule } from "./node-test.js";
 import { createWasi } from "./node-wasi.js";
+import { createRepl } from "./node-repl.js";
+import { createInspector } from "./node-inspector.js";
 import { createDns } from "./node-dns.js";
 
 // A single-file build runs from its executable's payload: os and std are wrapped to read the program from it.
@@ -2132,6 +2134,37 @@ if (streamingChild) {
 		configurable: true,
 	});
 	if (processModule.env.NODE_UNIQUE_ID !== undefined && processModule.connected) void builtins.cluster;
+}
+
+/*
+ * node:repl and node:inspector are built on first use, as node:test is: a program that never opens a REPL or a debugger
+ * session does not pay for them.
+ */
+{
+	let replModule;
+	let inspectorModule;
+	const loadRepl = () =>
+		(replModule ??= createRepl({
+			EventEmitter,
+			readline: builtins.readline,
+			util,
+			vm: builtins.vm,
+			fs,
+			path: pathModule,
+			process: processModule,
+			moduleModule: builtins.module,
+			createRequire,
+			signal: os.signal ? (number, handler) => os.signal(number, handler) : undefined,
+		}));
+	const loadInspector = () =>
+		(inspectorModule ??= createInspector({ EventEmitter, util, vm: builtins.vm, process: processModule }));
+	Object.defineProperty(builtins, "repl", { get: loadRepl, enumerable: true, configurable: true });
+	Object.defineProperty(builtins, "inspector", { get: loadInspector, enumerable: true, configurable: true });
+	Object.defineProperty(builtins, "inspector/promises", {
+		get: () => loadInspector().promises,
+		enumerable: true,
+		configurable: true,
+	});
 }
 
 /* -------------------------------------------------------- CommonJS require */

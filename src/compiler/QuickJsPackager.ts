@@ -192,6 +192,8 @@ const RUNTIME_FILES = [
 	"segmenter-tables.js",
 	"native-modules.js",
 	"node-sea.js",
+	"node-repl.js",
+	"node-inspector.js",
 ];
 
 export interface QuickJsBuildOptions {
