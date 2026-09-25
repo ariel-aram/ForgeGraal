@@ -164,6 +164,7 @@ const RUNTIME_FILES = [
 	"node-fetch.js",
 	"node-buffer.js",
 	"node-misc.js",
+	"node-v8.js",
 	"node-inspect.js",
 	"node-url.js",
 	"intl.js",

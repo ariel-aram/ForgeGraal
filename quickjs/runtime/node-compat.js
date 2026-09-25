@@ -46,6 +46,7 @@ import {
 	setPromiseStateReader,
 } from "./node-inspect.js";
 import * as misc from "./node-misc.js";
+import * as v8Serdes from "./node-v8.js";
 import { createConsumers, createStreamModule } from "./node-stream.js";
 import {
 	createModuleModule,
@@ -2044,7 +2045,7 @@ const builtins = {
 		notImplemented("worker_threads", "This engine build has no Worker implementation."),
 	child_process: childProcessModule,
 	async_hooks: misc.asyncHooks,
-	v8: misc.v8,
+	v8: { ...misc.v8, ...v8Serdes },
 	tty: misc.createTty({ isatty: os.isatty, write: (text) => std.out.puts(text) }),
 	readline: createReadlineModule(),
 	"readline/promises": createReadlineModule(),
