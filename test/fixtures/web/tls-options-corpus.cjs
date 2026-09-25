@@ -41,8 +41,6 @@ async function exchange(label, serverOptions, clientOptions) {
 	const seen = await Promise.race([serverSeen, new Promise((resolve) => setTimeout(() => resolve("no server event"), 400))]);
 	client.destroy();
 	await new Promise((resolve) => server.close(resolve));
-	// A server built on mbedTLS answers a version mismatch with a handshake_failure alert where OpenSSL sends protocol_version.
-	if (outcome.error && label.includes("min TLSv1.3")) outcome.error = "failed";
 	// A client that gives up leaves the server's view to a race, so only a completed handshake reports both sides.
 	line(label, outcome.error ? { client: outcome } : { client: outcome, server: seen });
 }
@@ -69,6 +67,76 @@ async function exchange(label, serverOptions, clientOptions) {
 	await exchange("custom checkServerIdentity error", { key: KEY, cert: CERT }, { ca: CERT, servername: "graak.test", checkServerIdentity: () => Object.assign(new Error("nope"), { code: "MY_CODE" }) });
 	await exchange("custom checkServerIdentity accepts mismatch", { key: KEY, cert: CERT }, { ca: CERT, servername: "other.test", checkServerIdentity: () => undefined });
 	await exchange("secureContext", { key: KEY, cert: CERT }, { secureContext: tls.createSecureContext({ ca: CERT }), servername: "graak.test" });
+
+	// Cipher suites, session resumption and renegotiation.
+	{
+		const server = tls.createServer({ key: KEY, cert: CERT }, (socket) => {
+			socket.on("data", (d) => socket.write("echo:" + d));
+			socket.on("error", () => {});
+		});
+		await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+		const port = server.address().port;
+		const conn = (options) =>
+			new Promise((resolve) => {
+				const c = tls.connect({ host: "127.0.0.1", port, ca: CERT, servername: "graak.test", ...options });
+				c.once("secureConnect", () => resolve(c));
+				c.on("error", (err) => resolve(err.code || err.message));
+			});
+		for (const ciphers of ["ECDHE-RSA-AES128-GCM-SHA256", "ECDHE-RSA-AES256-GCM-SHA384:!aNULL", "AES128-GCM-SHA256", "ECDHE-RSA-AES256-SHA384", "ECDHE-RSA-CHACHA20-POLY1305"]) {
+			const c = await conn({ ciphers, maxVersion: "TLSv1.2" });
+			line("ciphers " + ciphers, typeof c === "string" ? c : [c.getProtocol(), c.getCipher()]);
+			if (typeof c !== "string") c.destroy();
+		}
+		try {
+			tls.connect({ host: "127.0.0.1", port, ciphers: "nonsense", maxVersion: "TLSv1.2" }).on("error", () => {});
+			line("ciphers nonsense", "accepted");
+		} catch (err) {
+			line("ciphers nonsense", ["throws", err.code, err.message]);
+		}
+		const only13 = await conn({ ciphers: "TLS_AES_128_GCM_SHA256" });
+		line("ciphers tls 1.3 only", [only13.getProtocol(), only13.getCipher()]);
+		only13.destroy();
+		const listed = tls.getCiphers();
+		line("getCiphers", [Array.isArray(listed), listed.includes("ecdhe-rsa-aes128-gcm-sha256"), listed.every((n) => n === n.toLowerCase()), listed.includes("aes128-gcm-sha256")]);
+		for (const maxVersion of ["TLSv1.2", "TLSv1.3"]) {
+			const first = await conn({ maxVersion });
+			const session = await new Promise((resolve) => {
+				first.once("session", resolve);
+				first.on("data", () => {});
+				first.write("hi");
+				setTimeout(() => resolve(first.getSession()), 500);
+			});
+			line(maxVersion + " session", [first.isSessionReused(), Buffer.isBuffer(session), session.length > 0]);
+			first.destroy();
+			const second = await conn({ maxVersion, session });
+			line(maxVersion + " resumed", [second.isSessionReused(), second.getProtocol()]);
+			second.destroy();
+			const fresh = await conn({ maxVersion });
+			line(maxVersion + " fresh", [fresh.isSessionReused()]);
+			fresh.destroy();
+		}
+		const renegotiating = await conn({ maxVersion: "TLSv1.2" });
+		const outcome = await new Promise((resolve) => {
+			const started = renegotiating.renegotiate({ rejectUnauthorized: true }, (err) => resolve([started, err ? err.code || err.message : null]));
+		});
+		line("renegotiate 1.2", outcome);
+		renegotiating.on("data", () => {});
+		renegotiating.write("after");
+		line("after renegotiation", await new Promise((resolve) => renegotiating.once("data", (d) => resolve(String(d)))));
+		renegotiating.destroy();
+		const modern = await conn({});
+		const outcome13 = await new Promise((resolve) => {
+			try {
+				const started = modern.renegotiate({}, (err) => resolve(["callback", err ? err.code : null]));
+				if (started === false) resolve(["false"]);
+			} catch (err) {
+				resolve(["throws", err.code]);
+			}
+		});
+		line("renegotiate 1.3", outcome13);
+		modern.destroy();
+		await new Promise((resolve) => server.close(resolve));
+	}
 
 	// getPeerCertificate
 	const server = tls.createServer({ key: KEY, cert: CERT }, (socket) => socket.end());

@@ -93,6 +93,9 @@
     "@biomejs/biome": "^2.5.13",
     "@tryforge/forgescript": "^2.7.1",
     "@types/node": "^22.13.9",
-    "typescript": "^5.8.2"
+    "tr46": "^5.1.1",
+    "typescript": "^5.8.2",
+    "webidl-conversions": "^7.0.0",
+    "whatwg-url": "^14.2.0"
   }
 }

@@ -4,15 +4,14 @@
  * API, and a client (connect). It runs over the host's sockets: cleartext (h2c with prior knowledge, as Node) and TLS
  * with ALPN `h2`.
  *
- * Not provided, and said so when used: the HTTP/1.1 Upgrade to h2c (Node has no server side for it either),
- * `respondWithFD` on descriptors that are not regular files, stream priority (accepted, ignored, as nghttp2 does by
- * default) and `origin` frames.
+ * Also here: ORIGIN and ALTSVC frames, and the HTTP/1.1 Upgrade to h2c on a cleartext server (which Node does not have).
+ * Stream priority is read and ignored, as Node does.
  */
 
 import { HPACK_STATIC, HTTP2_CONSTANTS, HUFFMAN_CODES, HUFFMAN_LENGTHS } from "./node-http2-data.js";
 
 const C = HTTP2_CONSTANTS;
-const FRAME = { DATA: 0, HEADERS: 1, PRIORITY: 2, RST_STREAM: 3, SETTINGS: 4, PUSH_PROMISE: 5, PING: 6, GOAWAY: 7, WINDOW_UPDATE: 8, CONTINUATION: 9 };
+const FRAME = { DATA: 0, HEADERS: 1, PRIORITY: 2, RST_STREAM: 3, SETTINGS: 4, PUSH_PROMISE: 5, PING: 6, GOAWAY: 7, WINDOW_UPDATE: 8, CONTINUATION: 9, ALTSVC: 10, ORIGIN: 12 };
 const FLAG = { END_STREAM: 1, ACK: 1, END_HEADERS: 4, PADDED: 8, PRIORITY: 0x20 };
 const PREFACE = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 const MAX_WINDOW = 2147483647;
@@ -91,6 +90,8 @@ const messages = {
 	ERR_HTTP2_ALTSVC_INVALID_ORIGIN: () => "HTTP/2 ALTSVC frames require a valid origin",
 	ERR_HTTP2_UNSUPPORTED_PROTOCOL: (p) => `protocol "${p}" is unsupported.`,
 	ERR_HTTP2_STREAM_SELF_DEPENDENCY: () => "A stream cannot depend on itself",
+	ERR_HTTP2_INVALID_ORIGIN: () => "HTTP/2 ORIGIN frames require a valid origin",
+	ERR_HTTP2_ORIGIN_LENGTH: () => "HTTP/2 ORIGIN frames are limited to 16382 bytes",
 };
 /* Which class Node gives each error: most are plain Errors, a few are TypeErrors or RangeErrors. */
 const TYPE_ERRORS = new Set([
@@ -597,6 +598,7 @@ function createHttp2({ net, tls, http, fs, url: urlModule }, EventEmitter, strea
 			this._sendSettings(options.settings ?? {}, true);
 			const initialWindow = options.initialWindowSize ?? undefined;
 			if (options.windowSize !== undefined && options.windowSize > 65535) this._sendWindowUpdate(0, options.windowSize - 65535, true);
+			if (type === SESSION_SERVER && Array.isArray(options.origins) && options.origins.length) this.origin(options.origins);
 			void initialWindow;
 		}
 
@@ -1028,7 +1030,11 @@ function createHttp2({ net, tls, http, fs, url: urlModule }, EventEmitter, strea
 				case FRAME.PRIORITY:
 					if (streamId === 0) throw Object.assign(new Error("PRIORITY on stream 0"), { h2code: ERR.PROTOCOL_ERROR });
 					if (payload.length !== 5) throw Object.assign(new Error("bad PRIORITY"), { h2code: ERR.FRAME_SIZE_ERROR });
-					return undefined;
+					return this._applyPriority(streamId, payload);
+				case FRAME.ORIGIN:
+					return this._onOrigin(streamId, payload);
+				case FRAME.ALTSVC:
+					return this._onAltsvc(streamId, payload);
 				case FRAME.RST_STREAM:
 					return this._onRst(streamId, payload);
 				case FRAME.SETTINGS:
@@ -1090,6 +1096,7 @@ function createHttp2({ net, tls, http, fs, url: urlModule }, EventEmitter, strea
 			let data = this._unpad(flags, payload);
 			if (flags & FLAG.PRIORITY) {
 				if (data.length < 5) throw Object.assign(new Error("bad priority"), { h2code: ERR.FRAME_SIZE_ERROR });
+				this._applyPriority(streamId, data.subarray(0, 5));
 				data = data.subarray(5);
 			}
 			this._headerBlock = { streamId, chunks: [data], endStream: Boolean(flags & FLAG.END_STREAM), push: false };
@@ -1216,6 +1223,12 @@ function createHttp2({ net, tls, http, fs, url: urlModule }, EventEmitter, strea
 				}
 				return;
 			}
+			this._applyRemoteSettings(payload);
+			this._frame(FRAME.SETTINGS, FLAG.ACK, 0, null);
+			this._pump();
+		}
+		/* The peer's settings (a SETTINGS frame's payload, or the HTTP2-Settings header of an upgrade), without the acknowledgement. */
+		_applyRemoteSettings(payload) {
 			if (payload.length % 6) throw Object.assign(new Error("bad SETTINGS"), { h2code: ERR.FRAME_SIZE_ERROR });
 			// The 100 assumed until now is replaced by the protocol default once the peer has spoken.
 			if (!this._remoteSettingsReceived) this._remote.maxConcurrentStreams = 4294967295;
@@ -1255,10 +1268,8 @@ function createHttp2({ net, tls, http, fs, url: urlModule }, EventEmitter, strea
 						break;
 				}
 			}
-			this._frame(FRAME.SETTINGS, FLAG.ACK, 0, null);
 			this._remoteSettingsReceived = true;
 			this.emit("remoteSettings", this.remoteSettings);
-			this._pump();
 		}
 		_onPing(flags, streamId, payload) {
 			if (streamId !== 0) throw Object.assign(new Error("PING on a stream"), { h2code: ERR.PROTOCOL_ERROR });
@@ -1314,6 +1325,33 @@ function createHttp2({ net, tls, http, fs, url: urlModule }, EventEmitter, strea
 			this._pump();
 		}
 
+		/* A PRIORITY frame (or the priority fields of HEADERS) is read and dropped: only a stream depending on itself is an error. */
+		_applyPriority(streamId, five) {
+			if ((five.readUInt32BE(0) & 0x7fffffff) === streamId) this._sendRst(streamId, ERR.PROTOCOL_ERROR);
+		}
+		/* ---- ORIGIN (RFC 8336) and ALTSVC (RFC 7838) */
+		_onOrigin(streamId, payload) {
+			if (streamId !== 0 || this._type !== SESSION_CLIENT) return;
+			const origins = [];
+			for (let at = 0; at + 2 <= payload.length; ) {
+				const length = payload.readUInt16BE(at);
+				if (at + 2 + length > payload.length) break;
+				origins.push(payload.toString("latin1", at + 2, at + 2 + length));
+				at += 2 + length;
+			}
+			this.originSet = [...(this.originSet ?? []), ...origins.filter((o) => !(this.originSet ?? []).includes(o))];
+			this.emit("origin", origins);
+		}
+		_onAltsvc(streamId, payload) {
+			if (this._type !== SESSION_CLIENT || payload.length < 2) return;
+			const length = payload.readUInt16BE(0);
+			if (2 + length > payload.length) return;
+			const origin = payload.toString("latin1", 2, 2 + length);
+			const alt = payload.toString("latin1", 2 + length);
+			if (streamId === 0 && !origin) return;
+			if (streamId !== 0 && origin) return;
+			this.emit("altsvc", alt, origin, streamId);
+		}
 		/* ---- streams */
 		_removeStream(stream) {
 			this._streams.delete(stream.id);
@@ -1382,7 +1420,7 @@ function createHttp2({ net, tls, http, fs, url: urlModule }, EventEmitter, strea
 			const open = !this._closedByProtocol;
 			return {
 				state: !open ? C.NGHTTP2_STREAM_STATE_CLOSED : this._localClosed && this._remoteClosed ? C.NGHTTP2_STREAM_STATE_CLOSED : this._localClosed ? C.NGHTTP2_STREAM_STATE_HALF_CLOSED_LOCAL : this._remoteClosed ? C.NGHTTP2_STREAM_STATE_HALF_CLOSED_REMOTE : C.NGHTTP2_STREAM_STATE_OPEN,
-				weight: 16,
+				weight: this._session?._type === SESSION_SERVER ? 16 : 0,
 				sumDependencyWeight: 0,
 				localClose: this._localClosed ? 1 : 0,
 				remoteClose: this._remoteClosed ? 1 : 0,
@@ -1407,6 +1445,7 @@ function createHttp2({ net, tls, http, fs, url: urlModule }, EventEmitter, strea
 			}
 			return this;
 		}
+		/* Accepted and ignored, as in Node.js: RFC 9113 deprecated the priority scheme and nghttp2 is built without it. */
 		priority() {}
 		sendTrailers(headers) {
 			if (this._trailersSent) throw h2Error("ERR_HTTP2_TRAILERS_ALREADY_SENT");
@@ -1714,19 +1753,33 @@ function createHttp2({ net, tls, http, fs, url: urlModule }, EventEmitter, strea
 				this.destroy(err);
 				return;
 			}
-			if (!stat.isFile()) {
+			const regular = stat.isFile();
+			if (!regular && (options.offset !== undefined || options.length !== undefined)) {
+				this.destroy(h2Error("ERR_HTTP2_SEND_FILE_NOSEEK"));
+				return;
+			}
+			if (!regular && !stat.isFIFO() && !stat.isSocket() && !stat.isCharacterDevice()) {
 				this.destroy(h2Error("ERR_HTTP2_SEND_FILE"));
 				return;
 			}
-			const offset = options.offset ?? 0;
-			const length = options.length !== undefined && options.length >= 0 ? options.length : stat.size - offset;
 			const out = { ...headers };
-			if (options.statCheck && options.statCheck(stat, out, { offset, length }) === false) return;
-			if (out["content-length"] === undefined) out["content-length"] = length;
-			const data = Buffer.alloc(length);
-			fs.readSync(fd, data, 0, length, offset);
+			if (regular) {
+				const offset = options.offset ?? 0;
+				const length = options.length !== undefined && options.length >= 0 ? options.length : stat.size - offset;
+				if (options.statCheck && options.statCheck(stat, out, { offset, length }) === false) return;
+				if (out["content-length"] === undefined) out["content-length"] = length;
+				const data = Buffer.alloc(length);
+				fs.readSync(fd, data, 0, length, offset);
+				this.respond(out, { endStream: false, waitForTrailers: options.waitForTrailers });
+				this.end(data);
+				return;
+			}
+			// A pipe, socket or device has no size: what it yields until it ends is the body.
+			if (options.statCheck && options.statCheck(stat, out, { offset: 0, length: -1 }) === false) return;
 			this.respond(out, { endStream: false, waitForTrailers: options.waitForTrailers });
-			this.end(data);
+			const source = fs.createReadStream(null, { fd, autoClose: false });
+			source.on("error", (err) => this.destroy(err));
+			source.pipe(this);
 		}
 	}
 
@@ -1760,7 +1813,7 @@ function createHttp2({ net, tls, http, fs, url: urlModule }, EventEmitter, strea
 	/* ---------------------------------------------------------------------------------------- server */
 
 	function setupServerSession(server, socket, options) {
-		const session = new Http2Session(SESSION_SERVER, socket, { ...options, settings: options.settings });
+		const session = new ServerHttp2Session(SESSION_SERVER, socket, { ...options, settings: options.settings });
 		session._server = server;
 		server._sessions.add(session);
 		session.once("close", () => server._sessions.delete(session));
@@ -1833,9 +1886,83 @@ function createHttp2({ net, tls, http, fs, url: urlModule }, EventEmitter, strea
 					socket.destroy();
 					return;
 				}
-				// Cleartext HTTP/2 with prior knowledge: anything else is not ours.
+				// Cleartext: HTTP/2 with prior knowledge, the HTTP/1.1 Upgrade to h2c, or (with allowHTTP1) plain HTTP/1.1.
+				this._sniff(socket);
+			}
+			/* Reads the first bytes of a cleartext connection to tell the three apart. */
+			_sniff(socket) {
+				let seen = Buffer.alloc(0);
+				const decide = (chunk) => {
+					seen = Buffer.concat([seen, chunk]);
+					const prefaceStart = Buffer.from(PREFACE, "latin1");
+					const compare = seen.subarray(0, Math.min(seen.length, prefaceStart.length));
+					if (compare.equals(prefaceStart.subarray(0, compare.length))) {
+						if (seen.length < 4 && compare.length < 4) return false; // "PRI " is enough to know; a shorter start is ambiguous
+						socket.removeListener("data", decide);
+						const session = setupServerSession(this, socket, this._h2options);
+						session._receive(seen);
+						return true;
+					}
+					const headEnd = seen.indexOf("\r\n\r\n");
+					if (headEnd < 0) {
+						if (seen.length > 16384) {
+							socket.removeListener("data", decide);
+							socket.destroy();
+							return true;
+						}
+						return false;
+					}
+					socket.removeListener("data", decide);
+					const head = seen.subarray(0, headEnd).toString("latin1");
+					const upgrade = this._parseUpgrade(head);
+					if (upgrade && seen.length === headEnd + 4) {
+						this._upgradeToH2c(socket, upgrade);
+						return true;
+					}
+					if (this._allowHTTP1 || upgrade) {
+						socket.unshift(seen);
+						this._http1().emit("connection", socket);
+						return true;
+					}
+					if (this.listenerCount("unknownProtocol")) {
+						socket.unshift(seen);
+						this.emit("unknownProtocol", socket);
+						return true;
+					}
+					socket.destroy();
+					return true;
+				};
+				socket.on("data", decide);
+			}
+			_parseUpgrade(head) {
+				const lines = head.split("\r\n");
+				const request = /^([A-Z]+) (\S+) HTTP\/1\.1$/.exec(lines[0]);
+				if (!request) return null;
+				const headers = {};
+				for (const line of lines.slice(1)) {
+					const at = line.indexOf(":");
+					if (at > 0) headers[line.slice(0, at).trim().toLowerCase()] = line.slice(at + 1).trim();
+				}
+				if (!/(^|,\s*)upgrade(\s*,|$)/i.test(headers.connection ?? "") || String(headers.upgrade ?? "").toLowerCase() !== "h2c" || headers["http2-settings"] === undefined) return null;
+				if ((headers["content-length"] ?? "0") !== "0" || headers["transfer-encoding"] !== undefined) return null;
+				return { method: request[1], path: request[2], headers };
+			}
+			_upgradeToH2c(socket, request) {
+				socket.write("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n");
 				const session = setupServerSession(this, socket, this._h2options);
-				void session;
+				// The client's HTTP2-Settings header is its first SETTINGS frame, and the request itself is stream 1.
+				try {
+					session._applyRemoteSettings(Buffer.from(request.headers["http2-settings"], "base64url"));
+				} catch {
+					session.destroy(undefined, ERR.PROTOCOL_ERROR);
+					return;
+				}
+				const list = [[":method", request.method, false], [":scheme", "http", false], [":authority", request.headers.host ?? "", false], [":path", request.path, false]];
+				for (const [name, value] of Object.entries(request.headers)) {
+					if (["connection", "upgrade", "http2-settings", "host", "keep-alive", "proxy-connection", "transfer-encoding", "te"].includes(name)) continue;
+					list.push([name, value, false]);
+				}
+				session._newRemoteStream(1, list, true);
 			}
 			_http1() {
 				if (!this._http1Server) {
@@ -2162,12 +2289,13 @@ function createHttp2({ net, tls, http, fs, url: urlModule }, EventEmitter, strea
 		} else {
 			socket = net.connect({ ...options, host, port });
 		}
-		const session = new Http2Session(SESSION_CLIENT, socket, options);
+		const session = new ClientHttp2Session(SESSION_CLIENT, socket, options);
 		session._authority = url;
 		session._secure = secure;
 		session.connecting = true;
 		session._socketReady = false;
 		const ready = () => {
+			if (secure) session.originSet = [`https://${host}${port === 443 ? "" : `:${port}`}`];
 			session.encrypted = Boolean(socket.encrypted);
 			session.alpnProtocol = secure ? socket.alpnProtocol || undefined : "h2c";
 			if (secure && session.alpnProtocol !== "h2") {
@@ -2239,14 +2367,72 @@ function createHttp2({ net, tls, http, fs, url: urlModule }, EventEmitter, strea
 		}
 		return stream;
 	};
+	const receivedText = (value) => {
+		if (value === null || value === undefined) return String(value);
+		if (typeof value === "function") return `function ${value.name}`;
+		if (typeof value === "object") return `an instance of ${value.constructor?.name ?? "Object"}`;
+		return `type ${typeof value} (${String(value)})`;
+	};
+	class ServerHttp2Session extends Http2Session {
+		origin(...origins) {
+			if (this._destroyed) throw h2Error("ERR_HTTP2_INVALID_SESSION");
+			let list = origins;
+			if (origins.length === 1 && Array.isArray(origins[0])) list = origins[0];
+			const encoded = [];
+			let total = 0;
+			for (const item of list) {
+				let text = item;
+				if (item && typeof item === "object" && typeof item.origin === "string") text = item.origin;
+				if (typeof text !== "string") throw Object.assign(new TypeError(`The "origin" argument must be of type string. Received ${receivedText(item)}`), { code: "ERR_INVALID_ARG_TYPE" });
+				const parsed = new urlModule.URL(text);
+				if (parsed.origin === "null") throw h2Error("ERR_HTTP2_INVALID_ORIGIN");
+				const bytes = Buffer.from(parsed.origin, "latin1");
+				total += 2 + bytes.length;
+				if (total > 16382) throw h2Error("ERR_HTTP2_ORIGIN_LENGTH");
+				const length = Buffer.alloc(2);
+				length.writeUInt16BE(bytes.length, 0);
+				encoded.push(length, bytes);
+			}
+			if (!encoded.length) return;
+			this._frame(FRAME.ORIGIN, 0, 0, Buffer.concat(encoded));
+		}
+		altsvc(alt, originOrStream) {
+			if (this._destroyed) throw h2Error("ERR_HTTP2_INVALID_SESSION");
+			if (typeof alt !== "string") throw Object.assign(new TypeError(`The "alt" argument must be of type string. Received ${receivedText(alt)}`), { code: "ERR_INVALID_ARG_TYPE" });
+			if (/[^\x20-\x7e]/.test(alt)) throw Object.assign(new TypeError("Invalid character in alt"), { code: "ERR_INVALID_CHAR" });
+			let streamId = 0;
+			let origin = "";
+			if (typeof originOrStream === "number") {
+				if (!Number.isInteger(originOrStream) || originOrStream <= 0 || originOrStream >= 4294967296) {
+					throw Object.assign(new RangeError(`The value of "originOrStream" is out of range. It must be > 0 && < 4294967296. Received ${originOrStream}`), { code: "ERR_OUT_OF_RANGE" });
+				}
+				streamId = originOrStream;
+			} else if (typeof originOrStream === "string" || originOrStream instanceof urlModule.URL || (originOrStream && typeof originOrStream === "object" && typeof originOrStream.origin === "string")) {
+				let text = originOrStream;
+				if (typeof originOrStream === "object") text = originOrStream.origin;
+				const parsed = new urlModule.URL(text);
+				if (parsed.origin === "null") throw h2Error("ERR_HTTP2_ALTSVC_INVALID_ORIGIN");
+				origin = parsed.origin;
+			} else if (originOrStream !== undefined) {
+				throw invalidArg("originOrStream", "of type string, number or URL", originOrStream);
+			}
+			const originBytes = Buffer.from(origin, "latin1");
+			const length = Buffer.alloc(2);
+			length.writeUInt16BE(originBytes.length, 0);
+			this._frame(FRAME.ALTSVC, 0, streamId, Buffer.concat([length, originBytes, Buffer.from(alt, "latin1")]));
+		}
+	}
+	class ClientHttp2Session extends Http2Session {}
+	ClientHttp2Session.prototype.request = Http2Session.prototype.request;
+	delete Http2Session.prototype.request;
 	const order = (name) => ({ ":method": 0, ":scheme": 1, ":authority": 2, ":path": 3, ":protocol": 4 })[name] ?? 5;
 
 	/* ------------------------------------------------------------------------------- module surface */
 
 	const http2 = {
 		Http2Session,
-		ServerHttp2Session: Http2Session,
-		ClientHttp2Session: Http2Session,
+		ServerHttp2Session,
+		ClientHttp2Session,
 		Http2Stream,
 		ServerHttp2Stream,
 		ClientHttp2Stream,
@@ -2266,7 +2452,7 @@ function createHttp2({ net, tls, http, fs, url: urlModule }, EventEmitter, strea
 				options = {};
 			}
 			const merged = { ...(options?.secureContext?._options ?? {}), ...options };
-			if (!merged.key || !merged.cert) throw new TypeError("http2.createSecureServer needs { key, cert } as PEM strings or Buffers");
+			if ((!merged.key || !merged.cert) && merged.pfx === undefined) throw new TypeError("http2.createSecureServer needs { key, cert } as PEM strings or Buffers, or a pfx");
 			return new Http2SecureServer(options, onRequestHandler);
 		},
 		getDefaultSettings: () => ({ headerTableSize: 4096, enablePush: true, initialWindowSize: 65535, maxFrameSize: 16384, maxConcurrentStreams: 4294967295, maxHeaderSize: 65535, maxHeaderListSize: 65535, enableConnectProtocol: false }),
@@ -2290,7 +2476,7 @@ function createHttp2({ net, tls, http, fs, url: urlModule }, EventEmitter, strea
 			return out;
 		},
 		performServerHandshake(socket, options) {
-			return new Http2Session(SESSION_SERVER, socket, options ?? {});
+			return new ServerHttp2Session(SESSION_SERVER, socket, options ?? {});
 		},
 	};
 	Object.defineProperty(http2, "__hpack", { value: { HpackEncoder, HpackDecoder, huffmanEncode, huffmanDecode }, enumerable: false });

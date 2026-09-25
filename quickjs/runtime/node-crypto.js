@@ -10,14 +10,12 @@
  */
 
 import { createAsymmetric } from "./node-crypto2.js";
+import { createSubtle } from "./node-subtle.js";
 
-const HASHES = ["md5", "sha1", "sha224", "sha256", "sha384", "sha512", "ripemd160"];
-const CIPHERS = [
-	"aes-128-cbc", "aes-192-cbc", "aes-256-cbc", "aes-128-ecb", "aes-192-ecb", "aes-256-ecb", "aes-128-ctr", "aes-192-ctr", "aes-256-ctr",
-	"aes-128-gcm", "aes-192-gcm", "aes-256-gcm", "chacha20-poly1305",
-];
+const HASHES = ["md5", "sha1", "sha224", "sha256", "sha384", "sha512", "ripemd160", "sha3-224", "sha3-256", "sha3-384", "sha3-512", "shake128", "shake256"];
+const HASH_SIZES = { md5: 16, sha1: 20, sha224: 28, sha256: 32, sha384: 48, sha512: 64, ripemd160: 20, "sha3-224": 28, "sha3-256": 32, "sha3-384": 48, "sha3-512": 64 };
 
-const ALIASES = { "rsa-sha256": "sha256", "rsa-sha1": "sha1", "rsa-sha384": "sha384", "rsa-sha512": "sha512", "rsa-md5": "md5", sha256withrsaencryption: "sha256", sha1withrsaencryption: "sha1", sha512withrsaencryption: "sha512", "sha-1": "sha1", "sha-256": "sha256", "sha-384": "sha384", "sha-512": "sha512", sha2: "sha256" };
+const ALIASES = { rmd160: "ripemd160", "rsa-sha3-256": "sha3-256", "rsa-sha3-384": "sha3-384", "rsa-sha3-512": "sha3-512", "rsa-sha3-224": "sha3-224", "rsa-sha256": "sha256", "rsa-sha1": "sha1", "rsa-sha384": "sha384", "rsa-sha512": "sha512", "rsa-md5": "md5", sha256withrsaencryption: "sha256", sha1withrsaencryption: "sha1", sha512withrsaencryption: "sha512", "sha-1": "sha1", "sha-256": "sha256", "sha-384": "sha384", "sha-512": "sha512", sha2: "sha256" };
 
 function createCrypto({ native, Buffer, stream, toBytes }) {
 	const buf = (bytes) => Buffer.from(bytes);
@@ -57,6 +55,11 @@ function createCrypto({ native, Buffer, stream, toBytes }) {
 		constructor(algorithm, options) {
 			super(options);
 			this.algorithm = hashName(algorithm);
+			this._outputLength = options?.outputLength;
+			if (this._outputLength !== undefined && !Number.isInteger(this._outputLength)) throw invalidArg("options.outputLength", "of type number", this._outputLength);
+			if (this._outputLength !== undefined && !this.algorithm.startsWith("shake") && this._outputLength !== HASH_SIZES[this.algorithm]) {
+				throw Object.assign(new Error("error:030000B2:digital envelope routines::not XOF or invalid length"), { code: "ERR_OSSL_EVP_NOT_XOF_OR_INVALID_LENGTH" });
+			}
 			this._chunks = [];
 			this._done = false;
 		}
@@ -71,10 +74,14 @@ function createCrypto({ native, Buffer, stream, toBytes }) {
 		digest(encoding) {
 			if (this._done) throw Object.assign(new Error("Digest already called"), { code: "ERR_CRYPTO_HASH_FINALIZED" });
 			this._done = true;
+			if (this.algorithm.startsWith("shake")) {
+				const bits = this.algorithm === "shake128" ? 128 : 256;
+				return out(native.keccak(bits, concat(this._chunks), this._outputLength ?? bits / 8), encoding);
+			}
 			return out(native.hash(this.algorithm, concat(this._chunks)), encoding);
 		}
-		copy() {
-			const clone = new Hash(this.algorithm);
+		copy(options) {
+			const clone = new Hash(this.algorithm, options);
 			clone._chunks = [...this._chunks];
 			return clone;
 		}
@@ -168,10 +175,10 @@ function createCrypto({ native, Buffer, stream, toBytes }) {
 
 	const getRandomValues = (view) => {
 		if (!ArrayBuffer.isView(view) || view instanceof Float32Array || view instanceof Float64Array || view instanceof DataView) {
-			throw Object.assign(new TypeError("The data argument must be an integer-type TypedArray"), { name: "TypeMismatchError", code: 17 });
+			throw globalThis.DOMException ? new globalThis.DOMException("The data argument must be an integer-type TypedArray", "TypeMismatchError") : Object.assign(new TypeError("The data argument must be an integer-type TypedArray"), { name: "TypeMismatchError", code: 17 });
 		}
 		if (view.byteLength > 65536) {
-			throw Object.assign(new Error("The ArrayBufferView's byte length exceeds the number of bytes of entropy available via this API (65536)"), { name: "QuotaExceededError", code: 22 });
+			throw globalThis.DOMException ? new globalThis.DOMException("The ArrayBufferView's byte length exceeds the number of bytes of entropy available via this API (65536)", "QuotaExceededError") : Object.assign(new Error("The ArrayBufferView's byte length exceeds the number of bytes of entropy available via this API (65536)"), { name: "QuotaExceededError", code: 22 });
 		}
 		return randomFillSync(view);
 	};
@@ -286,35 +293,96 @@ function createCrypto({ native, Buffer, stream, toBytes }) {
 
 	/* ------------------------------------------------------------------- ciphers */
 
-	const cipherSpec = (algorithm, key, iv) => {
-		const name = String(algorithm).toLowerCase();
-		if (!CIPHERS.includes(name)) {
-			throw Object.assign(new Error("Unknown cipher"), { code: "ERR_CRYPTO_UNKNOWN_CIPHER" });
-		}
+	/* Node's cipher names -> what the host's library calls them, with the shape of each: key bytes, IV bytes, block size, mode. */
+	const CIPHER_TABLE = new Map();
+	const addCipher = (name, mbed, keyLength, ivLength, blockSize, mode, extra = {}) => CIPHER_TABLE.set(name, { name, mbed, keyLength, ivLength, blockSize, mode, ...extra });
+	for (const bits of [128, 192, 256]) {
+		const key = bits / 8;
+		addCipher(`aes-${bits}-cbc`, `AES-${bits}-CBC`, key, 16, 16, "cbc");
+		addCipher(`aes-${bits}-ecb`, `AES-${bits}-ECB`, key, 0, 16, "ecb");
+		addCipher(`aes-${bits}-ctr`, `AES-${bits}-CTR`, key, 16, 1, "ctr");
+		addCipher(`aes-${bits}-cfb`, `AES-${bits}-CFB128`, key, 16, 1, "cfb");
+		addCipher(`aes-${bits}-ofb`, `AES-${bits}-OFB`, key, 16, 1, "ofb");
+		addCipher(`aes-${bits}-gcm`, `AES-${bits}-GCM`, key, 12, 1, "gcm", { aead: true });
+		addCipher(`aes-${bits}-ccm`, `AES-${bits}-CCM`, key, 12, 1, "ccm", { aead: true, buffered: true });
+		addCipher(`id-aes${bits}-wrap`, null, key, 8, 8, "wrap", { wrap: "kw" });
+		addCipher(`id-aes${bits}-wrap-pad`, null, key, 4, 8, "wrap", { wrap: "kwp" });
+	}
+	addCipher("chacha20-poly1305", "CHACHA20-POLY1305", 32, 12, 1, "stream", { aead: true, buffered: true });
+	addCipher("des-ede3-cbc", "DES-EDE3-CBC", 24, 8, 8, "cbc");
+	addCipher("des-ede3", "DES-EDE3-ECB", 24, 0, 8, "ecb");
+	const CIPHER_ALIASES = { aes128: "aes-128-cbc", aes192: "aes-192-cbc", aes256: "aes-256-cbc", des3: "des-ede3-cbc", "des-ede3-ecb": "des-ede3", "aes-128-wrap": "id-aes128-wrap", "aes128-wrap": "id-aes128-wrap", "aes192-wrap": "id-aes192-wrap", "aes256-wrap": "id-aes256-wrap", "id-aes128-wrap-pad": "id-aes128-wrap-pad" };
+	const CIPHER_NAMES = () => [...CIPHER_TABLE.keys()];
+	const unknownCipher = () => Object.assign(new Error("Unknown cipher"), { code: "ERR_CRYPTO_UNKNOWN_CIPHER" });
+	const cipherSpec = (algorithm, key, iv, options) => {
+		let name = String(algorithm).toLowerCase();
+		name = CIPHER_ALIASES[name] ?? name;
+		const info = CIPHER_TABLE.get(name);
+		if (!info) throw unknownCipher();
 		const keyBytes = bytesOf(key);
 		const ivBytes = iv === null || iv === undefined ? new Uint8Array(0) : bytesOf(iv);
-		const wantKey = name === "chacha20-poly1305" ? 32 : Number(name.split("-")[1]) / 8;
-		if (keyBytes.length !== wantKey) throw Object.assign(new RangeError("Invalid key length"), { code: "ERR_CRYPTO_INVALID_KEYLEN" });
-		const ecb = name.endsWith("-ecb");
-		if (ecb ? ivBytes.length !== 0 : name.endsWith("-gcm") || name === "chacha20-poly1305" ? ivBytes.length < 1 : ivBytes.length !== 16) {
-			throw Object.assign(new TypeError("Invalid initialization vector"), { code: "ERR_CRYPTO_INVALID_IV" });
+		if (keyBytes.length !== info.keyLength) throw Object.assign(new RangeError("Invalid key length"), { code: "ERR_CRYPTO_INVALID_KEYLEN" });
+		let ivOk;
+		if (info.mode === "ecb") ivOk = ivBytes.length === 0;
+		else if (info.mode === "gcm") ivOk = ivBytes.length >= 1;
+		else if (info.mode === "ccm") ivOk = ivBytes.length >= 7 && ivBytes.length <= 13;
+		else ivOk = ivBytes.length === info.ivLength;
+		if (!ivOk) throw Object.assign(new TypeError("Invalid initialization vector"), { code: "ERR_CRYPTO_INVALID_IV" });
+		let tagLength = options?.authTagLength;
+		if (info.aead) {
+			if (tagLength === undefined) {
+				if (info.mode === "ccm" || name === "chacha20-poly1305") {
+					throw Object.assign(new TypeError(`authTagLength required for ${name}`), { code: "ERR_CRYPTO_INVALID_AUTH_TAG" });
+				}
+				tagLength = 16;
+			}
+			const okLengths = info.mode === "gcm" ? [4, 8, 12, 13, 14, 15, 16] : info.mode === "ccm" ? [4, 6, 8, 10, 12, 14, 16] : [16];
+			if (!okLengths.includes(tagLength)) throw Object.assign(new TypeError(`Invalid authentication tag length: ${tagLength}`), { code: "ERR_CRYPTO_INVALID_AUTH_TAG" });
 		}
-		return { name, keyBytes, ivBytes, aead: name.endsWith("-gcm") || name === "chacha20-poly1305" };
+		return { name, info, keyBytes, ivBytes, tagLength };
+	};
+	const authFailure = () => new Error("Unsupported state or unable to authenticate data");
+	const wrapCipherError = (err) => {
+		if (err && err.message === "Unsupported state or unable to authenticate data") return authFailure();
+		return err;
 	};
 
 	class Cipheriv extends stream.Transform {
 		constructor(algorithm, key, iv, options, decrypt) {
 			super(options);
-			this._spec = cipherSpec(algorithm, key, iv);
+			this._spec = cipherSpec(algorithm, key, iv, options);
 			this._decrypt = decrypt;
-			this._chunks = [];
 			this._aad = null;
 			this._tag = null;
 			this._padding = true;
 			this._finalized = false;
+			this._handle = null;
+			this._chunks = [];
+			this._started = false;
+			const { info } = this._spec;
+			if (info.wrap) {
+				const defaultIv = info.wrap === "kw" ? [0xa6, 0xa6, 0xa6, 0xa6, 0xa6, 0xa6, 0xa6, 0xa6] : [0xa6, 0x59, 0x59, 0xa6];
+				if (!this._spec.ivBytes.every((b, i) => b === defaultIv[i])) {
+					throw Object.assign(new Error("AES key wrap with a custom IV is not available in the Graak native host"), { code: "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM" });
+				}
+			}
 		}
-		setAAD(aad) {
+		_open() {
+			if (this._handle !== null || this._spec.info.buffered || this._spec.info.wrap) return;
+			const { info, keyBytes, ivBytes, tagLength } = this._spec;
+			try {
+				this._handle = native.cipherOpen(!this._decrypt, info.mbed, keyBytes, ivBytes, this._padding, tagLength ?? 16);
+			} catch (err) {
+				throw err;
+			}
+			if (this._aad) native.cipherAad(this._handle, this._aad);
+			if (this._tag && this._decrypt) native.cipherTag(this._handle, this._tag);
+		}
+		setAAD(aad, options) {
+			if (this._started && !this._spec.info.buffered) throw Object.assign(new Error("Unsupported state"), { code: "ERR_CRYPTO_INVALID_STATE" });
+			if (!this._spec.info.aead) throw Object.assign(new Error("Unsupported state"), { code: "ERR_CRYPTO_INVALID_STATE" });
 			this._aad = bytesOf(aad);
+			this._plaintextLength = options?.plaintextLength;
 			return this;
 		}
 		setAutoPadding(value = true) {
@@ -322,45 +390,118 @@ function createCrypto({ native, Buffer, stream, toBytes }) {
 			return this;
 		}
 		getAuthTag() {
-			if (!this._tag) throw Object.assign(new Error("Attempting to get auth tag in unsupported state"), { code: "ERR_CRYPTO_INVALID_STATE" });
+			if (!this._tag || this._decrypt || !this._finalized) throw Object.assign(new Error("Invalid state for operation getAuthTag"), { code: "ERR_CRYPTO_INVALID_STATE" });
 			return buf(this._tag);
 		}
 		setAuthTag(tag) {
+			if (!this._decrypt || !this._spec.info.aead || this._finalized) throw Object.assign(new Error("Unsupported state"), { code: "ERR_CRYPTO_INVALID_STATE" });
 			this._tag = bytesOf(tag);
+			if (this._handle !== null) native.cipherTag(this._handle, this._tag);
 			return this;
 		}
 		update(data, inputEncoding, outputEncoding) {
 			if (this._finalized) throw Object.assign(new Error("Unsupported state"), { code: "ERR_CRYPTO_INVALID_STATE" });
-			this._chunks.push(toBytes(data, inputEncoding));
-			return out(new Uint8Array(0), outputEncoding);
+			if (typeof data !== "string" && !ArrayBuffer.isView(data)) throw invalidArg("data", "of type string or an instance of Buffer, TypedArray, or DataView", data);
+			const bytes = toBytes(data, inputEncoding);
+			this._started = true;
+			if (this._spec.info.buffered || this._spec.info.wrap) {
+				this._chunks.push(bytes);
+				return out(new Uint8Array(0), outputEncoding);
+			}
+			this._open();
+			return out(native.cipherUpdate(this._handle, bytes), outputEncoding);
 		}
 		final(outputEncoding) {
 			if (this._finalized) throw Object.assign(new Error("Unsupported state"), { code: "ERR_CRYPTO_INVALID_STATE" });
-			this._finalized = true;
-			const { name, keyBytes, ivBytes, aead } = this._spec;
-			const message = concat(this._chunks);
-			if (!aead) return out(native.cipher(!this._decrypt, name, keyBytes, ivBytes, message, null, 0, this._padding), outputEncoding);
-			if (!this._decrypt) {
-				const sealed = native.cipher(true, name, keyBytes, ivBytes, message, this._aad, 16, true);
-				this._tag = sealed.slice(sealed.length - 16);
-				return out(sealed.slice(0, sealed.length - 16), outputEncoding);
+			const { name, info, keyBytes, ivBytes, tagLength } = this._spec;
+			if (info.wrap) {
+				this._finalized = true;
+				const message = concat(this._chunks);
+				const padded = info.wrap === "kwp";
+				try {
+					return out(this._decrypt ? native.kwUnwrap(keyBytes, message, padded) : native.kwWrap(keyBytes, message, padded), outputEncoding);
+				} catch (err) {
+					throw err;
+				}
 			}
-			if (!this._tag) throw Object.assign(new Error("Unsupported state or unable to authenticate data"), { code: "ERR_CRYPTO_INVALID_STATE" });
-			return out(native.cipher(false, name, keyBytes, ivBytes, concat([message, this._tag]), this._aad, 16, true), outputEncoding);
+			if (info.buffered) {
+				this._finalized = true;
+				const message = concat(this._chunks);
+				try {
+					if (!this._decrypt) {
+						const sealed = native.cipher(true, info.mbed, keyBytes, ivBytes, message, this._aad, tagLength, true);
+						this._tag = sealed.slice(sealed.length - tagLength);
+						return out(sealed.slice(0, sealed.length - tagLength), outputEncoding);
+					}
+					if (!this._tag) throw authFailure();
+					return out(native.cipher(false, info.mbed, keyBytes, ivBytes, concat([message, this._tag]), this._aad, tagLength, true), outputEncoding);
+				} catch (err) {
+					throw wrapCipherError(err);
+				}
+			}
+			this._open();
+			this._finalized = true;
+			try {
+				const result = native.cipherFinal(this._handle);
+				if (info.aead && !this._decrypt) {
+					this._tag = result.tag;
+					return out(result.data, outputEncoding);
+				}
+				return out(result, outputEncoding);
+			} catch (err) {
+				throw wrapCipherError(err);
+			} finally {
+				native.cipherClose(this._handle);
+				this._handle = null;
+			}
 		}
 		_transform(chunk, encoding, callback) {
-			this._chunks.push(toBytes(chunk, encoding === "buffer" ? undefined : encoding));
-			callback();
-		}
-		_flush(callback) {
 			try {
-				this.push(this.final());
+				const produced = this.update(chunk, encoding === "buffer" ? undefined : encoding);
+				if (produced.length) this.push(produced);
 				callback();
 			} catch (err) {
 				callback(err);
 			}
 		}
+		_flush(callback) {
+			try {
+				const last = this.final();
+				if (last.length) this.push(last);
+				callback();
+			} catch (err) {
+				callback(err);
+			}
+		}
+		_destroy(err, callback) {
+			if (this._handle !== null) {
+				native.cipherClose(this._handle);
+				this._handle = null;
+			}
+			callback(err);
+		}
 	}
+	/* What Node reports for each cipher (OpenSSL's names and NIDs). */
+	const CIPHER_INFO = {"aes-128-cbc": {"mode": "cbc", "name": "aes-128-cbc", "nid": 419, "keyLength": 16, "blockSize": 16, "ivLength": 16}, "aes-128-ecb": {"mode": "ecb", "name": "aes-128-ecb", "nid": 418, "keyLength": 16, "blockSize": 16}, "aes-128-ctr": {"mode": "ctr", "name": "aes-128-ctr", "nid": 904, "keyLength": 16, "blockSize": 1, "ivLength": 16}, "aes-128-cfb": {"mode": "cfb", "name": "aes-128-cfb", "nid": 421, "keyLength": 16, "blockSize": 1, "ivLength": 16}, "aes-128-ofb": {"mode": "ofb", "name": "aes-128-ofb", "nid": 420, "keyLength": 16, "blockSize": 1, "ivLength": 16}, "aes-128-gcm": {"mode": "gcm", "name": "id-aes128-gcm", "nid": 895, "keyLength": 16, "blockSize": 1, "ivLength": 12}, "aes-128-ccm": {"mode": "ccm", "name": "id-aes128-ccm", "nid": 896, "keyLength": 16, "blockSize": 1, "ivLength": 12}, "id-aes128-wrap": {"mode": "wrap", "name": "id-aes128-wrap", "nid": 788, "keyLength": 16, "blockSize": 8, "ivLength": 8}, "id-aes128-wrap-pad": {"mode": "wrap", "name": "id-aes128-wrap-pad", "nid": 897, "keyLength": 16, "blockSize": 8, "ivLength": 4}, "aes-192-cbc": {"mode": "cbc", "name": "aes-192-cbc", "nid": 423, "keyLength": 24, "blockSize": 16, "ivLength": 16}, "aes-192-ecb": {"mode": "ecb", "name": "aes-192-ecb", "nid": 422, "keyLength": 24, "blockSize": 16}, "aes-192-ctr": {"mode": "ctr", "name": "aes-192-ctr", "nid": 905, "keyLength": 24, "blockSize": 1, "ivLength": 16}, "aes-192-cfb": {"mode": "cfb", "name": "aes-192-cfb", "nid": 425, "keyLength": 24, "blockSize": 1, "ivLength": 16}, "aes-192-ofb": {"mode": "ofb", "name": "aes-192-ofb", "nid": 424, "keyLength": 24, "blockSize": 1, "ivLength": 16}, "aes-192-gcm": {"mode": "gcm", "name": "id-aes192-gcm", "nid": 898, "keyLength": 24, "blockSize": 1, "ivLength": 12}, "aes-192-ccm": {"mode": "ccm", "name": "id-aes192-ccm", "nid": 899, "keyLength": 24, "blockSize": 1, "ivLength": 12}, "id-aes192-wrap": {"mode": "wrap", "name": "id-aes192-wrap", "nid": 789, "keyLength": 24, "blockSize": 8, "ivLength": 8}, "id-aes192-wrap-pad": {"mode": "wrap", "name": "id-aes192-wrap-pad", "nid": 900, "keyLength": 24, "blockSize": 8, "ivLength": 4}, "aes-256-cbc": {"mode": "cbc", "name": "aes-256-cbc", "nid": 427, "keyLength": 32, "blockSize": 16, "ivLength": 16}, "aes-256-ecb": {"mode": "ecb", "name": "aes-256-ecb", "nid": 426, "keyLength": 32, "blockSize": 16}, "aes-256-ctr": {"mode": "ctr", "name": "aes-256-ctr", "nid": 906, "keyLength": 32, "blockSize": 1, "ivLength": 16}, "aes-256-cfb": {"mode": "cfb", "name": "aes-256-cfb", "nid": 429, "keyLength": 32, "blockSize": 1, "ivLength": 16}, "aes-256-ofb": {"mode": "ofb", "name": "aes-256-ofb", "nid": 428, "keyLength": 32, "blockSize": 1, "ivLength": 16}, "aes-256-gcm": {"mode": "gcm", "name": "id-aes256-gcm", "nid": 901, "keyLength": 32, "blockSize": 1, "ivLength": 12}, "aes-256-ccm": {"mode": "ccm", "name": "id-aes256-ccm", "nid": 902, "keyLength": 32, "blockSize": 1, "ivLength": 12}, "id-aes256-wrap": {"mode": "wrap", "name": "id-aes256-wrap", "nid": 790, "keyLength": 32, "blockSize": 8, "ivLength": 8}, "id-aes256-wrap-pad": {"mode": "wrap", "name": "id-aes256-wrap-pad", "nid": 903, "keyLength": 32, "blockSize": 8, "ivLength": 4}, "chacha20-poly1305": {"mode": "stream", "name": "chacha20-poly1305", "nid": 1018, "keyLength": 32, "ivLength": 12}, "des-ede3-cbc": {"mode": "cbc", "name": "des-ede3-cbc", "nid": 44, "keyLength": 24, "blockSize": 8, "ivLength": 8}, "des-ede3": {"mode": "ecb", "name": "des-ede3", "nid": 33, "keyLength": 24, "blockSize": 8}};
+	const getCipherInfo = (nameOrNid, options) => {
+		if (typeof nameOrNid !== "string" && typeof nameOrNid !== "number") throw invalidArg("nameOrNid", "of type string or number", nameOrNid);
+		let found;
+		if (typeof nameOrNid === "number") found = Object.values(CIPHER_INFO).find((info) => info.nid === nameOrNid);
+		else {
+			const name = CIPHER_ALIASES[nameOrNid.toLowerCase()] ?? nameOrNid.toLowerCase();
+			found = CIPHER_INFO[name];
+		}
+		if (!found) return undefined;
+		const table = CIPHER_TABLE.get(Object.keys(CIPHER_INFO).find((k) => CIPHER_INFO[k] === found));
+		if (options?.keyLength !== undefined && options.keyLength !== found.keyLength) return undefined;
+		if (options?.ivLength !== undefined) {
+			const fixed = table.mode !== "gcm" && table.mode !== "ccm";
+			if (fixed ? options.ivLength !== (found.ivLength ?? 0) : options.ivLength < 1) return undefined;
+		}
+		const result = { ...found };
+		if (options?.ivLength !== undefined && (table.mode === "gcm" || table.mode === "ccm")) result.ivLength = options.ivLength;
+		return result;
+	};
 	const createCipheriv = (algorithm, key, iv, options) => new Cipheriv(algorithm, key, iv, options, false);
 	const createDecipheriv = (algorithm, key, iv, options) => new Cipheriv(algorithm, key, iv, options, true);
 
@@ -380,62 +521,10 @@ function createCrypto({ native, Buffer, stream, toBytes }) {
 		}
 	}
 
-	/* ---------------------------------------------------------------- Web Crypto */
+	/* Web Crypto is assembled below, once the module object it works through exists. */
+	let webcrypto;
+	let subtle;
 
-	const subtleHash = (algorithm) => hashName(typeof algorithm === "string" ? algorithm : algorithm.name);
-	const subtle = {
-		async digest(algorithm, data) {
-			const digest = native.hash(subtleHash(algorithm), toBytes(data));
-			return digest.buffer.slice(digest.byteOffset, digest.byteOffset + digest.byteLength);
-		},
-		async importKey(format, keyData, algorithm, extractable, usages) {
-			if (format !== "raw") throw Object.assign(new Error("Only raw key import is supported"), { name: "NotSupportedError" });
-			const name = typeof algorithm === "string" ? algorithm : algorithm.name;
-			return { type: "secret", extractable, algorithm: typeof algorithm === "string" ? { name } : algorithm, usages, _keyData: toBytes(keyData) };
-		},
-		async exportKey(format, key) {
-			if (format !== "raw" || !key.extractable) throw Object.assign(new Error("The key is not extractable"), { name: "InvalidAccessError" });
-			return key._keyData.buffer.slice(key._keyData.byteOffset, key._keyData.byteOffset + key._keyData.byteLength);
-		},
-		async sign(algorithm, key, data) {
-			if ((typeof algorithm === "string" ? algorithm : algorithm.name).toUpperCase() !== "HMAC") throw Object.assign(new Error("Only HMAC signing is supported"), { name: "NotSupportedError" });
-			const mac = native.hmac(subtleHash(key.algorithm.hash), key._keyData, toBytes(data));
-			return mac.buffer.slice(mac.byteOffset, mac.byteOffset + mac.byteLength);
-		},
-		async verify(algorithm, key, signature, data) {
-			const expected = new Uint8Array(await subtle.sign(algorithm, key, data));
-			const actual = toBytes(signature);
-			if (expected.length !== actual.length) return false;
-			let diff = 0;
-			for (let i = 0; i < expected.length; i++) diff |= expected[i] ^ actual[i];
-			return diff === 0;
-		},
-		async encrypt(algorithm, key, data) {
-			if (algorithm.name.toUpperCase() !== "AES-GCM") throw Object.assign(new Error("Only AES-GCM is supported"), { name: "NotSupportedError" });
-			const sealed = native.cipher(true, `aes-${key._keyData.length * 8}-gcm`, key._keyData, toBytes(algorithm.iv), toBytes(data), algorithm.additionalData ? toBytes(algorithm.additionalData) : null, 16, true);
-			return sealed.buffer.slice(sealed.byteOffset, sealed.byteOffset + sealed.byteLength);
-		},
-		async decrypt(algorithm, key, data) {
-			if (algorithm.name.toUpperCase() !== "AES-GCM") throw Object.assign(new Error("Only AES-GCM is supported"), { name: "NotSupportedError" });
-			let plain;
-			try {
-				plain = native.cipher(false, `aes-${key._keyData.length * 8}-gcm`, key._keyData, toBytes(algorithm.iv), toBytes(data), algorithm.additionalData ? toBytes(algorithm.additionalData) : null, 16, true);
-			} catch {
-				throw Object.assign(new Error("The operation failed for an operation-specific reason"), { name: "OperationError" });
-			}
-			return plain.buffer.slice(plain.byteOffset, plain.byteOffset + plain.byteLength);
-		},
-		async deriveBits(algorithm, baseKey, length) {
-			const name = algorithm.name.toUpperCase();
-			let derived;
-			if (name === "PBKDF2") derived = native.pbkdf2(subtleHash(algorithm.hash), baseKey._keyData, toBytes(algorithm.salt), algorithm.iterations, length / 8);
-			else if (name === "HKDF") derived = native.hkdf(subtleHash(algorithm.hash), baseKey._keyData, toBytes(algorithm.salt), toBytes(algorithm.info), length / 8);
-			else throw Object.assign(new Error("Unsupported derivation algorithm"), { name: "NotSupportedError" });
-			return derived.buffer.slice(derived.byteOffset, derived.byteOffset + derived.byteLength);
-		},
-	};
-
-	const webcrypto = { getRandomValues, randomUUID, subtle };
 
 	/* ------------------------------------------------------------------- the module */
 
@@ -443,7 +532,7 @@ function createCrypto({ native, Buffer, stream, toBytes }) {
 	const crypto = {
 		createHash: (algorithm, options) => new Hash(algorithm, options),
 		createHmac: (algorithm, key, options) => new Hmac(algorithm, key, options),
-		hash: (algorithm, data, outputEncoding = "hex") => out(native.hash(hashName(algorithm), toBytes(data)), outputEncoding),
+		hash: (algorithm, data, outputEncoding = "hex") => new Hash(algorithm).update(data).digest(outputEncoding),
 		randomBytes(size, callback) {
 			if (!Number.isInteger(size) || size < 0) throw Object.assign(new RangeError(`The value of "size" is out of range. It must be >= 0 && <= 2147483647. Received ${size}`), { code: "ERR_OUT_OF_RANGE" });
 			const bytes = buf(randomFillSync(new Uint8Array(size)));
@@ -489,7 +578,8 @@ function createCrypto({ native, Buffer, stream, toBytes }) {
 		createSecretKey: (key, encoding) => new KeyObject("secret", bytesOf(key, encoding)),
 		KeyObject,
 		getHashes: () => [...HASHES],
-		getCiphers: () => [...CIPHERS],
+		getCiphers: () => CIPHER_NAMES().sort(),
+		getCipherInfo,
 		getFips: () => 0,
 		setFips: () => {},
 		constants: { RSA_PKCS1_PADDING: 1, RSA_NO_PADDING: 3, RSA_PKCS1_OAEP_PADDING: 4, RSA_PKCS1_PSS_PADDING: 6, POINT_CONVERSION_COMPRESSED: 2, POINT_CONVERSION_UNCOMPRESSED: 4, POINT_CONVERSION_HYBRID: 6, ...asym.constants },
@@ -514,6 +604,29 @@ function createCrypto({ native, Buffer, stream, toBytes }) {
 		X509Certificate, getCurves,
 	});
 	Object.defineProperty(crypto, "tools", { value: asym.tools });
+	const web = createSubtle({ native, Buffer, toBytes, crypto, hashName });
+	class Crypto {
+		get subtle() {
+			if (!(this instanceof Crypto)) throw Object.assign(new TypeError('Value of "this" must be of type Crypto'), { code: "ERR_INVALID_THIS" });
+			return web.subtle;
+		}
+		getRandomValues(view) {
+			if (!(this instanceof Crypto)) throw Object.assign(new TypeError('Value of "this" must be of type Crypto'), { code: "ERR_INVALID_THIS" });
+			return getRandomValues(view);
+		}
+		randomUUID() {
+			if (!(this instanceof Crypto)) throw Object.assign(new TypeError('Value of "this" must be of type Crypto'), { code: "ERR_INVALID_THIS" });
+			return randomUUID();
+		}
+		get [Symbol.toStringTag]() {
+			return "Crypto";
+		}
+	}
+	webcrypto = new Crypto();
+	subtle = web.subtle;
+	crypto.webcrypto = webcrypto;
+	crypto.subtle = subtle;
+	Object.defineProperty(crypto, "webClasses", { value: { Crypto, SubtleCrypto: web.SubtleCrypto, CryptoKey: web.CryptoKey } });
 	return crypto;
 }
 

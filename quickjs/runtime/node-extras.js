@@ -1200,6 +1200,7 @@ function installExtras(deps) {
 			if (webCrypto) {
 				define("Crypto", webCrypto.constructor);
 				if (webCrypto.subtle) define("SubtleCrypto", webCrypto.subtle.constructor);
+				if (c.webClasses?.CryptoKey) define("CryptoKey", c.webClasses.CryptoKey);
 			}
 			c.setEngine ??= () => {};
 		}

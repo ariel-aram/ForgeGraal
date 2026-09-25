@@ -38,6 +38,7 @@ import { installExtras } from "./node-extras.js";
 import * as fetchApi from "./node-fetch.js";
 import { createFs } from "./node-fs.js";
 import { createHttp2 } from "./node-http2.js";
+import { URLPattern } from "./node-urlpattern.js";
 import {
 	createConsole,
 	format as inspectFormat,
@@ -1858,6 +1859,7 @@ function defGlobal(name, value) {
 }
 
 // Web Streams and Blob/File do not need the native layer at all, so they are installed either way.
+defGlobal("URLPattern", URLPattern);
 defGlobal("ReadableStream", web.ReadableStream);
 defGlobal("WritableStream", web.WritableStream);
 defGlobal("TransformStream", web.TransformStream);
@@ -1892,6 +1894,17 @@ if (typeof globalObject.Intl.Segmenter === "undefined") {
 		const slash = Math.max(script.lastIndexOf("/"), script.lastIndexOf("\\"));
 		return slash >= 0 ? script.slice(0, slash) : ".";
 	})();
+	// Data scripts (IDNA tables) evaluated on first use, by the same route as the Intl data.
+	Object.defineProperty(globalObject, "__graak_loadData", {
+		value: (name) => {
+			const text = std.loadFile(`${runtimeDir}/${name}`);
+			if (text == null) throw new Error(`${name} is not in this build`);
+			std.evalScript(text);
+		},
+		configurable: true,
+		writable: true,
+		enumerable: false,
+	});
 	const envLocale = () => {
 		const raw = processModule.env.LC_ALL || processModule.env.LC_MESSAGES || processModule.env.LANG || "";
 		const tag = raw.split(".")[0].replace(/_/g, "-");

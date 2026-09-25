@@ -445,7 +445,7 @@ test("a single-file Windows build runs from inside itself (Wine)", {
 		const file = join(out, name);
 		const result = await build(root, file, target);
 		assert.equal(result.launcherPath, file);
-		assert.ok(statSync(file).size < 6 * 1024 * 1024, "a small program on the Windows host is a single file under 6 MB");
+		assert.ok(statSync(file).size < 7 * 1024 * 1024, "a small program on the Windows host is a single file under 7 MB");
 		const run = spawnSync(
 			"docker",
 			[

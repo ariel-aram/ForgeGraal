@@ -949,8 +949,8 @@ function createHttpModules({ net, tls }, EventEmitter, stream, ForgeBuffer) {
 	const httpServerBase = net.Server;
 	const HttpServer = makeServer(httpServerBase, "connection");
 	const HttpsServer = makeServer(tls.Server, "secureConnection", (options) => {
-		if (!options?.key || !options?.cert) throw new TypeError("https.createServer needs { key, cert } as PEM strings or Buffers");
-		return { ...options, key: String(options.key), cert: String(options.cert) };
+		if ((!options?.key || !options?.cert) && options?.pfx === undefined) throw new TypeError("https.createServer needs { key, cert } as PEM strings or Buffers, or a pfx");
+		return options?.pfx !== undefined ? { ...options } : { ...options, key: String(options.key), cert: String(options.cert) };
 	});
 
 	/* ------------------------------------------------------------ client */

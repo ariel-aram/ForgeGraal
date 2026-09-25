@@ -30,114 +30,62 @@ const CURVE_OIDS = {
 const CURVE_ALIASES = { prime256v1: "secp256r1", "P-256": "secp256r1", "P-384": "secp384r1", "P-521": "secp521r1", prime192v1: "secp192r1" };
 const JWK_CURVES = { secp256r1: "P-256", secp384r1: "P-384", secp521r1: "P-521", secp256k1: "secp256k1" };
 const CURVES = ["prime192v1", "secp224r1", "prime256v1", "secp384r1", "secp521r1", "secp192k1", "secp224k1", "secp256k1", "brainpoolP256r1", "brainpoolP384r1", "brainpoolP512r1"];
-const UNSUPPORTED_KEY_TYPES = ["ed25519", "ed448", "x25519", "x448", "dsa", "dh"];
+const UNSUPPORTED_KEY_TYPES = ["dh"];
+const OKP_OIDS = { "1.3.101.112": "ed25519", "1.3.101.113": "ed448", "1.3.101.110": "x25519", "1.3.101.111": "x448" };
+const OKP_BY_TYPE = { ed25519: "1.3.101.112", ed448: "1.3.101.113", x25519: "1.3.101.110", x448: "1.3.101.111" };
+const OKP_SIZE = { ed25519: 32, ed448: 57, x25519: 32, x448: 56 };
+const OKP_JWK = { ed25519: "Ed25519", ed448: "Ed448", x25519: "X25519", x448: "X448" };
+const OID_DSA = "1.2.840.10040.4.1";
 
 const canonicalCurve = (name) => CURVE_ALIASES[name] ?? name;
 const codeError = (Ctor, code, message) => Object.assign(new Ctor(message), { code });
 const unavailable = (what, why) => codeError(Error, "ERR_FEATURE_UNAVAILABLE_ON_PLATFORM", `${what} is not available in the Graak native host: ${why}`);
 
-/* ------------------------------------------------------------------------------------------------ DER */
-
-const join = (parts) => {
-	let total = 0;
-	for (const part of parts) total += part.length;
-	const out = new Uint8Array(total);
-	let offset = 0;
-	for (const part of parts) {
-		out.set(part, offset);
-		offset += part.length;
-	}
-	return out;
-};
-const derLength = (n) => (n < 128 ? [n] : n < 256 ? [0x81, n] : n < 65536 ? [0x82, n >> 8, n & 255] : [0x83, n >> 16, (n >> 8) & 255, n & 255]);
-const tlv = (tag, ...parts) => {
-	const body = join(parts);
-	return join([Uint8Array.of(tag, ...derLength(body.length)), body]);
-};
-const derSeq = (...parts) => tlv(0x30, ...parts);
-const derInt = (bytes) => {
-	let start = 0;
-	while (start < bytes.length - 1 && bytes[start] === 0) start++;
-	const trimmed = bytes.subarray(start);
-	return tlv(2, trimmed[0] & 0x80 ? join([Uint8Array.of(0), trimmed]) : trimmed);
-};
-const derOctets = (bytes) => tlv(4, bytes);
-const derBits = (bytes) => tlv(3, Uint8Array.of(0), bytes);
-const derNull = () => Uint8Array.of(5, 0);
-const derOid = (dotted) => {
-	const parts = dotted.split(".").map(Number);
-	const bytes = [parts[0] * 40 + parts[1]];
-	for (const part of parts.slice(2)) {
-		const stack = [part & 127];
-		for (let v = part >>> 7; v > 0; v >>>= 7) stack.push((v & 127) | 128);
-		bytes.push(...stack.reverse());
-	}
-	return tlv(6, Uint8Array.from(bytes));
-};
-/* One element at `pos`: its tag, where its content starts and ends, and where the next element begins. */
-const readTlv = (bytes, pos) => {
-	const tag = bytes[pos];
-	let length = bytes[pos + 1];
-	let start = pos + 2;
-	if (length & 0x80) {
-		const count = length & 0x7f;
-		length = 0;
-		for (let i = 0; i < count; i++) length = length * 256 + bytes[start + i];
-		start += count;
-	}
-	return { tag, start, end: start + length, next: start + length };
-};
-const readChildren = (bytes, element) => {
-	const out = [];
-	for (let pos = element.start; pos < element.end; ) {
-		const child = readTlv(bytes, pos);
-		out.push(child);
-		pos = child.next;
-	}
-	return out;
-};
-const unsignedBytes = (bytes, element) => {
-	let start = element.start;
-	while (start < element.end - 1 && bytes[start] === 0) start++;
-	return bytes.subarray(start, element.end);
-};
-
-const PEM_LINE = 64;
-const toPem = (label, der, Buffer) => {
-	const b64 = Buffer.from(der).toString("base64");
-	const lines = [];
-	for (let i = 0; i < b64.length; i += PEM_LINE) lines.push(b64.slice(i, i + PEM_LINE));
-	return `-----BEGIN ${label}-----\n${lines.join("\n")}\n-----END ${label}-----\n`;
-};
+import { createPkcs } from "./node-pkcs.js";
+import { certificateBytes, parseCertificate, SIGNATURE_HASH } from "./node-x509.js";
+import {
+	derBits,
+	derInt,
+	derNull,
+	derOctets,
+	derOid,
+	derSeq,
+	fromPem,
+	join,
+	oidText,
+	readChildren,
+	readTlv,
+	tlv,
+	toPem,
+	unsignedBytes,
+} from "./node-asn1.js";
 
 /* ---------------------------------------------------------------------------------------------- factory */
 
 function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, concat, KeyObject }) {
 	const buf = (bytes) => Buffer.from(bytes);
+	const pkcs = createPkcs({ native, Buffer });
 	const pem = (label, der) => toPem(label, der, Buffer);
 	const b64u = (bytes) => buf(bytes).toString("base64url");
 	const fromB64u = (text) => new Uint8Array(Buffer.from(String(text), "base64url"));
 	const invalidArg = (name, expected, value) =>
-		codeError(TypeError, "ERR_INVALID_ARG_TYPE", `The "${name}" argument must be ${expected}. Received ${value === null ? "null" : typeof value}`);
+		codeError(TypeError, "ERR_INVALID_ARG_TYPE", `The "${name}" ${name.includes(".") ? "property" : "argument"} must be ${expected}. Received ${value === null ? "null" : value === undefined ? "undefined" : typeof value}`);
 	const noneOr = (value, encoding) => (encoding && encoding !== "buffer" ? buf(value).toString(encoding) : buf(value));
 
 	/* ------------------------------------------------------------------------------- key objects */
 
 	/* An asymmetric key object holds: priv (PKCS#1 or SEC1 DER, private keys only), spki (DER) and info (from the host). */
 	const makeKey = (info, asPublic) => {
+		if (asPublic && info.private && (info.okp || info.dsa)) {
+			// The public half of a key this file parses itself carries none of the private material.
+			info = { ...info, private: false, pkcs: undefined, okp: info.okp ? { pub: info.okp.pub } : undefined, dsa: info.dsa ? { p: info.dsa.p, q: info.dsa.q, g: info.dsa.g, y: info.dsa.y } : undefined };
+		}
 		const key = new KeyObject(info.private && !asPublic ? "private" : "public", null, {
 			priv: info.private && !asPublic ? info.pkcs : null,
 			spki: info.spki,
 			info,
 		});
 		return key;
-	};
-
-	const detectUnsupported = (bytes) => {
-		const text = buf(bytes).toString("latin1");
-		// The OIDs 1.3.101.110..113 (X25519, X448, Ed25519, Ed448) are 2B 65 6E..71.
-		if (/\x2b\x65[\x6e-\x71]/.test(text)) return "Ed25519, Ed448, X25519 and X448 keys";
-		return null;
 	};
 
 	const readKeyBytes = (input, isPrivate, formatHint) => {
@@ -173,13 +121,20 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 	};
 
 	const infoOf = (data, passphrase, wantPrivate) => {
+		const special = specialInfo(data, passphrase);
+		if (special) {
+			if (wantPrivate && !special.private) throw codeError(Error, "ERR_OSSL_UNSUPPORTED", "error:1E08010C:DECODER routines::unsupported");
+			return special;
+		}
 		try {
 			return native.keyInfo(data, passphrase, wantPrivate);
 		} catch (err) {
-			const bytes = typeof data === "string" ? buf(data, "utf8") : data;
-			const unsupported = detectUnsupported(bytes.length < 200000 ? decodePem(bytes) : bytes);
-			if (unsupported) throw unavailable(unsupported, "mbedTLS has no signature or key agreement for them");
-			if (err.code === "ERR_MISSING_PASSPHRASE") throw codeError(Error, "ERR_OSSL_CRYPTO_INTERRUPTED_OR_CANCELLED", "error:1C800064:Provider routines::bad decrypt");
+			const encrypted = specialFromEncrypted(data, passphrase);
+			if (encrypted) return encrypted;
+			if (err.code === "ERR_OSSL_BAD_DECRYPT" || /password does not allow/.test(String(err.message))) {
+				throw codeError(Error, "ERR_OSSL_BAD_DECRYPT", "error:1C800064:Provider routines::bad decrypt");
+			}
+			if (err.code === "ERR_MISSING_PASSPHRASE" || /password/i.test(String(err.message))) throw codeError(Error, "ERR_OSSL_CRYPTO_INTERRUPTED_OR_CANCELLED", "error:07880109:common libcrypto routines::interrupted or cancelled");
 			throw err;
 		}
 	};
@@ -224,6 +179,11 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 			}
 			return jwk;
 		}
+		if (info.okp) {
+			const jwk = { crv: OKP_JWK[info.type], x: b64u(info.okp.pub), kty: "OKP" };
+			if (info.okp.seed) jwk.d = b64u(info.okp.seed);
+			return { crv: jwk.crv, ...(jwk.d ? { d: jwk.d } : {}), x: jwk.x, kty: jwk.kty };
+		}
 		if (info.type === "ec") {
 			const crv = JWK_CURVES[canonicalCurve(info.curve)];
 			if (!crv) throw unavailable(`JWK export for curve ${info.curve}`, "it has no JWK name");
@@ -233,7 +193,7 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 			if (priv) jwk.d = b64u(ecPrivateScalar(priv));
 			return jwk;
 		}
-		throw unavailable(`JWK export of ${info.type} keys`, "unsupported key type");
+		throw codeError(Error, "ERR_CRYPTO_JWK_UNSUPPORTED_KEY_TYPE", "Unsupported JWK Key Type.");
 	};
 	const pad = (bytes, size) => {
 		if (bytes.length >= size) return bytes;
@@ -256,6 +216,15 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 			}
 			return { data: rsaSpki(n, e), isPrivate: false };
 		}
+		if (jwk.kty === "OKP") {
+			const type = Object.keys(OKP_JWK).find((k) => OKP_JWK[k] === jwk.crv);
+			if (!type) throw codeError(TypeError, "ERR_CRYPTO_INVALID_CURVE", `Invalid JWK OKP curve ${jwk.crv}`);
+			if (jwk.d && wantPrivate !== false) {
+				const seed = fromB64u(jwk.d);
+				return { data: derSeq(derInt(Uint8Array.of(0)), derSeq(derOid(OKP_BY_TYPE[type])), derOctets(derOctets(seed))), isPrivate: true };
+			}
+			return { data: derSeq(derSeq(derOid(OKP_BY_TYPE[type])), derBits(fromB64u(jwk.x))), isPrivate: false };
+		}
 		if (jwk.kty === "EC") {
 			const curve = Object.keys(JWK_CURVES).find((k) => JWK_CURVES[k] === jwk.crv);
 			if (!curve) throw codeError(TypeError, "ERR_CRYPTO_INVALID_CURVE", `Invalid JWK EC curve ${jwk.crv}`);
@@ -271,13 +240,267 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 		throw unavailable(`JWK keys of type ${jwk.kty}`, "only RSA and EC keys are supported");
 	};
 
+	/* ---- keys mbedTLS cannot read: Ed25519, Ed448, X25519, X448 and DSA are parsed and used here */
+	const readInt = (bytes, element) => unsignedBytes(bytes, element);
+	const okpInfo = (type, seed, pub, spki) => {
+		const pkcs8Der = seed ? derSeq(derInt(Uint8Array.of(0)), derSeq(derOid(OKP_BY_TYPE[type])), derOctets(derOctets(seed))) : undefined;
+		return { private: Boolean(seed), type, bits: type.endsWith("448") ? 448 : 255, pkcs: pkcs8Der, spki: spki ?? derSeq(derSeq(derOid(OKP_BY_TYPE[type])), derBits(pub)), okp: { seed, pub } };
+	};
+	const dsaSpki = (dsa) => derSeq(derSeq(derOid(OID_DSA), derSeq(derInt(dsa.p), derInt(dsa.q), derInt(dsa.g))), derBits(derInt(dsa.y)));
+	const dsaInfo = (dsa) => {
+		const pkcs8Der = dsa.x ? derSeq(derInt(Uint8Array.of(0)), derSeq(derOid(OID_DSA), derSeq(derInt(dsa.p), derInt(dsa.q), derInt(dsa.g))), derOctets(derInt(dsa.x))) : undefined;
+		const bitsOf = (bytes) => {
+			let i = 0;
+			while (i < bytes.length && bytes[i] === 0) i++;
+			return bytes.length === i ? 0 : (bytes.length - i - 1) * 8 + (8 - Math.clz32(bytes[i]) + 24);
+		};
+		return { private: Boolean(dsa.x), type: "dsa", bits: bitsOf(dsa.p), divisorLength: bitsOf(dsa.q), pkcs: pkcs8Der, spki: dsaSpki(dsa), dsa };
+	};
+	/* The DER (and its PEM label) inside the bytes or text a program passes as a key. */
+	const derOfKey = (data) => {
+		const text = typeof data === "string" ? data : buf(data).toString("latin1");
+		if (/-----BEGIN /.test(text)) return fromPem(text, Buffer);
+		return { label: null, headers: {}, der: typeof data === "string" ? new Uint8Array(buf(data, "latin1")) : data };
+	};
+	const parseSpecialDer = (der) => {
+		let top;
+		let kids;
+		try {
+			top = readTlv(der, 0);
+			if (top.tag !== 0x30 || top.next > der.length) return null;
+			kids = readChildren(der, top);
+		} catch {
+			return null;
+		}
+		const algOf = (element) => {
+			const parts = readChildren(der, element);
+			return { oid: oidText(der, parts[0]), params: parts[1] };
+		};
+		try {
+			// PrivateKeyInfo
+			if (kids.length >= 3 && kids[0].tag === 2 && kids[1].tag === 0x30 && kids[2].tag === 4) {
+				const alg = algOf(kids[1]);
+				if (OKP_OIDS[alg.oid]) {
+					const inner = readTlv(der, kids[2].start);
+					const seed = der.slice(inner.start, inner.end);
+					const type = OKP_OIDS[alg.oid];
+					if (seed.length !== OKP_SIZE[type]) return null;
+					return okpInfo(type, seed, okpPublic(type, seed));
+				}
+				if (alg.oid === OID_DSA) {
+					const [p, q, g] = readChildren(der, alg.params).map((c) => der.slice(...[c.start, c.end]));
+					const strip = (b) => {
+						let i = 0;
+						while (i < b.length - 1 && b[i] === 0) i++;
+						return b.subarray(i);
+					};
+					const xElement = readTlv(der, kids[2].start);
+					const dsa = { p: strip(p), q: strip(q), g: strip(g), x: strip(der.slice(xElement.start, xElement.end)) };
+					dsa.y = bytesOfBig(bigModPow(bigOf(dsa.g), bigOf(dsa.x), bigOf(dsa.p)));
+					return dsaInfo(dsa);
+				}
+				return null;
+			}
+			// SubjectPublicKeyInfo
+			if (kids.length === 2 && kids[0].tag === 0x30 && kids[1].tag === 3) {
+				const alg = algOf(kids[0]);
+				if (OKP_OIDS[alg.oid]) {
+					const type = OKP_OIDS[alg.oid];
+					const pub = der.slice(kids[1].start + 1, kids[1].end);
+					if (pub.length !== OKP_SIZE[type]) return null;
+					return okpInfo(type, undefined, pub, der.slice(top.pos, top.next));
+				}
+				if (alg.oid === OID_DSA) {
+					const [p, q, g] = readChildren(der, alg.params).map((c) => unsignedBytes(der, c));
+					const yElement = readTlv(der, kids[1].start + 1);
+					return dsaInfo({ p, q, g, y: unsignedBytes(der, yElement) });
+				}
+				return null;
+			}
+			// Traditional DSA private key: SEQUENCE { 0, p, q, g, y, x }
+			if (kids.length === 6 && kids.every((k) => k.tag === 2)) {
+				const [, p, q, g, y, x] = kids.map((k) => unsignedBytes(der, k));
+				if (unsignedBytes(der, kids[0]).length === 1 && unsignedBytes(der, kids[0])[0] === 0) return dsaInfo({ p, q, g, y, x });
+			}
+		} catch {
+			return null;
+		}
+		return null;
+	};
+	const specialInfo = (data) => {
+		let found;
+		try {
+			found = derOfKey(data);
+		} catch {
+			return null;
+		}
+		if (!found || found.label === "ENCRYPTED PRIVATE KEY" || found.headers["Proc-Type"]) return null;
+		if (found.label && !/PRIVATE KEY|PUBLIC KEY/.test(found.label)) return null;
+		return parseSpecialDer(found.der);
+	};
+	/* An encrypted key of one of those types: decrypt it here, then read what is inside. */
+	const specialFromEncrypted = (data, passphrase) => {
+		let found;
+		try {
+			found = derOfKey(data);
+		} catch {
+			return null;
+		}
+		if (!found) return null;
+		let der = found.der;
+		try {
+			if (found.label === "ENCRYPTED PRIVATE KEY") {
+				if (passphrase === undefined) return null;
+				der = pkcs.decryptPkcs8(der, passphrase);
+			} else if (found.headers["Proc-Type"] && found.headers["DEK-Info"]) {
+				if (passphrase === undefined) return null;
+				const [cipherName, ivHex] = found.headers["DEK-Info"].split(",");
+				const name = cipherName.toLowerCase();
+				const sizes = { "aes-128-cbc": 16, "aes-192-cbc": 24, "aes-256-cbc": 32, "des-ede3-cbc": 24 };
+				if (!sizes[name]) return null;
+				const iv = new Uint8Array(Buffer.from(ivHex.trim(), "hex"));
+				const key = pkcs.bytesToKey(passphrase, iv.subarray(0, 8), sizes[name]);
+				der = new Uint8Array(native.cipher(false, name, key, iv, der, null, 0, true));
+			} else {
+				return null;
+			}
+		} catch {
+			return null;
+		}
+		return parseSpecialDer(der);
+	};
+	const okpClamp = (type, priv) => {
+		const c = new Uint8Array(priv);
+		if (type === "x25519") {
+			c[0] &= 248;
+			c[31] &= 127;
+			c[31] |= 64;
+		} else {
+			c[0] &= 252;
+			c[55] |= 128;
+		}
+		return c;
+	};
+	const okpPublic = (type, seed) => (type.startsWith("ed") ? new Uint8Array(native.eddsaPublic(type, seed)) : new Uint8Array(native.ecdhGenerate(type, okpClamp(type, seed)).pub));
+	const bigModPow = (base, exp, mod) => bigOf(native.modPow(bytesOfBig(base), bytesOfBig(exp), bytesOfBig(mod)));
+	const bigInv = (a, m) => {
+		let [oldR, r] = [a % m, m];
+		let [oldS, sCoef] = [1n, 0n];
+		while (r !== 0n) {
+			const q = oldR / r;
+			[oldR, r] = [r, oldR - q * r];
+			[oldS, sCoef] = [sCoef, oldS - q * sCoef];
+		}
+		return ((oldS % m) + m) % m;
+	};
+
+	/* DSA (FIPS 186): signatures over the digest, truncated to the size of q. */
+	const dsaDigestInt = (hash, data, q) => {
+		const digest = native.hash(hash, data);
+		const qBits = q.toString(2).length;
+		let z = bigOf(digest);
+		const excess = digest.length * 8 - qBits;
+		if (excess > 0) z >>= BigInt(excess);
+		return z;
+	};
+	const dsaSign = (dsa, hash, data, encoding) => {
+		const p = bigOf(dsa.p);
+		const q = bigOf(dsa.q);
+		const g = bigOf(dsa.g);
+		const x = bigOf(dsa.x);
+		const z = dsaDigestInt(hash, data, q);
+		const qBytes = (q.toString(2).length + 7) >> 3;
+		for (;;) {
+			const k = (bigOf(native.randomBytes(qBytes + 8)) % (q - 1n)) + 1n;
+			const r = bigModPow(g, k, p) % q;
+			if (r === 0n) continue;
+			const sValue = (bigInv(k, q) * ((z + x * r) % q)) % q;
+			if (sValue === 0n) continue;
+			const rb = bytesOfBig(r);
+			const sb = bytesOfBig(sValue);
+			if (encoding === "ieee-p1363") return join([pad(rb, qBytes), pad(sb, qBytes)]);
+			return derSeq(derInt(rb), derInt(sb));
+		}
+	};
+	const dsaVerify = (dsa, hash, data, signature, encoding) => {
+		const p = bigOf(dsa.p);
+		const q = bigOf(dsa.q);
+		const g = bigOf(dsa.g);
+		const y = bigOf(dsa.y);
+		let r;
+		let sValue;
+		try {
+			if (encoding === "ieee-p1363") {
+				const half = signature.length >> 1;
+				r = bigOf(signature.subarray(0, half));
+				sValue = bigOf(signature.subarray(half));
+			} else {
+				const kids = readChildren(signature, readTlv(signature, 0));
+				r = bigOf(unsignedBytes(signature, kids[0]));
+				sValue = bigOf(unsignedBytes(signature, kids[1]));
+			}
+		} catch {
+			return false;
+		}
+		if (r <= 0n || r >= q || sValue <= 0n || sValue >= q) return false;
+		const w = bigInv(sValue, q);
+		const z = dsaDigestInt(hash, data, q);
+		const u1 = (z * w) % q;
+		const u2 = (r * w) % q;
+		const v = ((bigModPow(g, u1, p) * bigModPow(y, u2, p)) % p) % q;
+		return v === r;
+	};
+	const isProbablePrime = (n) => native.isPrime(bytesOfBig(n), 24);
+	const SMALL_PRIMES = (() => {
+		const list = [];
+		const sieve = new Uint8Array(3000);
+		for (let i = 2; i < sieve.length; i++) {
+			if (!sieve[i]) {
+				list.push(BigInt(i));
+				for (let j = i * i; j < sieve.length; j += i) sieve[j] = 1;
+			}
+		}
+		return list;
+	})();
+	const generateDsa = (modulusLength, divisorLength) => {
+		const qBits = divisorLength;
+		const q = bigOf(native.genPrime(qBits, false));
+		const random = (bits) => {
+			const bytes = new Uint8Array(native.randomBytes((bits + 7) >> 3));
+			const top = bits % 8;
+			if (top) bytes[0] &= (1 << top) - 1;
+			return bigOf(bytes);
+		};
+		let p;
+		for (;;) {
+			const kBits = modulusLength - qBits;
+			// p = k*q + 1 with the top bit of p set and k even so that p is odd
+			let k = random(kBits) | (1n << BigInt(kBits - 1));
+			k &= ~1n;
+			const candidate = k * q + 1n;
+			if (candidate.toString(2).length !== modulusLength) continue;
+			if (SMALL_PRIMES.some((sp) => candidate % sp === 0n && candidate !== sp)) continue;
+			if (isProbablePrime(candidate)) {
+				p = candidate;
+				break;
+			}
+		}
+		const e = (p - 1n) / q;
+		let g = 1n;
+		for (let h = 2n; g === 1n; h++) g = bigModPow(h, e, p);
+		const x = (random(qBits) % (q - 1n)) + 1n;
+		const y = bigModPow(g, x, p);
+		return { p: bytesOfBig(p), q: bytesOfBig(q), g: bytesOfBig(g), x: bytesOfBig(x), y: bytesOfBig(y) };
+	};
+
 	const createKey = (key, wantPrivate) => {
 		const parsed = parseInput(key, { wantPrivate });
 		if (parsed.keyObject) {
 			if (wantPrivate) return parsed.keyObject;
 			// createPublicKey(privateKeyObject): the public half
 			const asym = parsed.keyObject._asym;
-			return new KeyObject("public", null, { priv: null, spki: asym.spki, info: { ...asym.info, private: false } });
+			if (parsed.keyObject.type === "public") return parsed.keyObject;
+			return makeKey({ ...asym.info, private: true }, true);
 		}
 		if (parsed.jwk) {
 			const imported = importJwk(parsed.jwk, wantPrivate);
@@ -290,8 +513,12 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 	const rsaPkcs1Public = (info) => derSeq(derInt(info.modulus), derInt(info.exponent));
 	const pkcs8 = (asym) => {
 		const { info, priv } = asym;
+		if (info.okp || info.dsa) return priv;
 		if (info.type === "rsa") return derSeq(derInt(Uint8Array.of(0)), derSeq(derOid(OID_RSA), derNull()), derOctets(priv));
-		return derSeq(derInt(Uint8Array.of(0)), derSeq(derOid(OID_EC), derOid(CURVE_OIDS[canonicalCurve(info.curve)])), derOctets(priv));
+		// The curve is named in the algorithm identifier, so the ECPrivateKey inside leaves out its own copy.
+		const sec1 = readTlv(priv, 0);
+		const parts = readChildren(priv, sec1).filter((c) => c.tag !== 0xa0).map((c) => priv.subarray(c.pos, c.next));
+		return derSeq(derInt(Uint8Array.of(0)), derSeq(derOid(OID_EC), derOid(CURVE_OIDS[canonicalCurve(info.curve)])), derOctets(derSeq(...parts)));
 	};
 	const exportKey = (key, options = {}) => {
 		if (key.type === "secret") {
@@ -302,13 +529,29 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 		const format = options.format ?? "pem";
 		if (format === "jwk") return exportJwk(key);
 		if (format !== "pem" && format !== "der") throw codeError(TypeError, "ERR_INVALID_ARG_VALUE", `The property 'options.format' is invalid. Received '${format}'`);
-		if (options.cipher || options.passphrase) throw unavailable("Exporting a private key protected with a passphrase", "key encryption is not implemented");
 		const type = options.type;
+		const protect = options.cipher !== undefined || options.passphrase !== undefined;
+		if (protect && key.type === "private") {
+			if (options.cipher === undefined || options.passphrase === undefined) {
+				const missing = options.cipher === undefined ? "cipher" : "passphrase";
+				throw codeError(TypeError, "ERR_INVALID_ARG_VALUE", `The property 'options.${missing}' is invalid. Received undefined`);
+			}
+			const cipherName = String(options.cipher).toLowerCase();
+			const label0 = type === "pkcs1" ? "RSA PRIVATE KEY" : type === "sec1" ? "EC PRIVATE KEY" : "PRIVATE KEY";
+			if (type === "pkcs1" && asym.info.type !== "rsa") throw codeError(Error, "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS", "The selected key encoding pkcs1 can only be used for RSA keys.");
+			if (type === "sec1" && asym.info.type !== "ec") throw codeError(Error, "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS", "The selected key encoding sec1 can only be used for EC keys.");
+			if (type === "pkcs1" || type === "sec1") {
+				if (format === "der") throw codeError(Error, "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS", `The selected key encoding ${type} does not support encryption.`);
+				return pkcs.encryptLegacyPem(label0, asym.priv, options.passphrase, cipherName);
+			}
+			const encrypted = pkcs.encryptPkcs8(pkcs8(asym), options.passphrase, cipherName);
+			return format === "der" ? buf(encrypted) : pem("ENCRYPTED PRIVATE KEY", encrypted);
+		}
 		let der;
 		let label;
 		if (key.type === "public") {
 			if (type === "pkcs1") {
-				if (asym.info.type !== "rsa") throw codeError(TypeError, "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS", "The selected key encoding pkcs1 can only be used for RSA keys.");
+				if (asym.info.type !== "rsa") throw codeError(Error, "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS", "The selected key encoding pkcs1 can only be used for RSA keys.");
 				der = rsaPkcs1Public(asym.info);
 				label = "RSA PUBLIC KEY";
 			} else if (type === "spki" || type === undefined) {
@@ -318,11 +561,11 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 				throw codeError(TypeError, "ERR_INVALID_ARG_VALUE", `The property 'options.type' is invalid. Received '${type}'`);
 			}
 		} else if (type === "pkcs1") {
-			if (asym.info.type !== "rsa") throw codeError(TypeError, "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS", "The selected key encoding pkcs1 can only be used for RSA keys.");
+			if (asym.info.type !== "rsa") throw codeError(Error, "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS", "The selected key encoding pkcs1 can only be used for RSA keys.");
 			der = asym.priv;
 			label = "RSA PRIVATE KEY";
 		} else if (type === "sec1") {
-			if (asym.info.type !== "ec") throw codeError(TypeError, "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS", "The selected key encoding sec1 can only be used for EC keys.");
+			if (asym.info.type !== "ec") throw codeError(Error, "ERR_CRYPTO_INCOMPATIBLE_KEY_OPTIONS", "The selected key encoding sec1 can only be used for EC keys.");
 			der = asym.priv;
 			label = "EC PRIVATE KEY";
 		} else if (type === "pkcs8" || type === undefined) {
@@ -346,6 +589,8 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 				const info = this._asym?.info;
 				if (!info) return undefined;
 				if (info.type === "rsa") return { modulusLength: info.bits, publicExponent: BigInt(`0x${buf(info.exponent).toString("hex")}`) };
+				if (info.okp) return {};
+				if (info.dsa) return { modulusLength: info.bits, divisorLength: info.divisorLength };
 				return { namedCurve: info.curve === "secp256r1" ? "prime256v1" : info.curve };
 			},
 		},
@@ -363,8 +608,24 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 
 	const generate = (type, options = {}) => {
 		const kind = String(type).toLowerCase();
-		if (UNSUPPORTED_KEY_TYPES.includes(kind)) throw unavailable(`generateKeyPair('${type}')`, "mbedTLS has no such keys; rsa and ec are supported");
+		if (UNSUPPORTED_KEY_TYPES.includes(kind)) throw unavailable(`generateKeyPair('${type}')`, "Diffie-Hellman key pairs are not implemented; use createDiffieHellman");
 		let generated;
+		if (OKP_BY_TYPE[kind]) {
+			const seed = new Uint8Array(native.randomBytes(OKP_SIZE[kind]));
+			const info = okpInfo(kind, seed, okpPublic(kind, seed));
+			const encodeOkp = (key, encoding) => (encoding ? exportKey(key, encoding) : key);
+			return { publicKey: encodeOkp(makeKey(info, true), options.publicKeyEncoding), privateKey: encodeOkp(makeKey(info, false), options.privateKeyEncoding) };
+		}
+		if (kind === "dsa") {
+			const L = options.modulusLength;
+			if (!Number.isInteger(L)) throw invalidArg("options.modulusLength", "of type number", L);
+			const N = options.divisorLength ?? (L >= 2048 ? 256 : 160);
+			if (L < 512 || N < 8 || N >= L) throw codeError(RangeError, "ERR_OUT_OF_RANGE", "The property 'options.divisorLength' is out of range.");
+			const dsa = generateDsa(L, N);
+			const info = dsaInfo(dsa);
+			const encodeDsa = (key, encoding) => (encoding ? exportKey(key, encoding) : key);
+			return { publicKey: encodeDsa(makeKey(info, true), options.publicKeyEncoding), privateKey: encodeDsa(makeKey(info, false), options.privateKeyEncoding) };
+		}
 		if (kind === "rsa" || kind === "rsa-pss") {
 			const bits = options.modulusLength;
 			if (!Number.isInteger(bits)) throw invalidArg("options.modulusLength", "of type number", bits);
@@ -409,7 +670,8 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 	const RSA_PSS = 6;
 	const digestOf = (algorithm, verbose) => {
 		try {
-			return hashName(algorithm);
+			// A null algorithm means the key type decides (Ed25519, Ed448); for the others sha256 is what Node's one-shot calls use.
+			return hashName(algorithm === null || algorithm === undefined ? "sha256" : algorithm);
 		} catch {
 			throw codeError(TypeError, "ERR_CRYPTO_INVALID_DIGEST", verbose ? `Invalid digest: ${algorithm}` : "Invalid digest");
 		}
@@ -430,8 +692,32 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 		return { parsed, padding: options.padding === RSA_PSS ? 1 : 0, saltLength: options.saltLength ?? -2, dsaEncoding: options.dsaEncoding ?? "der" };
 	};
 
+	const specialOf = (parsed, wantPrivate) => {
+		if (parsed.keyObject) {
+			const info = parsed.keyObject._asym.info;
+			return info.okp || info.dsa ? info : null;
+		}
+		if (parsed.jwk) {
+			const imported = importJwk(parsed.jwk, wantPrivate);
+			const info = specialInfo(imported.data);
+			return info;
+		}
+		if (parsed.data === undefined) return null;
+		const info = specialInfo(parsed.data) ?? specialFromEncrypted(parsed.data, parsed.passphrase);
+		return info;
+	};
 	const doSign = (algorithm, data, key, oneShot) => {
 		const { parsed, padding, saltLength, dsaEncoding } = signOptions(key);
+		const special = specialOf(parsed, true);
+		if (special) {
+			if (!special.private) throw codeError(Error, "ERR_OSSL_UNSUPPORTED", "error:1E08010C:DECODER routines::unsupported");
+			if (special.okp) {
+				if (!special.type.startsWith("ed")) throw codeError(Error, "ERR_OSSL_EVP_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE", "error:03000096:digital envelope routines::operation not supported for this keytype");
+				if (algorithm !== null && algorithm !== undefined) throw codeError(Error, "ERR_OSSL_INVALID_DIGEST", "error:1C80007A:Provider routines::invalid digest");
+				return new Uint8Array(native.eddsaSign(special.type, special.okp.seed, data));
+			}
+			return dsaSign(special.dsa, digestOf(algorithm, oneShot), data, dsaEncoding);
+		}
 		const material = nativeKey(parsed, true);
 		let signature = native.pkSignEx(digestOf(algorithm, oneShot), material.data, material.passphrase, data, padding, saltLength === -1 ? -1 : saltLength);
 		const info = material.info ?? (parsed.keyObject ? parsed.keyObject._asym.info : null);
@@ -444,6 +730,15 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 	const doVerify = (algorithm, data, key, signature, oneShot) => {
 		const parsed = parseInput(key, { wantPrivate: false });
 		const options = parsed.options ?? {};
+		const special = specialOf(parsed, false);
+		if (special) {
+			if (special.okp) {
+				if (!special.type.startsWith("ed")) throw codeError(Error, "ERR_OSSL_EVP_OPERATION_NOT_SUPPORTED_FOR_THIS_KEYTYPE", "error:03000096:digital envelope routines::operation not supported for this keytype");
+				if (algorithm !== null && algorithm !== undefined) throw codeError(Error, "ERR_OSSL_INVALID_DIGEST", "error:1C80007A:Provider routines::invalid digest");
+				return native.eddsaVerify(special.type, special.okp.pub, data, toBytes(signature));
+			}
+			return dsaVerify(special.dsa, digestOf(algorithm, oneShot), data, toBytes(signature), options.dsaEncoding ?? "der");
+		}
 		const material = nativeKey(parsed, false);
 		let bytes = toBytes(signature);
 		if ((options.dsaEncoding ?? "der") === "ieee-p1363") {
@@ -491,10 +786,7 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 			return doVerify(this._algorithm, concat(this._chunks), publicKey, toBytes(signature, signatureEncoding));
 		}
 	}
-	const oneShotAlgorithm = (algorithm) => {
-		if (algorithm === null || algorithm === undefined) return "sha256";
-		return algorithm;
-	};
+	const oneShotAlgorithm = (algorithm) => algorithm;
 	const sign = (algorithm, data, key, callback) => {
 		const compute = () => buf(doSign(oneShotAlgorithm(algorithm), toBytes(data), key, true));
 		if (typeof callback !== "function") return compute();
@@ -614,7 +906,13 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 		if (!(publicKey instanceof KeyObject) || publicKey.type !== "public") throw invalidArg("options.publicKey", "an instance of KeyObject of type public", publicKey);
 		const a = privateKey._asym.info;
 		const b = publicKey._asym.info;
-		if (a.type !== "ec" || b.type !== "ec") throw unavailable("crypto.diffieHellman for this key type", "only EC keys are supported");
+		if (a.okp && b.okp) {
+			if (a.type !== b.type || !a.type.startsWith("x")) throw codeError(Error, "ERR_CRYPTO_INCOMPATIBLE_KEY", "Incompatible key types for Diffie-Hellman");
+			const secret = new Uint8Array(native.ecdhCompute(a.type, okpClamp(a.type, a.okp.seed), b.okp.pub));
+			if (secret.every((byte) => byte === 0)) throw codeError(Error, "ERR_CRYPTO_OPERATION_FAILED", "Failed to compute ECDH key");
+			return buf(secret);
+		}
+		if (a.type !== "ec" || b.type !== "ec") throw unavailable("crypto.diffieHellman for this key type", "only EC and X25519/X448 keys are supported");
 		if (a.curve !== b.curve) throw codeError(Error, "ERR_CRYPTO_INCOMPATIBLE_KEY", "Incompatible key types for Diffie-Hellman: different curves");
 		return buf(native.ecdhCompute(a.curve, ecPrivateScalar(privateKey._asym.priv), ecPointOfSpki(publicKey._asym.spki)));
 	};
@@ -793,7 +1091,7 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 			cert.exponent = `0x${buf(info.exponent).toString("hex").replace(/^0+/, "")}`;
 			cert.pubkey = buf(info.spki);
 			cert.bits = info.bits;
-		} else {
+		} else if (info.type === "ec") {
 			cert.pubkey = buf(info.point);
 			cert.bits = info.bits;
 		}
@@ -877,6 +1175,24 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 		});
 	};
 
+	/* Whether `certificate` (as parsed by node-x509.js) was signed by `publicKey`. */
+	const signatureVerifies = (certificate, publicKey) => {
+		const info = publicKey._asym.info;
+		const oid = certificate.signatureOid;
+		if (oid === "1.3.101.112" || oid === "1.3.101.113") {
+			const type = oid === "1.3.101.112" ? "ed25519" : "ed448";
+			return Boolean(info.okp) && info.type === type && native.eddsaVerify(type, info.okp.pub, certificate.tbs, certificate.signature);
+		}
+		const hash = SIGNATURE_HASH[oid];
+		if (!hash) return false;
+		if (info.dsa) return dsaVerify(info.dsa, hash, certificate.tbs, certificate.signature, "der");
+		try {
+			return native.pkVerifyEx(hash, publicKey._asym.spki, certificate.tbs, certificate.signature, oid === "1.2.840.113549.1.1.10" ? 1 : 0, -2);
+		} catch {
+			return false;
+		}
+	};
+
 	const certBytes = (value) => {
 		if (typeof value === "string") return value;
 		if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) {
@@ -892,7 +1208,12 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 			try {
 				this._info = native.x509Info(source);
 			} catch (err) {
-				throw codeError(Error, "ERR_OSSL_PEM_NO_START_LINE", "error:0480006C:PEM routines::no start line");
+				// The host's C library does not know Ed25519, Ed448 or DSA: read those certificates here.
+				try {
+					this._info = parseCertificate(certificateBytes(source, Buffer), Buffer);
+				} catch {
+					throw codeError(Error, "ERR_OSSL_PEM_NO_START_LINE", "error:0480006C:PEM routines::no start line");
+				}
 			}
 			this._legacy = null;
 		}
@@ -942,7 +1263,7 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 			return this._info.ca;
 		}
 		get publicKey() {
-			return makeKey(native.keyInfo(this._info.spki, undefined, false), true);
+			return makeKey(infoOf(this._info.spki, undefined, false), true);
 		}
 		get issuerCertificate() {
 			return undefined;
@@ -965,14 +1286,23 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 		}
 		checkIssued(other) {
 			if (!(other instanceof X509Certificate)) throw invalidArg("otherCert", "an instance of X509Certificate", other);
-			return native.x509CheckIssued(this._info.raw, other._info.raw);
+			try {
+				return native.x509CheckIssued(this._info.raw, other._info.raw);
+			} catch {
+				// One of the two has a key or signature the host cannot read: compare the names and check the signature here.
+				const child = parseCertificate(this._info.raw, Buffer);
+				const parent = parseCertificate(other._info.raw, Buffer);
+				if (dnString(child.issuer) !== dnString(parent.subject)) return false;
+				return signatureVerifies(child, makeKey(infoOf(parent.spki, undefined, false), true));
+			}
 		}
 		checkPrivateKey(privateKey) {
 			if (!(privateKey instanceof KeyObject) || privateKey.type !== "private") throw invalidArg("privateKey", "an instance of KeyObject of type private", privateKey);
-			return native.keyMatchesCert(this._info.raw, privateKey._asym.priv, undefined);
+			return buf(this._info.spki).equals(buf(createKey(privateKey, false)._asym.spki));
 		}
-		verify() {
-			throw unavailable("X509Certificate#verify", "checking a certificate against a bare public key is not implemented; use checkIssued");
+		verify(publicKey) {
+			if (!(publicKey instanceof KeyObject) || publicKey.type !== "public") throw invalidArg("publicKey", "an instance of KeyObject of type public", publicKey);
+			return signatureVerifies(parseCertificate(this._info.raw, Buffer), publicKey);
 		}
 		toString() {
 			return pem("CERTIFICATE", this._info.raw);
@@ -1015,7 +1345,36 @@ function createAsymmetric({ native, Buffer, stream, toBytes, hashName, out, conc
 		checkPrimeSync,
 		X509Certificate,
 		getCurves: () => [...CURVES].sort(),
-		tools: { legacyCertificate, checkServerIdentity, asnDate, dnString },
+		tools: {
+			legacyCertificate,
+			checkServerIdentity,
+			asnDate,
+			dnString,
+			/* A .pfx / .p12 file (or an array of them, or { buf, passphrase }) -> PEM text for the TLS layer. */
+			pfx(input, passphrase) {
+				const first = Array.isArray(input) ? input[0] : input;
+				let bytes = first;
+				let password = passphrase;
+				if (first && typeof first === "object" && !ArrayBuffer.isView(first) && first.buf !== undefined) {
+					bytes = first.buf;
+					password = first.passphrase ?? passphrase;
+				}
+				let parsed;
+				try {
+					parsed = pkcs.parsePkcs12(toBytes(bytes), password === undefined ? "" : password);
+				} catch (err) {
+					// Node reports the bare OpenSSL reason, with no code.
+					if (err.code === "ERR_OSSL_PKCS12_MAC_VERIFY_FAILURE") throw new Error("mac verify failure");
+					if (err.code === "ERR_OSSL_BAD_DECRYPT") throw new Error("mac verify failure");
+					throw new Error("not enough data");
+				}
+				if (!parsed.key) throw codeError(Error, "ERR_OSSL_PKCS12_ERROR", "the PKCS#12 file holds no private key");
+				return {
+					key: pem("PRIVATE KEY", parsed.key),
+					cert: parsed.certs.map((der) => pem("CERTIFICATE", der)).join(""),
+				};
+			},
+		},
 		constants: {
 			RSA_PSS_SALTLEN_DIGEST: -1,
 			RSA_PSS_SALTLEN_MAX_SIGN: -2,

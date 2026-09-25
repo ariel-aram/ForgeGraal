@@ -51,6 +51,7 @@ SQLITE_YEAR="${SQLITE_YEAR:-2024}"
 LIBFFI_VERSION="${LIBFFI_VERSION:-3.4.6}"
 LIBUV_VERSION="${LIBUV_VERSION:-1.48.0}"
 BROTLI_VERSION="${BROTLI_VERSION:-v1.1.0}"
+ZSTD_VERSION="${ZSTD_VERSION:-v1.5.6}"
 
 if [ -z "$TARGET" ]; then
 	echo "usage: $0 <win-xp-x86|win-x86|win-x64|linux-x86|linux-x64|linux-x64-glibc|linux-x64-musl-dyn|linux-x86-musl-dyn|native> [output-dir]" >&2
@@ -140,6 +141,13 @@ if [ ! -f brotli/c/dec/decode.c ]; then
 	git clone -q --depth 1 --branch "$BROTLI_VERSION" https://github.com/google/brotli.git brotli
 fi
 
+if [ ! -f zstd/lib/zstd.h ]; then
+	# Zstandard (BSD-licensed): zlib.zstdCompress and friends.
+	echo "[build] fetching Zstandard $ZSTD_VERSION"
+	rm -rf zstd
+	git clone -q --depth 1 --branch "$ZSTD_VERSION" https://github.com/facebook/zstd.git zstd
+fi
+
 if [ ! -f libuv/include/uv.h ]; then
 	# Headers only: an addon that calls libuv directly lays its requests out by them (see napi.c).
 	echo "[build] fetching the libuv $LIBUV_VERSION headers"
@@ -149,6 +157,14 @@ if [ ! -f libuv/include/uv.h ]; then
 fi
 
 # ---- patches -------------------------------------------------------------------------------
+
+# The TLS 1.2 server answers a client that does not offer 1.2 with protocol_version, as OpenSSL does. A build made
+# before the patch is thrown away so the library is compiled again.
+if ! grep -q GRAAK_TLS12_VERSION_ALERT mbedtls/library/ssl_tls12_server.c; then
+	echo "[build] patching mbedTLS: protocol_version alert from the TLS 1.2 server"
+	python3 "$SCRIPT_DIR/patch-mbedtls-tls12-version.py" mbedtls/library/ssl_tls12_server.c
+	rm -rf mbedtls/build-*
+fi
 
 XP_FLAGS=""
 (cd quickjs-ng && git checkout -q -- . 2>/dev/null || true)
@@ -232,9 +248,9 @@ fi
 # -DMINIZ_NO_TIME keeps miniz off time() APIs that differ across the old Windows CRTs.
 "$CC" -O2 -DNDEBUG -std=gnu11 -w $XP_FLAGS \
 	-D_GNU_SOURCE -DMINIZ_NO_TIME -DMINIZ_NO_STDIO \
-	-DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_RTREE -DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_USE_URI=1 \
+	-DZSTD_DISABLE_ASM -DZSTD_LEGACY_SUPPORT=0 -DDEBUGLEVEL=0 -DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_RTREE -DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_USE_URI=1 \
 	$NAPI_CFLAGS \
-	-I quickjs-ng -I mbedtls/include -I miniz -I wasm3/source -I sqlite -I brotli/c/include -I libuv/include -I "$LIBFFI_BUILD/include" -I "$SCRIPT_DIR" -I "$SCRIPT_DIR/include" \
+	-I quickjs-ng -I mbedtls/include -I mbedtls/library -I miniz -I wasm3/source -I sqlite -I brotli/c/include -I zstd/lib -I zstd/lib/common -I libuv/include -I "$LIBFFI_BUILD/include" -I "$SCRIPT_DIR" -I "$SCRIPT_DIR/include" \
 	-o "$EXE" \
 	"$SCRIPT_DIR/fg_main.c" \
 	"$SCRIPT_DIR/fg_sea.c" \
@@ -253,6 +269,7 @@ fi
 	brotli/c/common/shared_dictionary.c brotli/c/common/transform.c \
 	brotli/c/dec/bit_reader.c brotli/c/dec/decode.c brotli/c/dec/huffman.c brotli/c/dec/state.c \
 	brotli/c/enc/backward_references.c brotli/c/enc/backward_references_hq.c brotli/c/enc/bit_cost.c brotli/c/enc/block_splitter.c brotli/c/enc/brotli_bit_stream.c brotli/c/enc/cluster.c brotli/c/enc/command.c brotli/c/enc/compound_dictionary.c brotli/c/enc/compress_fragment.c brotli/c/enc/compress_fragment_two_pass.c brotli/c/enc/dictionary_hash.c brotli/c/enc/encode.c brotli/c/enc/encoder_dict.c brotli/c/enc/entropy_encode.c brotli/c/enc/fast_log.c brotli/c/enc/histogram.c brotli/c/enc/literal_cost.c brotli/c/enc/memory.c brotli/c/enc/metablock.c brotli/c/enc/static_dict.c brotli/c/enc/utf8_util.c \
+	zstd/lib/common/*.c zstd/lib/compress/*.c zstd/lib/decompress/*.c \
 	sqlite/sqlite3.c \
 	quickjs-ng/quickjs.c quickjs-ng/libregexp.c quickjs-ng/libunicode.c \
 	quickjs-ng/dtoa.c quickjs-ng/quickjs-libc.c \

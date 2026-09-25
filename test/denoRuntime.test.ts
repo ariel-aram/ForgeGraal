@@ -387,7 +387,7 @@ test("a Deno project runs as one Windows 7 executable (Wine)", {
 		strategy: "sea",
 		output: file,
 	});
-	assert.ok(statSync(file).size < 6 * 1024 * 1024, "one small file");
+	assert.ok(statSync(file).size < 7 * 1024 * 1024, "one small file");
 	const run = spawnSync(
 		"docker",
 		[
