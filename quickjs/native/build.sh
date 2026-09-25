@@ -256,6 +256,7 @@ fi
 	"$SCRIPT_DIR/fg_sea.c" \
 	"$SCRIPT_DIR/graak_native.c" \
 	"$SCRIPT_DIR/napi.c" \
+	"$SCRIPT_DIR/fg_uv.c" \
 	"$SCRIPT_DIR/fg_wasm.c" \
 	"$SCRIPT_DIR/fg_sqlite.c" \
 	"$SCRIPT_DIR/fg_crypto.c" \

@@ -40,6 +40,10 @@
 
 #ifdef _WIN32
 #include <windows.h>
+/* The libuv subset for Windows addons lives in fg_uv.c. */
+struct uv_loop_s *uv_default_loop(void);
+void fg_uv_host(void (*inc)(void), void (*dec)(void));
+int fg_uv_drain(void);
 #else
 #include <errno.h>
 #include <fcntl.h>
@@ -1793,8 +1797,10 @@ napi_status napi_get_uv_event_loop(napi_env benv, struct uv_loop_s **loop)
     *loop = &g_uv_loop;
     OK(env);
 #else
-    (void) loop;
-    FAIL(env, napi_generic_failure);
+    CHECK_ARG(env, loop);
+    *loop = uv_default_loop();
+    if (!*loop) FAIL(env, napi_generic_failure);
+    OK(env);
 #endif
 }
 
@@ -2775,6 +2781,13 @@ static void finish_tsf(napi_threadsafe_function t)
 static JSValue fg_drain(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
 {
     int processed = 0;
+#ifdef _WIN32
+    {
+        size_t uv_mark = g_top;
+        processed += fg_uv_drain();
+        handles_close(uv_mark);
+    }
+#endif
     for (;;) {
         fg_task *t;
         size_t mark = g_top;
@@ -2893,6 +2906,9 @@ void graak_napi_init(JSContext *ctx)
     g_rt = JS_GetRuntime(ctx);
     g_buffer = g_pump_start = g_pump_stop = JS_UNDEFINED;
     fg_mutex_init(&g_lock);
+#ifdef _WIN32
+    fg_uv_host(live_inc, live_dec);
+#endif
 
     JS_NewClassID(g_rt, &cls_fn);
     JS_NewClassID(g_rt, &cls_ext);
