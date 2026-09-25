@@ -146,6 +146,7 @@ const RUNTIME_FILES = [
     "node-fs.js",
     "node-system.js",
     "node-wasm.js",
+    "node-wasi.js",
     "node-crypto.js",
     "node-assert.js",
     "node-extras.js",
@@ -156,6 +157,7 @@ const RUNTIME_FILES = [
     "node-misc.js",
     "node-v8.js",
     "node-child.js",
+    "node-cluster.js",
     "node-inspect.js",
     "node-url.js",
     "intl.js",
@@ -180,6 +182,8 @@ const RUNTIME_FILES = [
     "segmenter-tables.js",
     "native-modules.js",
     "node-sea.js",
+    "node-repl.js",
+    "node-inspector.js",
 ];
 const INTL_USE = /\bIntl\b|\btoLocale(?:String|DateString|TimeString|UpperCase|LowerCase)\b|\blocaleCompare\b/;
 const SCANNED_EXTENSIONS = new Set([".js", ".cjs", ".mjs", ".jsx", ".ts", ".cts", ".mts", ".tsx"]);
