@@ -1042,11 +1042,11 @@ static uint64_t fg_rol64(uint64_t x, int n)
     return (x << n) | (x >> (64 - n));
 }
 
-static void fg_keccak_f(uint64_t st[25])
+static void fg_keccak_f_from(uint64_t st[25], int first)
 {
     int round, i, j;
     uint64_t bc[5], t;
-    for (round = 0; round < 24; round++) {
+    for (round = first; round < 24; round++) {
         for (i = 0; i < 5; i++) {
             bc[i] = st[i] ^ st[i + 5] ^ st[i + 10] ^ st[i + 15] ^ st[i + 20];
         }
@@ -1073,6 +1073,11 @@ static void fg_keccak_f(uint64_t st[25])
         }
         st[0] ^= fg_keccak_rc[round];
     }
+}
+
+static void fg_keccak_f(uint64_t st[25])
+{
+    fg_keccak_f_from(st, 0);
 }
 
 /* SHAKE128 (rate 168) or SHAKE256 (rate 136) of up to two inputs, `outlen` bytes out. */
@@ -2271,6 +2276,287 @@ static JSValue fg_ca_bundle(JSContext *ctx, JSValueConst this_val, int argc, JSV
     return JS_NewString(ctx, graak_ca_bundle);
 }
 
+
+/* ---- compression functions the JavaScript hashes call per block (BLAKE2b, BLAKE2s, Argon2, Keccak-f) ---- */
+
+/* The bytes of a typed array of any element type, or NULL with an exception thrown. */
+static uint8_t *fg_typed_bytes(JSContext *ctx, JSValueConst v, size_t *len)
+{
+    size_t off, blen, bpe, total;
+    JSValue buf = JS_GetTypedArrayBuffer(ctx, v, &off, &blen, &bpe);
+    uint8_t *base;
+    if (JS_IsException(buf)) return NULL;
+    base = JS_GetArrayBuffer(ctx, &total, buf);
+    JS_FreeValue(ctx, buf);
+    if (!base) return NULL;
+    *len = blen;
+    return base + off;
+}
+
+static const uint8_t fg_blake2_sigma[10][16] = {
+    {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15}, {14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3},
+    {11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4}, {7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8},
+    {9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13}, {2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9},
+    {12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11}, {13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10},
+    {6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5}, {10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0},
+};
+static const uint64_t fg_blake2b_iv[8] = {
+    0x6a09e667f3bcc908ULL, 0xbb67ae8584caa73bULL, 0x3c6ef372fe94f82bULL, 0xa54ff53a5f1d36f1ULL,
+    0x510e527fade682d1ULL, 0x9b05688c2b3e6c1fULL, 0x1f83d9abfb41bd6bULL, 0x5be0cd19137e2179ULL,
+};
+static const uint32_t fg_blake2s_iv[8] = {
+    0x6a09e667u, 0xbb67ae85u, 0x3c6ef372u, 0xa54ff53au, 0x510e527fu, 0x9b05688cu, 0x1f83d9abu, 0x5be0cd19u,
+};
+
+static uint64_t fg_ror64(uint64_t x, int n)
+{
+    return (x >> n) | (x << (64 - n));
+}
+static uint32_t fg_ror32(uint32_t x, int n)
+{
+    return (x >> n) | (x << (32 - n));
+}
+
+#define FG_B2B_G(a, b, c, d, x, y)                                                                                     \
+    do {                                                                                                               \
+        v[a] = v[a] + v[b] + (x);                                                                                      \
+        v[d] = fg_ror64(v[d] ^ v[a], 32);                                                                              \
+        v[c] = v[c] + v[d];                                                                                            \
+        v[b] = fg_ror64(v[b] ^ v[c], 24);                                                                              \
+        v[a] = v[a] + v[b] + (y);                                                                                      \
+        v[d] = fg_ror64(v[d] ^ v[a], 16);                                                                              \
+        v[c] = v[c] + v[d];                                                                                            \
+        v[b] = fg_ror64(v[b] ^ v[c], 63);                                                                              \
+    } while (0)
+
+/* blake2bCompress(h: Uint32Array(16), block: Uint8Array, offset, tLo, tHi, last) */
+static JSValue fg_blake2b_compress(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    size_t hn, bn;
+    uint8_t *hb, *bb;
+    uint32_t off, tlo, thi;
+    int last, i, r;
+    uint64_t h[8], m[16], v[16], t;
+    if (argc < 6) return JS_ThrowTypeError(ctx, "blake2bCompress(h, block, offset, tLo, tHi, last)");
+    hb = fg_typed_bytes(ctx, argv[0], &hn);
+    bb = JS_GetUint8Array(ctx, &bn, argv[1]);
+    if (!hb || !bb) return JS_EXCEPTION;
+    if (JS_ToUint32(ctx, &off, argv[2]) || JS_ToUint32(ctx, &tlo, argv[3]) || JS_ToUint32(ctx, &thi, argv[4])) return JS_EXCEPTION;
+    last = JS_ToBool(ctx, argv[5]);
+    if (hn < 64 || (size_t) off + 128 > bn) return JS_ThrowRangeError(ctx, "blake2bCompress: out of range");
+    for (i = 0; i < 8; i++) {
+        uint64_t lo = 0, hi = 0;
+        int k;
+        for (k = 3; k >= 0; k--) {
+            lo = (lo << 8) | hb[i * 8 + k];
+            hi = (hi << 8) | hb[i * 8 + 4 + k];
+        }
+        h[i] = lo | (hi << 32);
+    }
+    for (i = 0; i < 16; i++) {
+        uint64_t x = 0;
+        int k;
+        for (k = 7; k >= 0; k--) x = (x << 8) | bb[off + i * 8 + k];
+        m[i] = x;
+    }
+    t = (uint64_t) tlo | ((uint64_t) thi << 32);
+    for (i = 0; i < 8; i++) {
+        v[i] = h[i];
+        v[i + 8] = fg_blake2b_iv[i];
+    }
+    v[12] ^= t;
+    if (last) v[14] = ~v[14];
+    for (r = 0; r < 12; r++) {
+        const uint8_t *s = fg_blake2_sigma[r % 10];
+        FG_B2B_G(0, 4, 8, 12, m[s[0]], m[s[1]]);
+        FG_B2B_G(1, 5, 9, 13, m[s[2]], m[s[3]]);
+        FG_B2B_G(2, 6, 10, 14, m[s[4]], m[s[5]]);
+        FG_B2B_G(3, 7, 11, 15, m[s[6]], m[s[7]]);
+        FG_B2B_G(0, 5, 10, 15, m[s[8]], m[s[9]]);
+        FG_B2B_G(1, 6, 11, 12, m[s[10]], m[s[11]]);
+        FG_B2B_G(2, 7, 8, 13, m[s[12]], m[s[13]]);
+        FG_B2B_G(3, 4, 9, 14, m[s[14]], m[s[15]]);
+    }
+    for (i = 0; i < 8; i++) {
+        uint64_t x = h[i] ^ v[i] ^ v[i + 8];
+        int k;
+        for (k = 0; k < 4; k++) {
+            hb[i * 8 + k] = (uint8_t) (x >> (8 * k));
+            hb[i * 8 + 4 + k] = (uint8_t) (x >> (32 + 8 * k));
+        }
+    }
+    return JS_UNDEFINED;
+}
+
+#define FG_B2S_G(a, b, c, d, x, y)                                                                                     \
+    do {                                                                                                               \
+        v[a] = v[a] + v[b] + (x);                                                                                      \
+        v[d] = fg_ror32(v[d] ^ v[a], 16);                                                                              \
+        v[c] = v[c] + v[d];                                                                                            \
+        v[b] = fg_ror32(v[b] ^ v[c], 12);                                                                              \
+        v[a] = v[a] + v[b] + (y);                                                                                      \
+        v[d] = fg_ror32(v[d] ^ v[a], 8);                                                                               \
+        v[c] = v[c] + v[d];                                                                                            \
+        v[b] = fg_ror32(v[b] ^ v[c], 7);                                                                               \
+    } while (0)
+
+/* blake2sCompress(h: Uint32Array(8), block: Uint8Array, offset, tLo, tHi, last) */
+static JSValue fg_blake2s_compress(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    size_t hn, bn;
+    uint8_t *hb, *bb;
+    uint32_t off, tlo, thi, h[8], m[16], v[16];
+    int last, i, r;
+    if (argc < 6) return JS_ThrowTypeError(ctx, "blake2sCompress(h, block, offset, tLo, tHi, last)");
+    hb = fg_typed_bytes(ctx, argv[0], &hn);
+    bb = JS_GetUint8Array(ctx, &bn, argv[1]);
+    if (!hb || !bb) return JS_EXCEPTION;
+    if (JS_ToUint32(ctx, &off, argv[2]) || JS_ToUint32(ctx, &tlo, argv[3]) || JS_ToUint32(ctx, &thi, argv[4])) return JS_EXCEPTION;
+    last = JS_ToBool(ctx, argv[5]);
+    if (hn < 32 || (size_t) off + 64 > bn) return JS_ThrowRangeError(ctx, "blake2sCompress: out of range");
+    for (i = 0; i < 8; i++) h[i] = (uint32_t) hb[i * 4] | ((uint32_t) hb[i * 4 + 1] << 8) | ((uint32_t) hb[i * 4 + 2] << 16) | ((uint32_t) hb[i * 4 + 3] << 24);
+    for (i = 0; i < 16; i++) {
+        const uint8_t *p = bb + off + i * 4;
+        m[i] = (uint32_t) p[0] | ((uint32_t) p[1] << 8) | ((uint32_t) p[2] << 16) | ((uint32_t) p[3] << 24);
+    }
+    for (i = 0; i < 8; i++) {
+        v[i] = h[i];
+        v[i + 8] = fg_blake2s_iv[i];
+    }
+    v[12] ^= tlo;
+    v[13] ^= thi;
+    if (last) v[14] = ~v[14];
+    for (r = 0; r < 10; r++) {
+        const uint8_t *s = fg_blake2_sigma[r];
+        FG_B2S_G(0, 4, 8, 12, m[s[0]], m[s[1]]);
+        FG_B2S_G(1, 5, 9, 13, m[s[2]], m[s[3]]);
+        FG_B2S_G(2, 6, 10, 14, m[s[4]], m[s[5]]);
+        FG_B2S_G(3, 7, 11, 15, m[s[6]], m[s[7]]);
+        FG_B2S_G(0, 5, 10, 15, m[s[8]], m[s[9]]);
+        FG_B2S_G(1, 6, 11, 12, m[s[10]], m[s[11]]);
+        FG_B2S_G(2, 7, 8, 13, m[s[12]], m[s[13]]);
+        FG_B2S_G(3, 4, 9, 14, m[s[14]], m[s[15]]);
+    }
+    for (i = 0; i < 8; i++) {
+        uint32_t x = h[i] ^ v[i] ^ v[i + 8];
+        hb[i * 4] = (uint8_t) x;
+        hb[i * 4 + 1] = (uint8_t) (x >> 8);
+        hb[i * 4 + 2] = (uint8_t) (x >> 16);
+        hb[i * 4 + 3] = (uint8_t) (x >> 24);
+    }
+    return JS_UNDEFINED;
+}
+
+#define FG_A2_GB(a, b, c, d)                                                                                           \
+    do {                                                                                                               \
+        a = a + b + 2 * (uint64_t) (uint32_t) a * (uint32_t) b;                                                        \
+        d = fg_ror64(d ^ a, 32);                                                                                       \
+        c = c + d + 2 * (uint64_t) (uint32_t) c * (uint32_t) d;                                                        \
+        b = fg_ror64(b ^ c, 24);                                                                                       \
+        a = a + b + 2 * (uint64_t) (uint32_t) a * (uint32_t) b;                                                        \
+        d = fg_ror64(d ^ a, 16);                                                                                       \
+        c = c + d + 2 * (uint64_t) (uint32_t) c * (uint32_t) d;                                                        \
+        b = fg_ror64(b ^ c, 63);                                                                                       \
+    } while (0)
+
+static void fg_a2_p(uint64_t *v0, uint64_t *v1, uint64_t *v2, uint64_t *v3, uint64_t *v4, uint64_t *v5, uint64_t *v6, uint64_t *v7,
+                    uint64_t *v8, uint64_t *v9, uint64_t *v10, uint64_t *v11, uint64_t *v12, uint64_t *v13, uint64_t *v14,
+                    uint64_t *v15)
+{
+    FG_A2_GB(*v0, *v4, *v8, *v12);
+    FG_A2_GB(*v1, *v5, *v9, *v13);
+    FG_A2_GB(*v2, *v6, *v10, *v14);
+    FG_A2_GB(*v3, *v7, *v11, *v15);
+    FG_A2_GB(*v0, *v5, *v10, *v15);
+    FG_A2_GB(*v1, *v6, *v11, *v12);
+    FG_A2_GB(*v2, *v7, *v8, *v13);
+    FG_A2_GB(*v3, *v4, *v9, *v14);
+}
+
+static uint64_t fg_ld64(const uint8_t *p)
+{
+    uint64_t x = 0;
+    int k;
+    for (k = 7; k >= 0; k--) x = (x << 8) | p[k];
+    return x;
+}
+static void fg_st64(uint8_t *p, uint64_t x)
+{
+    int k;
+    for (k = 0; k < 8; k++) p[k] = (uint8_t) (x >> (8 * k));
+}
+
+/* argon2Fill(prev, prevOff, ref, refOff, next, nextOff, withXor): the Argon2 block compression G on Uint32Array blocks of 256 words. */
+static JSValue fg_argon2_fill(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    size_t pn, rn, nn;
+    uint8_t *pb, *rb, *nb;
+    uint32_t po, ro, no;
+    int withxor, i;
+    uint64_t r[128], z[128];
+    if (argc < 7) return JS_ThrowTypeError(ctx, "argon2Fill(prev, prevOff, ref, refOff, next, nextOff, withXor)");
+    pb = fg_typed_bytes(ctx, argv[0], &pn);
+    rb = fg_typed_bytes(ctx, argv[2], &rn);
+    nb = fg_typed_bytes(ctx, argv[4], &nn);
+    if (!pb || !rb || !nb) return JS_EXCEPTION;
+    if (JS_ToUint32(ctx, &po, argv[1]) || JS_ToUint32(ctx, &ro, argv[3]) || JS_ToUint32(ctx, &no, argv[5])) return JS_EXCEPTION;
+    withxor = JS_ToBool(ctx, argv[6]);
+    if (((size_t) po + 256) * 4 > pn || ((size_t) ro + 256) * 4 > rn || ((size_t) no + 256) * 4 > nn) {
+        return JS_ThrowRangeError(ctx, "argon2Fill: out of range");
+    }
+    for (i = 0; i < 128; i++) {
+        r[i] = fg_ld64(pb + (size_t) po * 4 + i * 8) ^ fg_ld64(rb + (size_t) ro * 4 + i * 8);
+        z[i] = r[i];
+    }
+    for (i = 0; i < 8; i++) {
+        uint64_t *q = z + 16 * i;
+        fg_a2_p(q + 0, q + 1, q + 2, q + 3, q + 4, q + 5, q + 6, q + 7, q + 8, q + 9, q + 10, q + 11, q + 12, q + 13, q + 14, q + 15);
+    }
+    for (i = 0; i < 8; i++) {
+        uint64_t *q = z + 2 * i;
+        fg_a2_p(q + 0, q + 1, q + 16, q + 17, q + 32, q + 33, q + 48, q + 49, q + 64, q + 65, q + 80, q + 81, q + 96, q + 97, q + 112,
+                q + 113);
+    }
+    for (i = 0; i < 128; i++) {
+        uint64_t x = r[i] ^ z[i];
+        uint8_t *dst = nb + (size_t) no * 4 + i * 8;
+        if (withxor) x ^= fg_ld64(dst);
+        fg_st64(dst, x);
+    }
+    return JS_UNDEFINED;
+}
+
+/* keccakPermute(hi: Int32Array(25), lo: Int32Array(25), rounds): the last `rounds` rounds of Keccak-f[1600] on the split state. */
+static JSValue fg_keccak_permute(JSContext *ctx, JSValueConst this_val, int argc, JSValueConst *argv)
+{
+    size_t hn, ln;
+    uint8_t *hb, *lb;
+    int32_t rounds;
+    uint64_t st[25];
+    int i;
+    if (argc < 3) return JS_ThrowTypeError(ctx, "keccakPermute(hi, lo, rounds)");
+    hb = fg_typed_bytes(ctx, argv[0], &hn);
+    lb = fg_typed_bytes(ctx, argv[1], &ln);
+    if (!hb || !lb) return JS_EXCEPTION;
+    if (JS_ToInt32(ctx, &rounds, argv[2])) return JS_EXCEPTION;
+    if (hn < 100 || ln < 100 || rounds < 0 || rounds > 24) return JS_ThrowRangeError(ctx, "keccakPermute: out of range");
+    for (i = 0; i < 25; i++) {
+        uint32_t h = (uint32_t) hb[i * 4] | ((uint32_t) hb[i * 4 + 1] << 8) | ((uint32_t) hb[i * 4 + 2] << 16) | ((uint32_t) hb[i * 4 + 3] << 24);
+        uint32_t l = (uint32_t) lb[i * 4] | ((uint32_t) lb[i * 4 + 1] << 8) | ((uint32_t) lb[i * 4 + 2] << 16) | ((uint32_t) lb[i * 4 + 3] << 24);
+        st[i] = ((uint64_t) h << 32) | l;
+    }
+    fg_keccak_f_from(st, 24 - rounds);
+    for (i = 0; i < 25; i++) {
+        uint32_t h = (uint32_t) (st[i] >> 32), l = (uint32_t) st[i];
+        int k;
+        for (k = 0; k < 4; k++) {
+            hb[i * 4 + k] = (uint8_t) (h >> (8 * k));
+            lb[i * 4 + k] = (uint8_t) (l >> (8 * k));
+        }
+    }
+    return JS_UNDEFINED;
+}
+
 const JSCFunctionListEntry graak_crypto_funcs[] = {
     JS_CFUNC_DEF("brotliCompress", 4, fg_brotli_compress),
     JS_CFUNC_DEF("brotliDecompress", 2, fg_brotli_decompress),
@@ -2299,6 +2585,10 @@ const JSCFunctionListEntry graak_crypto_funcs[] = {
     JS_CFUNC_DEF("zstdCompress", 3, fg_zstd_compress),
     JS_CFUNC_DEF("zstdDecompress", 3, fg_zstd_decompress),
     JS_CFUNC_DEF("keccak", 3, fg_keccak_js),
+    JS_CFUNC_DEF("blake2bCompress", 6, fg_blake2b_compress),
+    JS_CFUNC_DEF("blake2sCompress", 6, fg_blake2s_compress),
+    JS_CFUNC_DEF("argon2Fill", 7, fg_argon2_fill),
+    JS_CFUNC_DEF("keccakPermute", 3, fg_keccak_permute),
     JS_CFUNC_DEF("eddsaPublic", 2, fg_eddsa_public),
     JS_CFUNC_DEF("eddsaSign", 3, fg_eddsa_sign),
     JS_CFUNC_DEF("eddsaVerify", 4, fg_eddsa_verify),

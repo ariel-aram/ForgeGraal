@@ -52,6 +52,11 @@ LIBFFI_VERSION="${LIBFFI_VERSION:-3.4.6}"
 LIBUV_VERSION="${LIBUV_VERSION:-1.48.0}"
 BROTLI_VERSION="${BROTLI_VERSION:-v1.1.0}"
 ZSTD_VERSION="${ZSTD_VERSION:-v1.5.6}"
+# The PQ Code Package's ML-KEM and ML-DSA and its SLH-DSA (Apache-2.0 OR ISC OR MIT), pinned: they are the post-quantum
+# key types, in C with no secret-dependent branches.
+MLKEM_COMMIT="${MLKEM_COMMIT:-b3ba7b32773e657dd37f6f87bce82528459ad8a4}"
+MLDSA_COMMIT="${MLDSA_COMMIT:-14d195a82dd27ed6bac35b403f5386bf43a893d3}"
+SLHDSA_COMMIT="${SLHDSA_COMMIT:-174c02e42257f95c210963272877c49dbb50070f}"
 
 if [ -z "$TARGET" ]; then
 	echo "usage: $0 <win-xp-x86|win-x86|win-x64|linux-x86|linux-x64|linux-x64-glibc|linux-x64-musl-dyn|linux-x86-musl-dyn|native> [output-dir]" >&2
@@ -140,6 +145,19 @@ if [ ! -f brotli/c/dec/decode.c ]; then
 	rm -rf brotli
 	git clone -q --depth 1 --branch "$BROTLI_VERSION" https://github.com/google/brotli.git brotli
 fi
+
+fetch_pinned() { # <dir> <repo> <commit>
+	if [ ! -f "$1/.graak-commit-$3" ]; then
+		echo "[build] fetching $2 at $3"
+		rm -rf "$1"
+		git init -q "$1"
+		(cd "$1" && git remote add origin "https://github.com/pq-code-package/$2.git" && git fetch -q --depth 1 origin "$3" && git checkout -q FETCH_HEAD)
+		touch "$1/.graak-commit-$3"
+	fi
+}
+fetch_pinned mlkem-native mlkem-native "$MLKEM_COMMIT"
+fetch_pinned mldsa-native mldsa-native "$MLDSA_COMMIT"
+fetch_pinned slhdsa-c slhdsa-c "$SLHDSA_COMMIT"
 
 if [ ! -f zstd/lib/zstd.h ]; then
 	# Zstandard (BSD-licensed): zlib.zstdCompress and friends.
@@ -250,7 +268,7 @@ fi
 	-D_GNU_SOURCE -DMINIZ_NO_TIME -DMINIZ_NO_STDIO \
 	-DZSTD_DISABLE_ASM -DZSTD_LEGACY_SUPPORT=0 -DDEBUGLEVEL=0 -DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_RTREE -DSQLITE_ENABLE_MATH_FUNCTIONS -DSQLITE_DEFAULT_MEMSTATUS=0 -DSQLITE_USE_URI=1 \
 	$NAPI_CFLAGS \
-	-I quickjs-ng -I mbedtls/include -I mbedtls/library -I miniz -I wasm3/source -I sqlite -I brotli/c/include -I zstd/lib -I zstd/lib/common -I libuv/include -I "$LIBFFI_BUILD/include" -I "$SCRIPT_DIR" -I "$SCRIPT_DIR/include" \
+	-I quickjs-ng -I mbedtls/include -I mbedtls/library -I miniz -I wasm3/source -I sqlite -I brotli/c/include -I zstd/lib -I zstd/lib/common -I mlkem-native/mlkem -I mldsa-native/mldsa -I slhdsa-c -I "$SCRIPT_DIR/pqc" -I libuv/include -I "$LIBFFI_BUILD/include" -I "$SCRIPT_DIR" -I "$SCRIPT_DIR/include" \
 	-o "$EXE" \
 	"$SCRIPT_DIR/fg_main.c" \
 	"$SCRIPT_DIR/fg_sea.c" \
@@ -262,6 +280,8 @@ fi
 	"$SCRIPT_DIR/fg_crypto.c" \
 	"$SCRIPT_DIR/fg_ffi.c" \
 	"$SCRIPT_DIR/fg_proc.c" \
+	"$SCRIPT_DIR/fg_pqc.c" \
+	slhdsa-c/slh_dsa.c slhdsa-c/slh_sha2.c slhdsa-c/slh_shake.c slhdsa-c/sha2_256.c slhdsa-c/sha2_512.c slhdsa-c/sha3_api.c slhdsa-c/sha3_f1600.c \
 	wasm3/source/m3_bind.c wasm3/source/m3_code.c wasm3/source/m3_compile.c wasm3/source/m3_core.c \
 	wasm3/source/m3_emit.c wasm3/source/m3_env.c wasm3/source/m3_exec.c wasm3/source/m3_function.c \
 	wasm3/source/m3_info.c wasm3/source/m3_module.c wasm3/source/m3_optimize.c wasm3/source/m3_parse.c \

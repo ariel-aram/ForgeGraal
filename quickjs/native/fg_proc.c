@@ -924,6 +924,8 @@ static JSValue fg_pipe_write(JSContext *ctx, JSValueConst this_val, int argc, JS
     if (off < 0 || len < 0 || (size_t) off + (size_t) len > size) return JS_ThrowRangeError(ctx, "pipeWrite: out of range");
     if (id < 0 || id >= FG_MAX_PIPES || !fg_pipes[id].in_use || fg_pipes[id].w == FG_NOH) return JS_NewInt32(ctx, -1);
     if (len == 0) return JS_NewInt32(ctx, 0);
+    /* A non-blocking write larger than the pipe can take at once is refused outright, so hand it over in pieces the pipe can hold. */
+    if (len > FG_PIPE_CHUNK / 4) len = FG_PIPE_CHUNK / 4;
     if (!WriteFile(fg_pipes[id].w, buf + off, (DWORD) len, &n, NULL)) {
         DWORD e = GetLastError();
         return JS_NewInt32(ctx, (e == ERROR_NO_DATA || e == ERROR_BROKEN_PIPE || e == ERROR_PIPE_NOT_CONNECTED) ? -1 : 0);

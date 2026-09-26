@@ -23,6 +23,11 @@ const SIGMA = new Uint8Array([
 	10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0,
 ]);
 
+/* The native host compresses a block in C; the JavaScript below is what runs where the host has no such call. */
+const nativeLayer = globalThis.__graak_native;
+let compressBlockB;
+let compressBlockS;
+
 /* ------------------------------------------------------------------------------------------- BLAKE2b */
 
 const mb = new Uint32Array(32);
@@ -482,6 +487,9 @@ function compressS(h, block, offset, tLo, tHi, last) {
 	h[7] ^= w7 ^ w15;
 }
 
+compressBlockB = nativeLayer?.blake2bCompress ?? compressB;
+compressBlockS = nativeLayer?.blake2sCompress ?? compressS;
+
 /* ---------------------------------------------------------------------------------------- the hashes */
 
 /* Incremental BLAKE2b (`wide` true) or BLAKE2s: update() any number of times, digest() once, copy() at any point. */
@@ -499,8 +507,8 @@ class Blake2 {
 	_compress(block, offset, last) {
 		const tLo = this.count % 4294967296;
 		const tHi = Math.floor(this.count / 4294967296);
-		if (this.wide) compressB(this.h, block, offset, tLo, tHi, last);
-		else compressS(this.h, block, offset, tLo, tHi, last);
+		if (this.wide) compressBlockB(this.h, block, offset, tLo, tHi, last);
+		else compressBlockS(this.h, block, offset, tLo, tHi, last);
 	}
 	update(data) {
 		const size = this.blockSize;

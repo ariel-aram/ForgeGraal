@@ -1302,8 +1302,21 @@ export function createPqc({ native }) {
 
 	/* ============================================================================================ API */
 
+	/* With the C implementations built into the host (fg_pqc.c) the operations on secret keys run in them, in constant time;
+	 * the JavaScript above is the fallback for a host built without them. */
+	const fast = typeof native.pqcKemKeypair === "function";
+	const level = (type) => Number(type.name.slice(type.name.lastIndexOf("-") + 1));
+
 	/* A private key from its parts: { type, seed?, expanded, pub }. */
 	const fromSeed = (type, seed) => {
+		if (fast && type.kind === "kem") {
+			const r = native.pqcKemKeypair(level(type), Uint8Array.from(seed.subarray(0, 64)));
+			return { type, seed: Uint8Array.from(seed), expanded: r.slice(type.pubLen), pub: r.slice(0, type.pubLen) };
+		}
+		if (fast && type.kind === "dsa") {
+			const r = native.pqcDsaKeypair(level(type), Uint8Array.from(seed.subarray(0, 32)));
+			return { type, seed: Uint8Array.from(seed), expanded: r.slice(type.pubLen), pub: r.slice(0, type.pubLen) };
+		}
 		if (type.kind === "kem") {
 			const { ek, dk } = kemKeyGen(type.params, seed.subarray(0, 32), seed.subarray(32, 64));
 			return { type, seed: Uint8Array.from(seed), expanded: dk, pub: ek };
@@ -1332,7 +1345,7 @@ export function createPqc({ native }) {
 	const generate = (type) => {
 		if (type.kind === "slh") {
 			const n = type.params.n;
-			const sk = slhFor(type).keyGen(random(n), random(n), random(n));
+			const sk = fast ? native.pqcSlhKeypair(type.name, random(n), random(n), random(n)) : slhFor(type).keyGen(random(n), random(n), random(n));
 			return { type, seed: undefined, expanded: sk, pub: sk.slice(2 * n) };
 		}
 		return fromSeed(type, random(type.seedLen));
@@ -1355,18 +1368,29 @@ export function createPqc({ native }) {
 		fromExpanded,
 		publicOk,
 		/* ML-KEM */
-		encapsulate: (type, pub) => kemEncapsulate(type.params, pub, random(32)),
+		encapsulate: (type, pub) => {
+			if (!fast) return kemEncapsulate(type.params, pub, random(32));
+			const r = native.pqcKemEnc(level(type), pub, random(32));
+			return { sharedKey: r.slice(type.cipherLen), ciphertext: r.slice(0, type.cipherLen) };
+		},
 		decapsulate: (type, expanded, ciphertext) => {
 			if (ciphertext.length !== type.cipherLen) return null;
-			return kemDecapsulate(type.params, expanded, ciphertext);
+			return fast ? native.pqcKemDec(level(type), ciphertext, expanded) : kemDecapsulate(type.params, expanded, ciphertext);
 		},
 		/* ML-DSA and SLH-DSA; the context is at most 255 bytes, checked by the caller. */
 		sign: (type, expanded, message, ctx) => {
+			if (fast) {
+				const rnd = random(type.kind === "dsa" ? 32 : type.params.n);
+				const signature = type.kind === "dsa" ? native.pqcDsaSign(level(type), expanded, message, ctx, rnd) : native.pqcSlhSign(type.name, expanded, message, ctx, rnd);
+				if (!signature) throw new Error("signing failed");
+				return signature;
+			}
 			if (type.kind === "dsa") return dsaSign(type.params, expanded, message, ctx, random(32));
 			return slhFor(type).sign(expanded, message, ctx, random(type.params.n));
 		},
 		verify: (type, pub, message, signature, ctx) => {
 			if (signature.length !== type.sigLen) return false;
+			if (fast) return type.kind === "dsa" ? native.pqcDsaVerify(level(type), pub, message, ctx, signature) : native.pqcSlhVerify(type.name, pub, message, ctx, signature);
 			if (type.kind === "dsa") return dsaVerify(type.params, pub, message, signature, ctx);
 			return slhFor(type).verify(pub, message, signature, ctx);
 		},

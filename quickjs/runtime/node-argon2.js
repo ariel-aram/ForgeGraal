@@ -588,7 +588,7 @@ const R = new Uint32Array(BLOCK);
 const Z = new Uint32Array(BLOCK);
 
 /* next = compress(prev, ref), xored into what `next` held when `withXor` (passes after the first, version 0x13). */
-function fillBlock(prevArr, prevOff, refArr, refOff, nextArr, nextOff, withXor) {
+function fillBlockJs(prevArr, prevOff, refArr, refOff, nextArr, nextOff, withXor) {
 	for (let i = 0; i < BLOCK; i++) {
 		const r = prevArr[prevOff + i] ^ refArr[refOff + i];
 		R[i] = r;
@@ -599,6 +599,9 @@ function fillBlock(prevArr, prevOff, refArr, refOff, nextArr, nextOff, withXor) 
 	if (withXor) for (let i = 0; i < BLOCK; i++) nextArr[nextOff + i] ^= R[i] ^ Z[i];
 	else for (let i = 0; i < BLOCK; i++) nextArr[nextOff + i] = R[i] ^ Z[i];
 }
+
+/* The native host has the block compression in C. */
+const fillBlock = globalThis.__graak_native?.argon2Fill ?? fillBlockJs;
 
 const le32 = (n) => new Uint8Array([n & 0xff, (n >>> 8) & 0xff, (n >>> 16) & 0xff, (n >>> 24) & 0xff]);
 

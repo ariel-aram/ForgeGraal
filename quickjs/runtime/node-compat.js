@@ -115,28 +115,97 @@ if (typeof globalThis.URL === "undefined") {
 /*
  * Timers. The stock `qjs` binary puts these on the global object; the Graak host embeds only the
  * engine's `os` module, where they live as os.setTimeout and friends. Node hands back an object rather
- * than a number, and libraries call .unref() on it, so the same shape is returned here. The engine has
- * no unref'd timers, so ref/unref are accepted and keep the loop alive either way.
+ * than a number, and libraries call .unref() on it, so the same shape is returned here.
+ *
+ * The engine's loop runs while any timer is pending, so an unref'd timer is emulated: the ones still referenced are
+ * counted, and once none is left the unref'd ones are cancelled (they could never have fired in Node either, which
+ * exits when nothing but unref'd timers remain). Everything the runtime keeps alive (sockets, children, pumps) does so
+ * with an ordinary timer, so it counts as referenced.
  */
 if (typeof globalObject.setTimeout === "undefined" && typeof os.setTimeout === "function") {
+	let referenced = 0;
+	const unreferenced = new Set();
+	let idleCheck = false;
+	const settle = () => {
+		if (idleCheck || unreferenced.size === 0) return;
+		idleCheck = true;
+		// A turn later, so a script that unrefs a timer and then makes the timer that keeps it alive is not cut short.
+		os.setTimeout(() => {
+			idleCheck = false;
+			if (referenced > 0) return;
+			for (const timer of unreferenced) {
+				timer._done = true;
+				os.clearTimeout(timer._handle);
+			}
+			unreferenced.clear();
+		}, 0);
+	};
 	class Timeout {
-		constructor(handle) {
-			this._handle = handle;
+		constructor(create, run, ms, repeat) {
+			this._done = false;
+			this._ref = true;
+			this._repeat = repeat;
+			this._ms = ms;
+			this._create = create;
+			this._run = run;
+			this._start();
+		}
+		_start() {
+			referenced++;
+			this._arm();
+		}
+		_arm() {
+			this._handle = this._create(() => {
+				if (!this._repeat) {
+					this._done = true;
+					if (this._ref) referenced--;
+					else unreferenced.delete(this);
+				}
+				try {
+					this._run();
+				} finally {
+					settle();
+				}
+			}, this._ms);
 		}
 		ref() {
+			if (!this._ref && !this._done) {
+				this._ref = true;
+				referenced++;
+				unreferenced.delete(this);
+			}
 			return this;
 		}
 		unref() {
+			if (this._ref && !this._done) {
+				this._ref = false;
+				referenced--;
+				unreferenced.add(this);
+				settle();
+			}
 			return this;
 		}
 		hasRef() {
-			return true;
+			return this._ref;
 		}
 		refresh() {
+			if (!this._done) os.clearTimeout(this._handle);
+			else {
+				this._done = false;
+				if (this._ref) referenced++;
+				else unreferenced.add(this);
+			}
+			this._arm();
 			return this;
 		}
 		close() {
-			os.clearTimeout(this._handle);
+			if (!this._done) {
+				this._done = true;
+				if (this._ref) referenced--;
+				else unreferenced.delete(this);
+				os.clearTimeout(this._handle);
+				settle();
+			}
 			return this;
 		}
 		[Symbol.toPrimitive]() {
@@ -144,7 +213,7 @@ if (typeof globalObject.setTimeout === "undefined" && typeof os.setTimeout === "
 		}
 	}
 	const start =
-		(create) =>
+		(create, repeat) =>
 		(fn, ms, ...args) => {
 			if (typeof fn !== "function") {
 				throw new TypeError('The "callback" argument must be of type function.');
@@ -158,14 +227,14 @@ if (typeof globalObject.setTimeout === "undefined" && typeof os.setTimeout === "
 					reportUncaught(error);
 				}
 			};
-			return new Timeout(create(run, Math.max(1, Number(ms) || 1)));
+			return new Timeout(create, run, Math.max(1, Number(ms) || 1), repeat);
 		};
 	const clear = (timer) => {
-		if (timer instanceof Timeout) os.clearTimeout(timer._handle);
+		if (timer instanceof Timeout) timer.close();
 		else if (timer != null) os.clearTimeout(timer);
 	};
-	globalObject.setTimeout = start((fn, ms) => os.setTimeout(fn, ms));
-	globalObject.setInterval = start((fn, ms) => os.setInterval(fn, ms));
+	globalObject.setTimeout = start((fn, ms) => os.setTimeout(fn, ms), false);
+	globalObject.setInterval = start((fn, ms) => os.setInterval(fn, ms), true);
 	globalObject.clearTimeout = clear;
 	globalObject.clearInterval = clear;
 }

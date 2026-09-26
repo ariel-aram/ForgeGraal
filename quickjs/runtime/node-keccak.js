@@ -25,7 +25,7 @@ const ch = new Int32Array(5);
 const cl = new Int32Array(5);
 
 /* The last `rounds` rounds of Keccak-f[1600] on the state held in `hi` and `lo`. */
-function permute(rounds) {
+function permuteJs(rounds) {
 	for (let round = 24 - rounds; round < 24; round++) {
 		for (let x = 0; x < 5; x++) {
 			ch[x] = hi[x] ^ hi[x + 5] ^ hi[x + 10] ^ hi[x + 15] ^ hi[x + 20];
@@ -72,6 +72,10 @@ function permute(rounds) {
 		lo[0] ^= RC[round * 2 + 1];
 	}
 }
+
+/* The native host has Keccak-f in C, on the same split state. */
+const nativeKeccak = globalThis.__graak_native?.keccakPermute;
+const permute = nativeKeccak ? (rounds) => nativeKeccak(hi, lo, rounds) : permuteJs;
 
 /* Absorbs `data` with the domain-separation byte `suffix` and 10*1 padding, then squeezes `outBytes` bytes. */
 function sponge(rate, rounds, suffix, data, outBytes) {
